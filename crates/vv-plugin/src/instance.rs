@@ -25,12 +25,16 @@ const BLOCK_FRAMES: usize = 512;
 // The generated enum constants are u32 on some targets and i32 on others.
 #[allow(clippy::unnecessary_cast)]
 mod ids {
-    use vst3::Steinberg::Vst::{BusDirections_, MediaTypes_, ProcessModes_, SymbolicSampleSizes_};
+    use vst3::Steinberg::Vst::{
+        BusDirections_, MediaTypes_, ProcessContext_, ProcessModes_, SymbolicSampleSizes_,
+    };
     pub const INPUT: i32 = BusDirections_::kInput as i32;
     pub const OUTPUT: i32 = BusDirections_::kOutput as i32;
     pub const AUDIO: i32 = MediaTypes_::kAudio as i32;
     pub const REALTIME: i32 = ProcessModes_::kRealtime as i32;
     pub const OFFLINE: i32 = ProcessModes_::kOffline as i32;
+    pub const TEMPO_VALID: u32 = ProcessContext_::StatesAndFlags_::kTempoValid as u32;
+    pub const TIME_SIG_VALID: u32 = ProcessContext_::StatesAndFlags_::kTimeSigValid as u32;
     pub const SAMPLE32: i32 = SymbolicSampleSizes_::kSample32 as i32;
 }
 
@@ -57,7 +61,7 @@ pub struct Vst3Instance {
     processor: ComPtr<IAudioProcessor>,
     controller: Option<ComPtr<IEditController>>,
     // Only a separate controller object is initialized and terminated by us.
-    controller_initialized: bool,
+    separate_controller: bool,
     connections: Option<(ComPtr<IConnectionPoint>, ComPtr<IConnectionPoint>)>,
     handler: ComPtr<IComponentHandler>,
     host: ComPtr<FUnknown>,
@@ -127,7 +131,7 @@ impl Vst3Instance {
                 .to_com_ptr()
                 .ok_or("parameter changes")?,
             changes,
-            // SAFETY: a plain C struct; all zero means no transport state.
+            // SAFETY: a plain C struct; zero is a valid empty state.
             context: unsafe { std::mem::zeroed() },
         };
 
@@ -139,7 +143,7 @@ impl Vst3Instance {
             component,
             processor,
             controller: None,
-            controller_initialized: false,
+            separate_controller: false,
             connections: None,
             handler,
             host,
@@ -179,7 +183,7 @@ impl Vst3Instance {
                 unsafe { controller.initialize(self.host.as_ptr()) },
                 "controller initialize",
             )?;
-            self.controller_initialized = true;
+            self.separate_controller = true;
             self.controller = Some(controller);
             let pair = self.component.cast::<IConnectionPoint>().zip(
                 self.controller
@@ -236,7 +240,13 @@ impl Vst3Instance {
                 self.processor.setupProcessing(&mut setup),
                 "setupProcessing",
             )?;
-            (*self.rt.get()).context.sampleRate = f64::from(sample_rate);
+            // Tempo-synced plugins need something sane; there is no transport to follow.
+            let context = &mut (*self.rt.get()).context;
+            context.sampleRate = f64::from(sample_rate);
+            context.tempo = 120.0;
+            context.timeSigNumerator = 4;
+            context.timeSigDenominator = 4;
+            context.state = ids::TEMPO_VALID | ids::TIME_SIG_VALID;
         }
         Ok(())
     }
@@ -253,8 +263,13 @@ impl Vst3Instance {
                 if let Some(p) = s.to_com_ptr::<IBStream>() {
                     self.component.setState(p.as_ptr());
                 }
+                // A single object already took the state through its component half.
                 let s = stream(component);
-                if let (Some(c), Some(p)) = (&self.controller, s.to_com_ptr::<IBStream>()) {
+                if let (Some(c), Some(p), true) = (
+                    &self.controller,
+                    s.to_com_ptr::<IBStream>(),
+                    self.separate_controller,
+                ) {
                     c.setComponentState(p.as_ptr());
                 }
             }
@@ -287,6 +302,12 @@ impl Vst3Instance {
     /// Waits for the audio thread to leave `process`; UI thread only.
     pub fn set_state(&self, effect: &Vst3Effect) {
         let _audio = self.lock_audio();
+        // A stale edit must not override the state just loaded.
+        self.shared
+            .params
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         self.load_state(effect);
         // SAFETY: a live processor.
         self.latency.store(
@@ -453,7 +474,7 @@ impl Drop for Vst3Instance {
             if let Some(c) = self
                 .controller
                 .as_ref()
-                .filter(|_| self.controller_initialized)
+                .filter(|_| self.separate_controller)
             {
                 c.terminate();
             }
