@@ -12,7 +12,7 @@ use vst3::Steinberg::{
 };
 use vst3::{Class, ComPtr, ComRef, ComWrapper};
 
-use crate::HostedPlugin;
+use crate::{HostedPlugin, Waker};
 
 #[cfg(target_os = "macos")]
 #[path = "editor/macos.rs"]
@@ -72,6 +72,7 @@ pub struct Editor {
     view: ComPtr<IPlugView>,
     frame: ComWrapper<Frame>,
     window: platform::Window,
+    resize: Resizer,
     instance: Arc<dyn HostedPlugin>,
 }
 
@@ -81,7 +82,14 @@ fn size_of(rect: &ViewRect) -> (i32, i32) {
 
 impl Editor {
     /// Err if the plugin has no editor or the platform view type is unsupported.
-    pub fn open(instance: &Arc<dyn HostedPlugin>, title: &str) -> Result<Self, String> {
+    /// `waker` is called, from any thread, when the editor needs `idle` or the
+    /// app should look at the instance (an edit ended, the window changed).
+    pub fn open(
+        instance: &Arc<dyn HostedPlugin>,
+        title: &str,
+        waker: Waker,
+    ) -> Result<Self, String> {
+        platform::check_thread()?;
         let controller = instance
             .as_vst3()
             .and_then(|i| i.controller())
@@ -106,9 +114,10 @@ impl Editor {
             }
             (size_of(&rect), view.canResize() == kResultTrue)
         };
-        let window = platform::Window::new(title, size, resizable)?;
+        let window = platform::Window::new(title, size, resizable, waker.clone())?;
+        let resize = window.resizer();
         let frame = ComWrapper::new(Frame {
-            resize: RefCell::new(Some(window.resizer())),
+            resize: RefCell::new(Some(resize.clone())),
             resizing: Cell::new(false),
             #[cfg(target_os = "linux")]
             run_loop: Default::default(),
@@ -124,10 +133,14 @@ impl Editor {
             frame.resize.take();
             return Err(format!("the plugin editor did not attach ({attached})"));
         }
+        if let Some(vst3) = instance.as_vst3() {
+            vst3.set_waker(Some(waker));
+        }
         Ok(Self {
             view,
             frame,
             window,
+            resize,
             instance: instance.clone(),
         })
     }
@@ -148,8 +161,22 @@ impl Editor {
                 bottom: height,
             };
             // SAFETY: the view is live until Drop.
-            unsafe { self.view.onSize(&mut rect) };
+            unsafe {
+                self.view.checkSizeConstraint(&mut rect);
+                if size_of(&rect) != (width, height) {
+                    (self.resize)(rect.right - rect.left, rect.bottom - rect.top);
+                }
+                self.view.onSize(&mut rect);
+            }
         }
+    }
+
+    /// When `idle` is next needed besides the waker's calls; `None` to sleep.
+    pub fn next_wake(&self) -> Option<std::time::Duration> {
+        #[cfg(target_os = "linux")]
+        return self.frame.run_loop.next_wake();
+        #[cfg(not(target_os = "linux"))]
+        None
     }
 
     pub fn is_open(&self) -> bool {
@@ -166,6 +193,11 @@ impl Drop for Editor {
             self.view.setFrame(std::ptr::null_mut());
         }
         self.frame.resize.take();
+        #[cfg(target_os = "linux")]
+        self.frame.run_loop.clear();
+        if let Some(vst3) = self.instance.as_vst3() {
+            vst3.set_waker(None);
+        }
     }
 }
 

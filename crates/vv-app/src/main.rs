@@ -4523,7 +4523,7 @@ impl VenturiApp {
             self.timeline_audio();
             if let Some(audio) = &mut self.timeline_audio {
                 self.plugin_editors
-                    .open(&self.session.project, request, current, audio);
+                    .open(ui.ctx(), &self.session.project, request, current, audio);
             }
         }
         self.plugin_editors.update(

@@ -21,7 +21,7 @@ vv-core = { path = "../vv-core" }
 objc2-core-foundation = "0.3"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSGraphics", "NSResponder", "NSView", "NSWindow"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSString"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSString", "NSNotification", "NSObject"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"

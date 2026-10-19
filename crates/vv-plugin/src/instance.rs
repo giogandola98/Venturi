@@ -340,6 +340,10 @@ impl Vst3Instance {
         self.controller.as_ref()
     }
 
+    pub(crate) fn set_waker(&self, waker: Option<crate::host::Waker>) {
+        self.shared.set_waker(waker);
+    }
+
     /// An edit gesture ended since the last call.
     pub fn take_dirty(&self) -> bool {
         if self.shared.latency_changed.swap(false, Ordering::AcqRel) {

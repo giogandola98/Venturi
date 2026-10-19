@@ -24,6 +24,11 @@ use x11rb::wrapper::ConnectionExt as _;
 use x11rb::{COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT};
 
 use super::{Frame, Resizer};
+use crate::Waker;
+
+pub(super) fn check_thread() -> Result<(), String> {
+    Ok(())
+}
 
 pub(super) const VIEW_TYPE: FIDString = kPlatformTypeX11EmbedWindowID;
 
@@ -49,7 +54,12 @@ fn pin_size(conn: &RustConnection, id: u32, (width, height): (i32, i32)) {
 }
 
 impl Window {
-    pub fn new(title: &str, size: (i32, i32), resizable: bool) -> Result<Self, String> {
+    pub fn new(
+        title: &str,
+        size: (i32, i32),
+        resizable: bool,
+        _waker: Waker,
+    ) -> Result<Self, String> {
         let fail = |e: &dyn std::fmt::Display| format!("X11: {e}");
         let (conn, screen_num) = x11rb::connect(None).map_err(|e| fail(&e))?;
         let screen = &conn.setup().roots[screen_num];
@@ -174,6 +184,10 @@ impl Drop for Window {
     }
 }
 
+const FD_POLL: Duration = Duration::from_millis(16);
+/// Keeps `Instant` arithmetic far from overflow.
+const MAX_TIMER: Duration = Duration::from_secs(3600);
+
 struct Timer {
     handler: ComPtr<ITimerHandler>,
     interval: Duration,
@@ -188,6 +202,23 @@ pub(super) struct RunLoop {
 }
 
 impl RunLoop {
+    pub fn clear(&self) {
+        self.handlers.borrow_mut().clear();
+        self.timers.borrow_mut().clear();
+    }
+
+    /// When the plugin needs the loop next: nothing is registered, nothing to wake for.
+    /// There is no cheap wake on an fd, so those are polled at a GUI-friendly pace.
+    pub fn next_wake(&self) -> Option<Duration> {
+        if !self.handlers.borrow().is_empty() {
+            return Some(FD_POLL);
+        }
+        let now = Instant::now();
+        let timers = self.timers.borrow();
+        let next = timers.iter().map(|t| t.next).min()?;
+        Some(next.saturating_duration_since(now))
+    }
+
     /// Calls back what is ready or due; the handlers may register more meanwhile.
     pub fn pump(&self) {
         let handlers = self.handlers.borrow().clone();
@@ -202,7 +233,12 @@ impl RunLoop {
         // SAFETY: `polls` is a valid array of the length passed; a zero timeout never blocks.
         if !polls.is_empty() && unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as _, 0) } > 0 {
             for (poll, (handler, fd)) in polls.iter().zip(&handlers) {
-                if poll.revents != 0 {
+                let registered = self
+                    .handlers
+                    .borrow()
+                    .iter()
+                    .any(|(h, _)| h.as_ptr() == handler.as_ptr());
+                if poll.revents != 0 && registered {
                     // SAFETY: a live handler the plugin registered.
                     unsafe { handler.onFDIsSet(*fd) };
                 }
@@ -215,13 +251,20 @@ impl RunLoop {
             .iter_mut()
             .filter(|t| t.next <= now)
             .map(|t| {
-                t.next = now + t.interval;
+                t.next = now.checked_add(t.interval).unwrap_or(now);
                 t.handler.clone()
             })
             .collect();
         for handler in due {
-            // SAFETY: a live handler the plugin registered.
-            unsafe { handler.onTimer() };
+            let registered = self
+                .timers
+                .borrow()
+                .iter()
+                .any(|t| t.handler.as_ptr() == handler.as_ptr());
+            if registered {
+                // SAFETY: a live handler the plugin registered.
+                unsafe { handler.onTimer() };
+            }
         }
     }
 }
@@ -260,7 +303,8 @@ impl IRunLoopTrait for Frame {
         let Some(handler) = (unsafe { ComRef::from_raw(handler) }) else {
             return kInvalidArgument;
         };
-        let interval = Duration::from_millis(milliseconds.max(1));
+        let interval =
+            Duration::from_millis(milliseconds).clamp(Duration::from_millis(1), MAX_TIMER);
         self.run_loop.timers.borrow_mut().push(Timer {
             handler: handler.to_com_ptr(),
             interval,

@@ -1,7 +1,5 @@
 //! Open plugin editor windows, and what a gesture in one does to the project.
 use std::collections::HashMap;
-use std::time::Duration;
-
 use vv_core::{
     AudioEffect, AudioEffectKind, CommandLabel, EffectId, History, Id, MixerChannel, PluginState,
     Project, SetAudioEffect, TimelineId, Vst3Effect,
@@ -16,12 +14,11 @@ type Key = (TimelineId, MixerChannel, EffectId);
 /// Keeps the editor's own instance clear of the live keys.
 const ASIDE_SALT: u64 = 0x9E37_79B9_7F4A_7C15;
 
-/// Paces the plugins' timers and the polling of their gestures.
-const IDLE_PERIOD: Duration = Duration::from_millis(33);
-
 #[derive(Default)]
 pub(crate) struct PluginEditors {
     open: HashMap<Key, Editor>,
+    /// `History::generation` the instances were last compared with the project at.
+    checked: u64,
 }
 
 fn find(project: &Project, (timeline, channel, id): Key) -> Option<(usize, &AudioEffect)> {
@@ -75,6 +72,7 @@ impl PluginEditors {
     /// `current` is the timeline the audio is playing.
     pub fn open(
         &mut self,
+        ctx: &egui::Context,
         project: &Project,
         (timeline, channel, index): (TimelineId, MixerChannel, usize),
         current: Option<TimelineId>,
@@ -102,7 +100,9 @@ impl PluginEditors {
             eprintln!("vv-plugin: {}: no instance for the editor", plugin.name);
             return;
         };
-        match Editor::open(&instance, &plugin.name) {
+        let ctx = ctx.clone();
+        let waker = std::sync::Arc::new(move || ctx.request_repaint());
+        match Editor::open(&instance, &plugin.name, waker) {
             Ok(editor) => {
                 self.open.insert(key, editor);
             }
@@ -125,8 +125,15 @@ impl PluginEditors {
         self.open.retain(|key, editor| {
             Some(key.0) == current && find(project, *key).is_some() && editor.is_open()
         });
+        let generation = history.generation();
+        let changed = generation != self.checked;
+        let mut wake: Option<std::time::Duration> = None;
         for (key, editor) in &mut self.open {
             editor.idle();
+            wake = match (wake, editor.next_wake()) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
             let Some(instance) = editor.instance().as_vst3() else {
                 continue;
             };
@@ -136,7 +143,8 @@ impl PluginEditors {
                     // The pool must not read the state back into the instance.
                     instance.set_state_hash(hash);
                 }
-            } else if let Some(plugin) = find(project, *key).and_then(|(_, e)| plugin(e))
+            } else if changed
+                && let Some(plugin) = find(project, *key).and_then(|(_, e)| plugin(e))
                 && plugin.content_hash() != instance.state_hash()
             {
                 // An undo of an instance no mix is playing.
@@ -144,7 +152,11 @@ impl PluginEditors {
                 instance.set_state_hash(plugin.content_hash());
             }
         }
-        ctx.request_repaint_after(IDLE_PERIOD);
+        // Edits, closing and resizing wake the app; only a plugin's own timers need this.
+        self.checked = history.generation();
+        if let Some(wake) = wake {
+            ctx.request_repaint_after(wake);
+        }
     }
 
     pub fn close_all(&mut self) {

@@ -74,12 +74,16 @@ impl IHostApplicationTrait for HostApp {
     }
 }
 
+/// Called from any thread when the UI has something to do.
+pub type Waker = std::sync::Arc<dyn Fn() + Send + Sync>;
+
 /// What the plugin's controller reports back, shared with the instance.
 pub(crate) struct Shared {
     /// Latest value per parameter; coalesced so it never outgrows its capacity.
     pub params: Mutex<Vec<(ParamID, ParamValue)>>,
     pub dirty: AtomicBool,
     pub latency_changed: AtomicBool,
+    waker: Mutex<Option<Waker>>,
 }
 
 impl Shared {
@@ -88,6 +92,18 @@ impl Shared {
             params: Mutex::new(Vec::with_capacity(MAX_PARAMS)),
             dirty: AtomicBool::new(false),
             latency_changed: AtomicBool::new(false),
+            waker: Mutex::new(None),
+        }
+    }
+
+    pub fn set_waker(&self, waker: Option<Waker>) {
+        *self.waker.lock().unwrap_or_else(|e| e.into_inner()) = waker;
+    }
+
+    fn wake(&self) {
+        let waker = self.waker.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(waker) = waker {
+            waker();
         }
     }
 }
@@ -115,6 +131,7 @@ impl IComponentHandlerTrait for ComponentHandler {
 
     unsafe fn endEdit(&self, _id: ParamID) -> tresult {
         self.0.dirty.store(true, Ordering::Release);
+        self.0.wake();
         kResultOk
     }
 
@@ -122,6 +139,7 @@ impl IComponentHandlerTrait for ComponentHandler {
         if flags & RestartFlags_::kLatencyChanged != 0 {
             self.0.latency_changed.store(true, Ordering::Release);
         }
+        self.0.wake();
         kResultOk
     }
 }
