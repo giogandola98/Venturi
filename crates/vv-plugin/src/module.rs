@@ -36,25 +36,55 @@ pub(crate) fn module(path: &Path) -> Result<Arc<Module>, String> {
     Ok(m)
 }
 
-fn binary_path(bundle: &Path) -> Result<PathBuf, String> {
-    let stem = bundle
+fn stem(bundle: &Path) -> Result<&std::ffi::OsStr, String> {
+    bundle
         .file_stem()
-        .ok_or_else(|| format!("bad bundle path {}", bundle.display()))?;
-    let mut bin = bundle.join("Contents");
-    if cfg!(target_os = "macos") {
-        bin.push("MacOS");
-        bin.push(stem);
-    } else {
-        bin.push(format!("{}-linux", std::env::consts::ARCH));
-        bin.push(format!("{}.so", stem.to_string_lossy()));
+        .ok_or_else(|| format!("bad bundle path {}", bundle.display()))
+}
+
+#[cfg(target_os = "macos")]
+type BundleRef = objc2_core_foundation::CFRetained<objc2_core_foundation::CFBundle>;
+
+#[cfg(target_os = "macos")]
+fn bundle_ref(bundle: &Path) -> Result<BundleRef, String> {
+    use objc2_core_foundation::{CFBundle, CFURL};
+    let url = CFURL::from_directory_path(bundle).ok_or("bad bundle url")?;
+    CFBundle::new(None, Some(&url)).ok_or_else(|| "CFBundleCreate failed".into())
+}
+
+// CFBundleExecutable names the binary; bundles without an Info.plist use the folder name.
+#[cfg(target_os = "macos")]
+fn binary_path(bundle: &Path, cf_bundle: &BundleRef) -> Result<PathBuf, String> {
+    let declared = cf_bundle
+        .executable_url()
+        .and_then(|url| url.to_file_path());
+    match declared {
+        Some(path) if path.is_file() => Ok(path),
+        _ => Ok(bundle.join("Contents/MacOS").join(stem(bundle)?)),
     }
-    Ok(bin)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn binary_path(bundle: &Path) -> Result<PathBuf, String> {
+    let stem = stem(bundle)?.to_string_lossy();
+    Ok(bundle
+        .join("Contents")
+        .join(format!("{}-linux", std::env::consts::ARCH))
+        .join(format!("{stem}.so")))
 }
 
 fn load(bundle: &Path) -> Result<Module, String> {
+    #[cfg(target_os = "macos")]
+    let cf_bundle = bundle_ref(bundle)?;
+    #[cfg(target_os = "macos")]
+    let bin = binary_path(bundle, &cf_bundle)?;
+    #[cfg(not(target_os = "macos"))]
     let bin = binary_path(bundle)?;
     let (library, handle) = open(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
-    enter(&library, handle, bundle)?;
+    #[cfg(target_os = "macos")]
+    enter(&library, handle, cf_bundle)?;
+    #[cfg(not(target_os = "macos"))]
+    enter(&library, handle)?;
     // SAFETY: GetPluginFactory is the VST3 module entry point with this signature.
     let raw = unsafe {
         library
@@ -89,14 +119,17 @@ fn open(bin: &Path) -> Result<(libloading::Library, *mut c_void), libloading::Er
 }
 
 #[cfg(target_os = "macos")]
-fn enter(library: &libloading::Library, _handle: *mut c_void, bundle: &Path) -> Result<(), String> {
-    use objc2_core_foundation::{CFBundle, CFURL};
-    let url = CFURL::from_directory_path(bundle).ok_or("bad bundle url")?;
-    let cf_bundle = CFBundle::new(None, Some(&url)).ok_or("CFBundleCreate failed")?;
+fn enter(
+    library: &libloading::Library,
+    _handle: *mut c_void,
+    cf_bundle: BundleRef,
+) -> Result<(), String> {
     // SAFETY: bundleEntry takes the bundle ref; the bundle stays alive with the module.
     let ok = unsafe {
-        let Ok(entry) =
-            library.get::<unsafe extern "C" fn(*const CFBundle) -> bool>(b"bundleEntry\0")
+        let Ok(entry) = library
+            .get::<unsafe extern "C" fn(*const objc2_core_foundation::CFBundle) -> bool>(
+                b"bundleEntry\0",
+            )
         else {
             return Ok(());
         };
@@ -107,7 +140,7 @@ fn enter(library: &libloading::Library, _handle: *mut c_void, bundle: &Path) -> 
 }
 
 #[cfg(not(target_os = "macos"))]
-fn enter(library: &libloading::Library, handle: *mut c_void, _bundle: &Path) -> Result<(), String> {
+fn enter(library: &libloading::Library, handle: *mut c_void) -> Result<(), String> {
     // SAFETY: ModuleEntry is the VST3 Linux entry point with this signature.
     let ok = unsafe {
         let Ok(entry) = library.get::<unsafe extern "C" fn(*mut c_void) -> bool>(b"ModuleEntry\0")
