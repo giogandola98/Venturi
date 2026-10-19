@@ -744,3 +744,121 @@ fn a_decode_thread_gone_without_an_end_fails_the_render() {
         Err(ExportError::Failed(_))
     ));
 }
+
+const FIXTURE_CLASS: &str = "56565445535447414E00000000000001";
+
+fn plugin_effect(class_id: &str, state: &[u8]) -> AudioEffect {
+    AudioEffect::new(AudioEffectKind::Vst3(vv_core::Vst3Effect {
+        id: vv_core::EffectId(7),
+        class_id: class_id.into(),
+        name: "Test".into(),
+        vendor: "Venturi".into(),
+        version: "1.0.0".into(),
+        component_state: vv_core::PluginState::new(state.to_vec()),
+        controller_state: Default::default(),
+    }))
+}
+
+fn chirp_project(secs: u32) -> (Project, Track) {
+    let mut project = Project::default();
+    let id = media(&mut project, chirp("plugin.wav", 48_000, secs), 48_000, 1);
+    let len = secs as u64 * FPS;
+    (project, audio_track(vec![clip(1, id, 0, len, 0)]))
+}
+
+fn rendered_samples(project: &Project, tl: &Timeline, frames: u64) -> Vec<f32> {
+    rendered(project, tl, 0..frames)
+}
+
+#[test]
+fn render_with_uninstalled_plugin_equals_without() {
+    let (project, plain) = chirp_project(2);
+    let mut with = plain.clone();
+    with.mix
+        .effects
+        .push(plugin_effect("00000000000000000000000000000000", &[1, 2]));
+    let frames = 2 * PROJECT_SAMPLE_RATE as u64;
+    let without = rendered_samples(&project, &timeline(vec![plain]), frames);
+    let with = rendered_samples(&project, &timeline(vec![with]), frames);
+    assert_eq!(with, without);
+}
+
+struct Passthrough;
+
+impl vv_audio::PluginProcessor for Passthrough {
+    fn process(&self, _: &mut [f32], _: usize) {}
+    fn reset(&self) {}
+    fn latency(&self) -> u32 {
+        0
+    }
+}
+
+impl vv_plugin::HostedPlugin for Passthrough {
+    fn set_state(&self, _: &vv_core::Vst3Effect) {}
+    fn state_hash(&self) -> u64 {
+        0
+    }
+    fn set_state_hash(&self, _: u64) {}
+}
+
+#[test]
+fn render_creates_plugins_once_per_render() {
+    let (project, mut track) = chirp_project(20);
+    track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    let made = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = made.clone();
+    let known = vec![vv_plugin::PluginInfo {
+        class_id: FIXTURE_CLASS.into(),
+        name: "Test".into(),
+        vendor: "Venturi".into(),
+        version: "1.0.0".into(),
+        path: PathBuf::from("/fake.vst3"),
+    }];
+    let plugins = vv_plugin::Instances::with_maker(
+        known,
+        Box::new(move |_, _| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Some(Arc::new(Passthrough))
+        }),
+    );
+    let frames = 2 * CHUNK_FRAMES + 1000;
+    render_with_plugins(
+        &project,
+        Mix::Timeline(&timeline(vec![track])),
+        0..frames,
+        &mut LevelCache::default(),
+        Some(plugins),
+        |_| ControlFlow::Continue(()),
+    )
+    .unwrap();
+    assert_eq!(made.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn export_applies_fixture_gain() {
+    let dir = vv_plugin::testing::fixture_bundle()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let infos = vv_plugin::scan(&[dir]);
+    assert!(infos.iter().any(|i| i.class_id == FIXTURE_CLASS));
+    vv_plugin::set_installed(infos);
+
+    let (project, plain) = chirp_project(2);
+    let mut hosted = plain.clone();
+    // 0.25 as f32 little-endian: the fixture's gain is twice its state.
+    hosted
+        .mix
+        .effects
+        .push(plugin_effect(FIXTURE_CLASS, &0.25f32.to_le_bytes()));
+    let mut reference = plain;
+    reference.mix.gain_db = -6.0206;
+    let frames = 2 * PROJECT_SAMPLE_RATE as u64;
+    let hosted = rendered_samples(&project, &timeline(vec![hosted]), frames);
+    let reference = rendered_samples(&project, &timeline(vec![reference]), frames);
+    assert_eq!(hosted.len(), reference.len());
+    assert!(hosted.iter().any(|s| s.abs() > 0.1));
+    for (i, (a, b)) in hosted.iter().zip(&reference).enumerate() {
+        assert!((a - b).abs() < 1e-5, "sample {i}: {a} vs {b}");
+    }
+}

@@ -17,9 +17,11 @@ use vv_audio::mixer::{
     remix_channels_into,
 };
 use vv_audio::{
-    LevelAnalysis, LevelReading, LevelSegment, SampleBlocks, StretchRequest, Stretcher,
+    LevelAnalysis, LevelReading, LevelSegment, PluginHandle, PluginRequest, SampleBlocks,
+    StretchRequest, Stretcher,
 };
 use vv_core::{Project, Timeline};
+use vv_plugin::Instances;
 
 use crate::export::{ExportError, PROJECT_CHANNELS};
 
@@ -322,10 +324,23 @@ fn render(
     mix: Mix,
     range: Range<u64>,
     levels: &mut LevelCache,
+    sink: impl FnMut(&[f32]) -> ControlFlow<()>,
+) -> Result<(), ExportError> {
+    render_with_plugins(project, mix, range, levels, None, sink)
+}
+
+/// `plugins` is for tests; otherwise the pool is made on the first request.
+fn render_with_plugins(
+    project: &Project,
+    mix: Mix,
+    range: Range<u64>,
+    levels: &mut LevelCache,
+    plugins: Option<Instances>,
     mut sink: impl FnMut(&[f32]) -> ControlFlow<()>,
 ) -> Result<(), ExportError> {
     let ch = PROJECT_CHANNELS as usize;
     let mut audio = StreamingAudio::new(levels);
+    audio.plugins = plugins;
     let mut state: Option<MixState> = None;
     let mut out = Vec::new();
     let mut at = range.start;
@@ -629,6 +644,9 @@ struct StreamingAudio<'c> {
     /// By `LevelAnalysis::key`: a normalization is asked again by every
     /// chunk.
     levels: HashMap<u64, f32>,
+    /// Made on the first plugin request, so projects without plugins never
+    /// scan.
+    plugins: Option<Instances>,
     cache: &'c mut LevelCache,
 }
 
@@ -639,6 +657,7 @@ impl<'c> StreamingAudio<'c> {
             windows: HashMap::new(),
             stretched: HashMap::new(),
             levels: HashMap::new(),
+            plugins: None,
             cache,
         }
     }
@@ -659,6 +678,9 @@ impl<'c> StreamingAudio<'c> {
         mix.collect(project, &mut wanted, range.clone());
         let windows = wanted.windows;
         self.load(windows, last)?;
+        if let Some(plugins) = &mut self.plugins {
+            plugins.begin_pass();
+        }
         let mut provider = Provider {
             audio: self,
             stretched_used: HashSet::new(),
@@ -672,6 +694,9 @@ impl<'c> StreamingAudio<'c> {
         } = provider;
         self.stretched.retain(|key, _| stretched_used.contains(key));
         self.levels.retain(|key, _| levels_used.contains(key));
+        if let Some(plugins) = &mut self.plugins {
+            plugins.sweep();
+        }
         Ok(snapshot)
     }
 
@@ -811,6 +836,13 @@ impl AudioSource for Provider<'_, '_> {
                 ClipAudio::Missing
             }
         }
+    }
+
+    fn plugin(&mut self, request: PluginRequest<'_>) -> Option<PluginHandle> {
+        self.audio
+            .plugins
+            .get_or_insert_with(|| Instances::offline(vv_plugin::installed().to_vec()))
+            .get(request)
     }
 
     fn level(&mut self, analysis: LevelAnalysis) -> LevelReading {
