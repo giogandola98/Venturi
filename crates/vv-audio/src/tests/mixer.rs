@@ -1808,14 +1808,16 @@ fn a_strips_plugin_key_does_not_depend_on_the_other_strips() {
 }
 
 #[test]
-fn plugin_insert_equality_ignores_the_handle() {
+fn plugin_insert_equality_sees_whether_it_processes() {
     let insert = |handle| PluginInsert {
         key: 1,
         content: 2,
         handle,
     };
     let with: PluginHandle = FakePlugin::new(1.0);
-    assert_eq!(insert(Some(with)), insert(None));
+    let other: PluginHandle = FakePlugin::new(2.0);
+    assert_eq!(insert(Some(with.clone())), insert(Some(other)));
+    assert_ne!(insert(Some(with)), insert(None));
     assert_ne!(
         insert(None),
         PluginInsert {
@@ -1823,6 +1825,100 @@ fn plugin_insert_equality_ignores_the_handle() {
             ..insert(None)
         }
     );
+}
+
+/// `PluginSource` that records the keys of the levels and stretches asked.
+#[derive(Default)]
+struct KeyedSource {
+    plugins: PluginSource,
+    available: bool,
+    levels: Vec<u64>,
+    stretches: Vec<u64>,
+}
+
+impl AudioSource for KeyedSource {
+    fn file(&mut self, path: &Path, stream: usize) -> ClipAudio {
+        buffers(path, stream).map_or(ClipAudio::Missing, ClipAudio::Ready)
+    }
+
+    fn plugin(&mut self, request: crate::effect::PluginRequest<'_>) -> Option<PluginHandle> {
+        self.plugins.plugin(request)
+    }
+
+    fn plugin_available(&mut self, _: &vv_core::Vst3Effect) -> bool {
+        self.available
+    }
+
+    fn stretched(&mut self, request: StretchRequest) -> ClipAudio {
+        self.stretches.push(request.key);
+        ClipAudio::Pending
+    }
+
+    fn level(&mut self, analysis: LevelAnalysis) -> LevelReading {
+        self.levels.push(analysis.key());
+        LevelReading::Ready(0.5)
+    }
+}
+
+fn level_keys(effects: Vec<vv_core::AudioEffect>, plugin: Option<Arc<FakePlugin>>) -> Vec<u64> {
+    let (project, tl) = plugin_timeline(effects);
+    let mut source = KeyedSource {
+        plugins: PluginSource {
+            plugin,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    source.levels
+}
+
+#[test]
+fn a_level_measured_without_the_plugin_is_not_the_level_with_it() {
+    let chain = || vec![vst3(1, b""), normalize(0.0)];
+    let dry = level_keys(chain(), None);
+    let wet = level_keys(chain(), Some(FakePlugin::new(4.0)));
+    assert_eq!((dry.len(), wet.len()), (1, 1));
+    assert_ne!(dry, wet);
+    assert_eq!(wet, level_keys(chain(), Some(FakePlugin::new(4.0))));
+}
+
+#[test]
+fn the_master_level_key_sees_whether_a_track_plugin_processes() {
+    let keys = |plugin| {
+        let (project, mut tl) = plugin_timeline(vec![vst3(1, b"")]);
+        tl.master.effects = vec![normalize(0.0)];
+        let mut source = KeyedSource {
+            plugins: PluginSource {
+                plugin,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+        source.levels
+    };
+    assert_ne!(keys(None), keys(Some(FakePlugin::new(4.0))));
+}
+
+#[test]
+fn a_stretch_of_a_compound_sees_whether_its_plugins_are_available() {
+    let (mut project, compound) = project_with_long_compound();
+    let nested = project.media_pool[compound].compound.unwrap();
+    project.timelines[nested].tracks[0].mix.effects = vec![vst3(1, b"")];
+    let mut clip = sped_up_clip(compound, Rational::new(2, 1), 2);
+    clip.pitch_correction = true;
+    let tl = timeline(vec![audio_track(vec![clip])]);
+    let keys = |available| {
+        let mut source = KeyedSource {
+            available,
+            ..Default::default()
+        };
+        MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+        source.stretches
+    };
+    assert_ne!(keys(false), keys(true));
+    assert_eq!(keys(true), keys(true));
 }
 
 #[test]

@@ -845,6 +845,13 @@ impl AudioSource for Provider<'_, '_> {
             .get(request)
     }
 
+    fn plugin_available(&mut self, effect: &vv_core::Vst3Effect) -> bool {
+        self.audio
+            .plugins
+            .get_or_insert_with(|| Instances::offline(vv_plugin::installed().to_vec()))
+            .knows(effect)
+    }
+
     fn level(&mut self, analysis: LevelAnalysis) -> LevelReading {
         let key = analysis.key();
         self.levels_used.insert(key);

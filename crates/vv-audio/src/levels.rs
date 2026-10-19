@@ -7,7 +7,9 @@
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
-use vv_core::{ClipId, ClipSource, MixerChannel, NormalizeMode, Project, Timeline};
+use vv_core::{
+    AudioEffectKind, ClipId, ClipSource, MixerChannel, NormalizeMode, Project, Timeline, Vst3Effect,
+};
 
 use crate::loudness::LevelMeter;
 use crate::mixer::{
@@ -147,8 +149,9 @@ pub(crate) fn input_clips(
     project: &Project,
     timeline: &Timeline,
     sample_rate: u32,
+    available: &mut dyn FnMut(&Vst3Effect) -> bool,
 ) -> Vec<InputClip> {
-    input_clips_at(project, timeline, sample_rate, 0)
+    input_clips_at(project, timeline, sample_rate, 0, available)
 }
 
 fn input_clips_at(
@@ -156,6 +159,7 @@ fn input_clips_at(
     timeline: &Timeline,
     sample_rate: u32,
     depth: u32,
+    available: &mut dyn FnMut(&Vst3Effect) -> bool,
 ) -> Vec<InputClip> {
     let fps = timeline.fps.as_f64().max(1e-9);
     let mut clips = Vec::new();
@@ -174,7 +178,7 @@ fn input_clips_at(
             let span = ClipSpan::new(clip, fps, sample_rate);
             let nested = item.compound.and_then(|id| project.timelines.get(id));
             let source = match nested {
-                Some(nested) => timeline_key(project, nested, sample_rate, depth + 1),
+                Some(nested) => timeline_key(project, nested, sample_rate, depth + 1, available),
                 None => stable_hash((item.content_hash, clip.audio_stream_index)),
             };
             let body = stable_hash((
@@ -203,18 +207,28 @@ pub(crate) fn timeline_key(
     timeline: &Timeline,
     sample_rate: u32,
     depth: u32,
+    available: &mut dyn FnMut(&Vst3Effect) -> bool,
 ) -> u64 {
     if depth >= vv_core::MAX_COMPOUND_DEPTH {
         return 0;
     }
     let mut h = StableHasher::default();
-    for clip in input_clips_at(project, timeline, sample_rate, depth) {
+    for clip in input_clips_at(project, timeline, sample_rate, depth, available) {
         (clip.track, clip.start, clip.body).hash(&mut h);
     }
-    for track in &timeline.tracks {
-        format!("{:?}", track.mix).hash(&mut h);
+    let strips = timeline
+        .tracks
+        .iter()
+        .map(|track| &track.mix)
+        .chain([&timeline.master]);
+    for strip in strips {
+        format!("{strip:?}").hash(&mut h);
+        for effect in &strip.effects {
+            if let AudioEffectKind::Vst3(plugin) = &effect.kind {
+                available(plugin).hash(&mut h);
+            }
+        }
     }
-    format!("{:?}", timeline.master).hash(&mut h);
     h.finish()
 }
 

@@ -121,6 +121,11 @@ impl Instances {
         Some(handle)
     }
 
+    /// Whether `effect` is a scanned plugin: what `get` needs to try it.
+    pub fn knows(&self, effect: &Vst3Effect) -> bool {
+        self.known.contains(&effect.class_id)
+    }
+
     pub fn begin_pass(&mut self) {
         for entry in self.entries.values_mut() {
             entry.used_this_pass = false;
