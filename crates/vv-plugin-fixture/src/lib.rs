@@ -14,6 +14,13 @@ const VENDOR: &str = "Venturi";
 const CID: TUID = [
     0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 1,
 ];
+// Split variant: a processor-only component and its separate controller object.
+const SPLIT_CID: TUID = [
+    0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 2,
+];
+const SPLIT_CONTROLLER_CID: TUID = [
+    0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 3,
+];
 const DEFAULT_NORMALIZED: f64 = 0.5;
 
 fn copy_cstring(src: &str, dst: &mut [c_char]) {
@@ -44,14 +51,17 @@ fn gain(normalized: f64) -> f32 {
 }
 
 struct Gain {
-    // Normalized value as f64 bits, shared by the processor and controller halves.
+    // Normalized value as f64 bits, shared by the processor and controller halves
+    // (in the split variant each object has its own copy).
     normalized: AtomicU64,
+    controller_cid: Option<TUID>,
 }
 
 impl Gain {
-    fn new() -> Self {
+    fn new(controller_cid: Option<TUID>) -> Self {
         Self {
             normalized: AtomicU64::new(DEFAULT_NORMALIZED.to_bits()),
+            controller_cid,
         }
     }
 
@@ -94,9 +104,15 @@ impl IPluginBaseTrait for Gain {
 }
 
 impl IComponentTrait for Gain {
-    unsafe fn getControllerClassId(&self, _class_id: *mut TUID) -> tresult {
+    unsafe fn getControllerClassId(&self, class_id: *mut TUID) -> tresult {
         // Single-component effect: the host queries IEditController on the component.
-        kNotImplemented
+        match self.controller_cid {
+            Some(cid) if !class_id.is_null() => {
+                unsafe { *class_id = cid };
+                kResultOk
+            }
+            _ => kNotImplemented,
+        }
     }
 
     unsafe fn setIoMode(&self, _mode: IoMode) -> tresult {
@@ -394,10 +410,13 @@ impl IPluginFactoryTrait for Factory {
         if cid.is_null() || iid.is_null() || obj.is_null() {
             return kInvalidArgument;
         }
-        if unsafe { *cid.cast::<TUID>() } != CID {
-            return kInvalidArgument;
-        }
-        let Some(instance) = ComWrapper::new(Gain::new()).to_com_ptr::<FUnknown>() else {
+        let gain = match unsafe { *cid.cast::<TUID>() } {
+            CID => Gain::new(None),
+            SPLIT_CID => Gain::new(Some(SPLIT_CONTROLLER_CID)),
+            SPLIT_CONTROLLER_CID => Gain::new(None),
+            _ => return kInvalidArgument,
+        };
+        let Some(instance) = ComWrapper::new(gain).to_com_ptr::<FUnknown>() else {
             return kInternalError;
         };
         let raw = instance.as_ptr();

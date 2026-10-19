@@ -316,7 +316,10 @@ impl Vst3Instance {
         );
     }
 
+    /// Queued edits reach the processor first (a VST3 parameter flush), so the
+    /// component state includes them even when no audio is running.
     pub fn get_state(&self) -> (PluginState, PluginState) {
+        self.flush_params();
         let save = |write: &dyn Fn(*mut IBStream)| {
             let stream = MemStream::new(Vec::new());
             if let Some(p) = stream.to_com_ptr::<IBStream>() {
@@ -334,6 +337,21 @@ impl Vst3Instance {
             }
         });
         (PluginState::new(component), PluginState::new(controller))
+    }
+
+    fn flush_params(&self) {
+        let _audio = self.lock_audio();
+        // SAFETY: `busy` gives this thread exclusive use of `rt`.
+        let rt = unsafe { &mut *self.rt.get() };
+        rt.changes.clear();
+        {
+            let mut params = self.shared.params.lock().unwrap_or_else(|e| e.into_inner());
+            for (id, value) in params.drain(..) {
+                rt.changes.push(id, value);
+            }
+        }
+        self.run_slice(rt, 0);
+        rt.changes.clear();
     }
 
     pub(crate) fn controller(&self) -> Option<&ComPtr<IEditController>> {
