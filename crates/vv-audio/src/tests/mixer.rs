@@ -1797,3 +1797,22 @@ fn a_chain_with_a_plugin_has_state() {
     assert!(has_state(&[Insert::Gain(1.0), plugin]));
     assert!(!has_state(&[Insert::Gain(1.0)]));
 }
+
+#[test]
+fn plugin_key_matches_the_mixers_keys() {
+    let (project, a, _) = project();
+    let mut track = audio_track(vec![clip_at(a, 0, 0, 5)]);
+    track.mix.effects = vec![vst3(7, b""), vst3(7, b"")];
+    let mut tl = timeline(vec![track]);
+    tl.master.effects = vec![vst3(9, b"")];
+    let mut source = PluginSource::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    let id = |n| vv_core::EffectId(n);
+    for key in [
+        crate::mixer::plugin_key(0, 0, id(7), 0),
+        crate::mixer::plugin_key(0, 0, id(7), 1),
+        crate::mixer::plugin_key(0, crate::mixer::MASTER_STRIP, id(9), 0),
+    ] {
+        assert!(source.keys.contains(&key));
+    }
+}

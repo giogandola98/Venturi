@@ -11,6 +11,9 @@ use vv_core::{
     SetLevel, SetMixerParam, SetTrackFlag, Timeline, TimelineId, TrackFlag, TrackKind,
 };
 
+use vv_core::{EffectId, PluginState, Vst3Effect};
+use vv_plugin::PluginInfo;
+
 use crate::properties_panel::{BoxedCommand, drag_field, slider_field};
 use crate::settings::Preset;
 
@@ -89,6 +92,8 @@ pub(crate) struct MixerPanelState {
     /// and the effect they belong to.
     band_activity: (BandActivity, Option<(TimelineId, MixerChannel, usize)>),
     effect_panel: crate::compressor_panel::EffectPanelState,
+    /// "Rescan" was clicked; the app takes it.
+    pub(crate) rescan_requested: bool,
 }
 
 /// The user's own presets of each effect.
@@ -138,6 +143,7 @@ pub(crate) fn show_mixer(
     timeline_id: Option<TimelineId>,
     meters: Option<&MixMeters>,
     presets: EffectPresets,
+    vst3: &Vst3View,
 ) -> Vec<BoxedCommand> {
     let mut commands: Vec<BoxedCommand> = Vec::new();
     egui::Window::new(t!("mixer.title"))
@@ -177,6 +183,7 @@ pub(crate) fn show_mixer(
                             flags,
                             level,
                             effect_slots,
+                            vst3,
                         );
                         edits.push((edit, channel));
                     }
@@ -190,6 +197,7 @@ pub(crate) fn show_mixer(
                         None,
                         level,
                         effect_slots,
+                        vst3,
                     );
                     edits.push((edit, MixerChannel::Master));
                 });
@@ -197,6 +205,7 @@ pub(crate) fn show_mixer(
             if falling {
                 ui.ctx().request_repaint();
             }
+            state.rescan_requested |= edits.iter().any(|(edit, _)| edit.rescan);
             for (edit, channel) in edits {
                 state.follow_edit(&edit, timeline_id, channel);
                 commands.extend(edit.into_commands(timeline_id, channel));
@@ -327,6 +336,51 @@ fn channel_strip(timeline: &Timeline, channel: MixerChannel) -> Option<&ChannelS
         MixerChannel::Track(index) => timeline.tracks.get(index).map(|t| &t.mix),
         MixerChannel::Master => Some(&timeline.master),
     }
+}
+
+/// What the chain needs of the VST3 host: the scan and the live instances.
+pub(crate) struct Vst3View<'a> {
+    pub(crate) installed: &'a [PluginInfo],
+    pub(crate) scanning: bool,
+    pub(crate) latency_ms: &'a dyn Fn(u64) -> Option<f32>,
+}
+
+/// Plugins by vendor, then by name.
+pub(crate) fn vst3_menu(list: &[PluginInfo]) -> Vec<(String, Vec<&PluginInfo>)> {
+    let mut sorted: Vec<&PluginInfo> = list.iter().collect();
+    sorted.sort_by(|a, b| (&a.vendor, &a.name).cmp(&(&b.vendor, &b.name)));
+    let mut groups: Vec<(String, Vec<&PluginInfo>)> = Vec::new();
+    for plugin in sorted {
+        match groups.last_mut() {
+            Some((vendor, plugins)) if *vendor == plugin.vendor => plugins.push(plugin),
+            _ => groups.push((plugin.vendor.clone(), vec![plugin])),
+        }
+    }
+    groups
+}
+
+pub(crate) fn add_plugin_effect(plugin: &PluginInfo) -> AudioEffectKind {
+    AudioEffectKind::Vst3(Vst3Effect {
+        id: EffectId::fresh(),
+        class_id: plugin.class_id.clone(),
+        name: plugin.name.clone(),
+        vendor: plugin.vendor.clone(),
+        version: plugin.version.clone(),
+        component_state: PluginState::default(),
+        controller_state: PluginState::default(),
+    })
+}
+
+/// How many placements of the same plugin come before `index`, as the mixer
+/// counts them to key the instance.
+fn plugin_occurrence(effects: &[AudioEffect], index: usize) -> u32 {
+    let AudioEffectKind::Vst3(this) = &effects[index].kind else {
+        return 0;
+    };
+    effects[..index]
+        .iter()
+        .filter(|e| matches!(&e.kind, AudioEffectKind::Vst3(v) if v.id == this.id))
+        .count() as u32
 }
 
 pub(crate) fn effect_name(kind: &AudioEffectKind) -> String {
@@ -466,6 +520,7 @@ struct StripEdit {
     move_effect: Option<(usize, usize)>,
     set_effect: Option<(usize, AudioEffect)>,
     open_settings: Option<usize>,
+    rescan: bool,
 }
 
 impl StripEdit {
@@ -528,6 +583,7 @@ fn strip(
     flags: Option<(bool, bool)>,
     level: [f32; 2],
     effect_slots: usize,
+    vst3: &Vst3View,
 ) -> StripEdit {
     let mut edit = StripEdit::default();
     let frame = egui::Frame::group(ui.style())
@@ -537,7 +593,7 @@ fn strip(
         ui.set_width(STRIP_WIDTH);
         ui.vertical_centered(|ui| {
             ui.push_id(channel, |ui| {
-                effects(ui, channel, &mix.effects, effect_slots, &mut edit);
+                effects(ui, channel, &mix.effects, effect_slots, vst3, &mut edit);
                 ui.add_space(6.0);
                 edit.pan = pan_knob(ui, mix.pan);
                 ui.small(format_pan(mix.pan));
@@ -599,6 +655,7 @@ fn effects(
     channel: MixerChannel,
     effects: &[AudioEffect],
     slots: usize,
+    vst3: &Vst3View,
     edit: &mut StripEdit,
 ) {
     let row = egui::vec2(STRIP_WIDTH, EFFECT_ROW_HEIGHT);
@@ -606,7 +663,19 @@ fn effects(
         ui.allocate_space(row);
     }
     for (index, effect) in effects.iter().enumerate() {
-        let name = effect_name(&effect.kind);
+        let mut name = effect_name(&effect.kind);
+        let mut hover = name.clone();
+        if let AudioEffectKind::Vst3(plugin) = &effect.kind {
+            if !vst3.installed.iter().any(|i| i.class_id == plugin.class_id) {
+                name.insert_str(0, "! ");
+                hover = t!("mixer.vst3_missing").into_owned();
+            } else if let Some(ms) = (vst3.latency_ms)(plugin_key_of(channel, effects, index))
+                && ms > 0.0
+            {
+                name.push_str(&format!(" {ms:.0} ms"));
+                hover = t!("mixer.vst3_latency", ms = format!("{ms:.1}")).into_owned();
+            }
+        }
         let (fill, text) = if effect.enabled {
             (crate::theme::ACCENT_FILL, egui::Color32::WHITE)
         } else {
@@ -619,8 +688,9 @@ fn effects(
             .fill(fill)
             .truncate()
             .sense(egui::Sense::click_and_drag());
-        let response = ui.add_sized(row, button).on_hover_text(&name);
-        if response.clicked() {
+        let response = ui.add_sized(row, button).on_hover_text(&hover);
+        // The plugin's own editor comes with its window.
+        if response.clicked() && !matches!(effect.kind, AudioEffectKind::Vst3(_)) {
             edit.open_settings = Some(index);
         }
         if response.drag_started() {
@@ -678,7 +748,40 @@ fn effects(
                 edit.add_effect = Some(kind);
             }
         }
+        ui.menu_button(t!("mixer.vst3"), |ui| {
+            if vst3.scanning {
+                ui.weak(t!("mixer.vst3_scanning"));
+            } else if vst3.installed.is_empty() {
+                ui.weak(t!("mixer.vst3_none"));
+            }
+            for (vendor, plugins) in vst3_menu(vst3.installed) {
+                let vendor = if vendor.is_empty() { "-" } else { &vendor };
+                ui.menu_button(vendor, |ui| {
+                    for plugin in plugins {
+                        if ui.button(&plugin.name).clicked() {
+                            edit.add_effect = Some(add_plugin_effect(plugin));
+                        }
+                    }
+                });
+            }
+            ui.separator();
+            let rescan = ui.add_enabled(!vst3.scanning, egui::Button::new(t!("mixer.vst3_rescan")));
+            if rescan.clicked() {
+                edit.rescan = true;
+            }
+        });
     });
+}
+
+fn plugin_key_of(channel: MixerChannel, effects: &[AudioEffect], index: usize) -> u64 {
+    let AudioEffectKind::Vst3(plugin) = &effects[index].kind else {
+        return 0;
+    };
+    let strip = match channel {
+        MixerChannel::Track(i) => i as u64,
+        MixerChannel::Master => vv_audio::MASTER_STRIP,
+    };
+    vv_audio::plugin_key(0, strip, plugin.id, plugin_occurrence(effects, index))
 }
 
 fn paint_drag_ghost(ui: &egui::Ui, name: &str, fill: egui::Color32, text: egui::Color32) {

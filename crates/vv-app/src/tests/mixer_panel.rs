@@ -68,3 +68,62 @@ fn the_other_effects_shift_around_a_moved_one() {
     let after: Vec<usize> = (0..4).map(|i| index_after_move(i, 3, 0)).collect();
     assert_eq!(after, [1, 2, 3, 0]);
 }
+
+fn info(class: &str, vendor: &str, name: &str) -> vv_plugin::PluginInfo {
+    vv_plugin::PluginInfo {
+        class_id: class.into(),
+        name: name.into(),
+        vendor: vendor.into(),
+        version: "1".into(),
+        path: "/p.vst3".into(),
+    }
+}
+
+#[test]
+fn vst3_menu_groups_by_vendor() {
+    let list = [
+        info("3", "Zed", "Alpha"),
+        info("2", "Acme", "Zeta"),
+        info("1", "Acme", "Beta"),
+    ];
+    let menu = vst3_menu(&list);
+    let names: Vec<(&str, Vec<&str>)> = menu
+        .iter()
+        .map(|(v, p)| (v.as_str(), p.iter().map(|i| i.name.as_str()).collect()))
+        .collect();
+    assert_eq!(
+        names,
+        [("Acme", vec!["Beta", "Zeta"]), ("Zed", vec!["Alpha"])]
+    );
+}
+
+#[test]
+fn add_plugin_effect_has_fresh_id() {
+    let plugin = info("ab", "Acme", "Comp");
+    let (a, b) = (add_plugin_effect(&plugin), add_plugin_effect(&plugin));
+    let (AudioEffectKind::Vst3(a), AudioEffectKind::Vst3(b)) = (a, b) else {
+        panic!("not a plugin");
+    };
+    assert_ne!(a.id, b.id);
+    assert_eq!((a.class_id.as_str(), a.name.as_str()), ("ab", "Comp"));
+    assert_eq!(a.component_state, vv_core::PluginState::default());
+}
+
+#[test]
+fn a_repeated_plugin_is_counted_per_placement() {
+    let effect = |id| {
+        AudioEffect::new(AudioEffectKind::Vst3(vv_core::Vst3Effect {
+            id: vv_core::EffectId(id),
+            class_id: String::new(),
+            name: String::new(),
+            vendor: String::new(),
+            version: String::new(),
+            component_state: Default::default(),
+            controller_state: Default::default(),
+        }))
+    };
+    let chain = [effect(1), effect(2), effect(1)];
+    assert_eq!(plugin_occurrence(&chain, 0), 0);
+    assert_eq!(plugin_occurrence(&chain, 1), 0);
+    assert_eq!(plugin_occurrence(&chain, 2), 1);
+}

@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use vv_audio::{
     AnalysisSlot, AudioSource, BLOCK_FRAMES, ClipAudio, LevelAnalysis, LevelReading, SampleBlocks,
 };
-use vv_audio::{LevelSegment, Measured, StretchInput, StretchRequest};
+use vv_audio::{LevelSegment, Measured, PluginHandle, PluginRequest, StretchInput, StretchRequest};
 use vv_core::{NormalizeMode, Project, Timeline};
 use vv_session::audio_render::{LevelCache, measure_level, stretch_offline};
 use vv_session::export::ExportError;
@@ -241,6 +241,9 @@ pub struct MixBufferCache {
     level_rx: mpsc::Receiver<LevelResult>,
     /// Stops the level worker's measures when the cache drops.
     closing: Arc<AtomicBool>,
+    /// Created on the first plugin asked for, so projects without plugins
+    /// never touch the host.
+    plugins: Option<vv_plugin::Instances>,
 }
 
 impl MixBufferCache {
@@ -366,6 +369,7 @@ impl MixBufferCache {
             level_worker,
             level_rx,
             closing,
+            plugins: None,
         }
     }
 
@@ -399,6 +403,9 @@ impl MixBufferCache {
     fn begin(&mut self, media_pass: bool) {
         self.in_pass = true;
         self.media_pass = media_pass;
+        if let (false, Some(plugins)) = (media_pass, &mut self.plugins) {
+            plugins.begin_pass();
+        }
         for stream in self.streams.values_mut() {
             stream.asked = false;
             stream.wanted.clear();
@@ -441,6 +448,11 @@ impl MixBufferCache {
         if self.media_pass {
             return;
         }
+        // The instances die here, on the UI thread: the mixer thread only
+        // ever holds clones of them.
+        if let Some(plugins) = &mut self.plugins {
+            plugins.sweep();
+        }
         let used = std::mem::take(&mut self.stretch_used);
         self.stretched.retain(|key, stretch| {
             let keep = used.contains(key);
@@ -456,6 +468,16 @@ impl MixBufferCache {
         let levels = &self.levels;
         self.queued_levels
             .retain(|analysis| levels.contains_key(&analysis.key));
+    }
+
+    /// Forgets the instances so the next pass rebuilds the pool from the
+    /// current installed list.
+    pub fn reset_plugins(&mut self) {
+        self.plugins = None;
+    }
+
+    pub fn plugin_latency(&self, key: u64) -> Option<u32> {
+        self.plugins.as_ref()?.instance(key).map(|p| p.latency())
     }
 
     /// Frames `frames` of `stream` of `path`, as far as decoded; for the
@@ -792,6 +814,12 @@ impl Drop for MixBufferCache {
 
 /// Every buffer is at the `sample_rate`/`channels` given to `spawn`.
 impl AudioSource for MixBufferCache {
+    fn plugin(&mut self, request: PluginRequest<'_>) -> Option<PluginHandle> {
+        self.plugins
+            .get_or_insert_with(|| vv_plugin::Instances::realtime(vv_plugin::installed().to_vec()))
+            .get(request)
+    }
+
     /// The mixer always asks for frames: a whole file is never held.
     fn file(&mut self, _path: &Path, _stream: usize) -> ClipAudio {
         ClipAudio::Missing

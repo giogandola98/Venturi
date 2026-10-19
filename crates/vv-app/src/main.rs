@@ -420,6 +420,8 @@ struct VenturiApp {
     preset_dialog: Option<presets::PresetDialog>,
     /// A clipboard read for a paste in flight, see `request_clipboard_image`.
     clipboard_image_rx: Option<mpsc::Receiver<Option<paste_image::ClipboardImage>>>,
+    /// A VST3 scan in flight, see `start_plugin_scan`.
+    plugin_scan_rx: Option<mpsc::Receiver<Vec<vv_plugin::PluginInfo>>>,
     paste_image_dialog: Option<paste_image::PasteImageDialog>,
     paste_image_needs_save: bool,
     paste_key_watch: paste_image::PasteKeyWatch,
@@ -568,6 +570,7 @@ impl Default for VenturiApp {
             library_ui: Default::default(),
             preset_dialog: None,
             clipboard_image_rx: None,
+            plugin_scan_rx: None,
             paste_image_dialog: None,
             paste_image_needs_save: false,
             paste_key_watch: Default::default(),
@@ -2435,6 +2438,41 @@ impl VenturiApp {
     /// User settings on disk, including the panel layout: called
     /// from the Settings window and periodically/on close (see
     /// `eframe::App::save`).
+    /// Scans off the UI thread: loading each bundle can take seconds.
+    fn start_plugin_scan(&mut self, ctx: &egui::Context) {
+        if self.plugin_scan_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(vv_plugin::scan(&vv_plugin::default_dirs()));
+            ctx.request_repaint();
+        });
+        self.plugin_scan_rx = Some(rx);
+    }
+
+    fn poll_plugin_scan(&mut self) {
+        let Some(rx) = &self.plugin_scan_rx else {
+            return;
+        };
+        let list = match rx.try_recv() {
+            Ok(list) => list,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.plugin_scan_rx = None;
+                return;
+            }
+        };
+        self.plugin_scan_rx = None;
+        vv_plugin::set_installed(list.clone());
+        self.settings.vst3_plugins = list;
+        if let Some(audio) = &mut self.timeline_audio {
+            audio.plugins_rescanned();
+        }
+        self.persist_settings();
+    }
+
     fn persist_settings(&mut self) {
         if let Some(path) = &self.settings_path
             && let Err(e) = self.settings.save(path)
@@ -3969,6 +4007,7 @@ impl VenturiApp {
         self.poll_pending_dialog(&ui.ctx().clone());
         self.poll_dropped_files(&ui.ctx().clone());
         self.poll_clipboard_image();
+        self.poll_plugin_scan();
         self.follow_hw_decode_fallback();
         // What the session applies would land inside the open group.
         if self.edit_drag_group.is_none() && !self.timeline_state.holds_undo_group() {
@@ -4395,7 +4434,19 @@ impl VenturiApp {
                     compressor: &mut self.settings.compressor_presets,
                     eq: &mut self.settings.eq_presets,
                 },
+                &mixer_panel::Vst3View {
+                    installed: &self.settings.vst3_plugins,
+                    scanning: self.plugin_scan_rx.is_some(),
+                    latency_ms: &|key| {
+                        self.timeline_audio
+                            .as_ref()
+                            .and_then(|audio| audio.plugin_latency_ms(key))
+                    },
+                },
             ));
+            if std::mem::take(&mut self.mixer_panel.rescan_requested) {
+                self.start_plugin_scan(ui.ctx());
+            }
             // Saved at once: a preset must not wait for the periodic save.
             if (&self.settings.compressor_presets, &self.settings.eq_presets)
                 != (&presets_before.0, &presets_before.1)
@@ -4837,6 +4888,11 @@ fn main() -> eframe::Result<()> {
             }
             app.settings = settings;
             app.settings.language.apply();
+            // Seeded even when empty so nothing scans on the UI thread.
+            vv_plugin::set_installed(app.settings.vst3_plugins.clone());
+            if app.settings.vst3_plugins.is_empty() {
+                app.start_plugin_scan(&cc.egui_ctx);
+            }
             vv_media::hw::set_budget_bytes(app.settings.hw_decode_budget_bytes());
             hw_decode::start(app.settings.hw_decode);
             app.mcp_forced = mcp_forced;

@@ -582,6 +582,19 @@ impl TimelineAudio {
             .map_or((0.0, 0.0), Mixer::peak_linear_stereo)
     }
 
+    /// Latency in ms of the plugin placed under `key`, if it is live.
+    pub fn plugin_latency_ms(&self, key: u64) -> Option<f32> {
+        let samples = self.buffers.plugin_latency(key)?;
+        Some(samples as f32 * 1000.0 / self.mix.sample_rate as f32)
+    }
+
+    /// After a rescan: the pool is rebuilt on the next pass.
+    pub fn plugins_rescanned(&mut self) {
+        self.buffers.reset_plugins();
+        self.synced = None;
+        self.synced_media = None;
+    }
+
     /// Per-track and master peaks of what is playing.
     pub fn meters(&self) -> &MixMeters {
         &self.mix.meters

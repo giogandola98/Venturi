@@ -19,8 +19,8 @@ pub use blocks::{BLOCK_FRAMES, SampleBlocks};
 pub use effect::{PluginHandle, PluginProcessor, PluginRequest};
 pub use levels::{LevelAnalysis, LevelSegment, Measured};
 pub use mixer::{
-    AnalysisSlot, AudioSource, BandMeter, ClipAudio, ClipInput, LevelReading, MixSnapshot, Mixer,
-    MixerState, StretchedWindow,
+    AnalysisSlot, AudioSource, BandMeter, ClipAudio, ClipInput, LevelReading, MASTER_STRIP,
+    MixSnapshot, Mixer, MixerState, StretchedWindow, plugin_key,
 };
 pub use stretch::{Stretcher, stretch_samples};
 pub use stretched::{StretchInput, StretchRequest};

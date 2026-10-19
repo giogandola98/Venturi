@@ -1263,7 +1263,13 @@ struct PluginKeys {
     met: HashMap<EffectId, u32>,
 }
 
-const MASTER_STRIP: u64 = u64::MAX;
+pub const MASTER_STRIP: u64 = u64::MAX;
+
+/// Key of a plugin placement: the panel computes the same one to find the
+/// live instance of an effect.
+pub fn plugin_key(scope: u64, strip: u64, id: EffectId, occurrence: u32) -> u64 {
+    stable_hash((scope, strip, id.0, occurrence))
+}
 
 impl PluginKeys {
     fn new(scope: u64, strip: u64) -> Self {
@@ -1279,7 +1285,7 @@ impl PluginKeys {
         let seen = self.met.entry(effect.id).or_insert(0);
         let occurrence = *seen;
         *seen += 1;
-        stable_hash((self.scope, self.strip, effect.id.0, occurrence))
+        plugin_key(self.scope, self.strip, effect.id, occurrence)
     }
 }
 
