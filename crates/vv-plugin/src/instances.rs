@@ -1,0 +1,136 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use vv_audio::{PluginHandle, PluginRequest};
+use vv_core::Vst3Effect;
+
+use crate::{PluginInfo, ProcessMode, Vst3Instance};
+
+pub type MakeInstance = Box<dyn FnMut(&Vst3Effect, u32) -> Option<Arc<dyn HostedPlugin>> + Send>;
+
+/// What the pool needs beyond processing (Vst3Instance implements it).
+pub trait HostedPlugin: vv_audio::PluginProcessor {
+    fn set_state(&self, effect: &Vst3Effect);
+    fn state_hash(&self) -> u64;
+    fn set_state_hash(&self, hash: u64);
+    fn as_vst3(&self) -> Option<&Vst3Instance> {
+        None
+    }
+}
+
+struct Entry {
+    instance: Arc<dyn HostedPlugin>,
+    used_this_pass: bool,
+}
+
+/// Instances are torn down on drop, which calls into the plugin: `sweep` and
+/// the drop run on the owner's thread (the UI thread for live, the render's
+/// worker for offline).
+pub struct Instances {
+    entries: HashMap<u64, Entry>,
+    known: HashMap<String, PluginInfo>,
+    make: MakeInstance,
+}
+
+impl Instances {
+    pub fn realtime(known: Vec<PluginInfo>) -> Self {
+        Self::new(known, ProcessMode::Realtime)
+    }
+
+    pub fn offline(known: Vec<PluginInfo>) -> Self {
+        Self::new(known, ProcessMode::Offline)
+    }
+
+    fn new(known: Vec<PluginInfo>, mode: ProcessMode) -> Self {
+        let paths: HashMap<String, PathBuf> = known
+            .iter()
+            .map(|i| (i.class_id.clone(), i.path.clone()))
+            .collect();
+        let make = Box::new(move |effect: &Vst3Effect, sample_rate| {
+            let path = paths.get(&effect.class_id)?;
+            match Vst3Instance::new(path, effect, sample_rate, mode) {
+                Ok(instance) => Some(instance as Arc<dyn HostedPlugin>),
+                Err(err) => {
+                    eprintln!("vv-plugin: {}: {err}", effect.name);
+                    None
+                }
+            }
+        });
+        Self::with_maker(known, make)
+    }
+
+    pub fn with_maker(known: Vec<PluginInfo>, make: MakeInstance) -> Self {
+        Self {
+            entries: HashMap::new(),
+            known: known.into_iter().map(|i| (i.class_id.clone(), i)).collect(),
+            make,
+        }
+    }
+
+    pub fn get(&mut self, request: PluginRequest<'_>) -> Option<PluginHandle> {
+        let hash = request.effect.content_hash();
+        if let Some(entry) = self.entries.get_mut(&request.key) {
+            if entry.used_this_pass {
+                return None;
+            }
+            entry.used_this_pass = true;
+            if entry.instance.state_hash() != hash {
+                entry.instance.set_state(request.effect);
+                entry.instance.set_state_hash(hash);
+            }
+            return Some(entry.instance.clone());
+        }
+        if !self.known.contains_key(&request.effect.class_id) {
+            return None;
+        }
+        let instance = (self.make)(request.effect, request.sample_rate)?;
+        instance.set_state_hash(hash);
+        let handle = instance.clone();
+        self.entries.insert(
+            request.key,
+            Entry {
+                instance,
+                used_this_pass: true,
+            },
+        );
+        Some(handle)
+    }
+
+    pub fn begin_pass(&mut self) {
+        for entry in self.entries.values_mut() {
+            entry.used_this_pass = false;
+        }
+    }
+
+    /// Drops what the last pass did not ask for.
+    pub fn sweep(&mut self) {
+        self.entries.retain(|_, e| e.used_this_pass);
+    }
+
+    pub fn instance(&self, key: u64) -> Option<Arc<dyn HostedPlugin>> {
+        self.entries.get(&key).map(|e| e.instance.clone())
+    }
+}
+
+impl HostedPlugin for Vst3Instance {
+    fn set_state(&self, effect: &Vst3Effect) {
+        Vst3Instance::set_state(self, effect)
+    }
+
+    fn state_hash(&self) -> u64 {
+        Vst3Instance::state_hash(self)
+    }
+
+    fn set_state_hash(&self, hash: u64) {
+        Vst3Instance::set_state_hash(self, hash)
+    }
+
+    fn as_vst3(&self) -> Option<&Vst3Instance> {
+        Some(self)
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/instances.rs"]
+mod tests;
