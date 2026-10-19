@@ -4742,13 +4742,18 @@ dependencies = [
 name = "vv-plugin"
 version = "0.8.1"
 dependencies = [
+ "libc",
  "libloading",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
  "serde",
  "serde_json",
  "vst3",
  "vv-audio",
  "vv-core",
+ "x11rb",
 ]
 
 [[package]]

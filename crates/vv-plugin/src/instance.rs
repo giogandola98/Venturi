@@ -336,6 +336,10 @@ impl Vst3Instance {
         (PluginState::new(component), PluginState::new(controller))
     }
 
+    pub(crate) fn controller(&self) -> Option<&ComPtr<IEditController>> {
+        self.controller.as_ref()
+    }
+
     /// An edit gesture ended since the last call.
     pub fn take_dirty(&self) -> bool {
         if self.shared.latency_changed.swap(false, Ordering::AcqRel) {
