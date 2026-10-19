@@ -1627,6 +1627,44 @@ fn plugin_insert_applies_in_chain_order() {
     assert!(plugin.processed.load(Ordering::Relaxed) > 0);
 }
 
+fn without_plugins(snap: &MixSnapshot, frames: usize) -> Vec<f32> {
+    let mut out = vec![9.0; frames];
+    mix_range_without_plugins(snap, 0, &mut out);
+    out
+}
+
+#[test]
+fn mixing_without_plugins_leaves_the_instance_alone() {
+    let (project, tl) = plugin_timeline(vec![vst3(1, b"")]);
+    let plugin = FakePlugin::new(0.5);
+    let mut source = PluginSource {
+        plugin: Some(plugin.clone()),
+        ..Default::default()
+    };
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    assert!(without_plugins(&snap, 40).iter().all(|&s| s == 0.5));
+    assert_eq!(plugin.processed.load(Ordering::Relaxed), 0);
+    assert_eq!(plugin.resets.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn mixing_without_plugins_skips_nested_plugins_too() {
+    let (mut project, compound) = project_with_compound();
+    let nested = project.media_pool[compound].compound.unwrap();
+    project.timelines[nested].tracks[0].mix.effects = vec![vst3(1, b"")];
+    let tl = timeline(vec![audio_track(vec![clip_at(compound, 0, 0, 5)])]);
+    let plugin = FakePlugin::new(0.5);
+    let mut source = PluginSource {
+        plugin: Some(plugin.clone()),
+        ..Default::default()
+    };
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    assert_eq!(source.keys.len(), 1);
+    without_plugins(&snap, 40);
+    assert_eq!(plugin.processed.load(Ordering::Relaxed), 0);
+    assert_eq!(plugin.resets.load(Ordering::Relaxed), 0);
+}
+
 #[test]
 fn missing_plugin_passes_through() {
     let (project, tl) = plugin_timeline(vec![vst3(1, b"")]);

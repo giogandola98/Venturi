@@ -20,7 +20,7 @@ pub use effect::{PluginHandle, PluginProcessor, PluginRequest};
 pub use levels::{LevelAnalysis, LevelSegment, Measured};
 pub use mixer::{
     AnalysisSlot, AudioSource, BandMeter, ClipAudio, ClipInput, LevelReading, MASTER_STRIP,
-    MixSnapshot, Mixer, MixerState, StretchedWindow, plugin_key,
+    MixSnapshot, Mixer, MixerState, StretchedWindow, mix_range_without_plugins, plugin_key,
 };
 pub use stretch::{Stretcher, stretch_samples};
 pub use stretched::{StretchInput, StretchRequest};

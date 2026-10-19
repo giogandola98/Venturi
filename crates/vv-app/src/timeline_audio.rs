@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use vv_audio::mixer::{
     Channel, ClipInput, MixClip, MixMeters, MixSnapshot, Mixer, MixerState, PROJECT_SAMPLE_RATE,
-    StretchedWindow, mix_range, sample_to_timeline_frame, timeline_frame_to_sample,
+    StretchedWindow, mix_range_without_plugins, sample_to_timeline_frame, timeline_frame_to_sample,
 };
 use vv_core::{FrameIdx, Keyframed, Project, TimelineId};
 
@@ -47,6 +47,9 @@ struct StretchRequest {
 
 struct StretchResult {
     id: u64,
+    /// Handed back so the last owner of the plugin instances drops it on
+    /// the thread that polls the results, not on the stretch thread.
+    _mix: Arc<MixSnapshot>,
     samples: Result<Vec<f32>, String>,
 }
 
@@ -259,7 +262,7 @@ impl TimelineAudio {
         let start = timeline_frame_to_sample(frame, fps, rate);
         let end = timeline_frame_to_sample(frame + len_frames, fps, rate);
         let mut out = vec![0.0; (end - start) as usize * self.channels() as usize];
-        mix_range(&self.mix, start, &mut out);
+        vv_audio::mixer::mix_range(&self.mix, start, &mut out);
         out
     }
 
@@ -438,7 +441,8 @@ impl TimelineAudio {
         std::thread::spawn(move || {
             let ch = mix.channels as usize;
             let mut samples = vec![0.0; frames as usize * ch];
-            mix_range(&mix, start, &mut samples);
+            // The callback is playing the plugin instances: this thread leaves them alone.
+            mix_range_without_plugins(&mix, start, &mut samples);
             let expected = (frames / tempo) as usize * ch;
             let samples =
                 vv_audio::stretch_samples(&samples, mix.sample_rate, mix.channels, tempo as f64)
@@ -448,6 +452,7 @@ impl TimelineAudio {
                     });
             let _ = tx.send(StretchResult {
                 id: request.id,
+                _mix: mix,
                 samples,
             });
         });
