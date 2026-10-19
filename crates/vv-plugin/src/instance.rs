@@ -11,7 +11,7 @@ use vst3::Steinberg::Vst::{
     IEditControllerTrait, IParameterChanges, ProcessContext, ProcessData, ProcessSetup, SpeakerArr,
     SpeakerArrangement,
 };
-use vst3::Steinberg::{FUnknown, IBStream, IPluginBaseTrait, TUID, kNotImplemented, kResultOk};
+use vst3::Steinberg::{FUnknown, IBStream, IPluginBaseTrait, TUID, kResultOk};
 use vst3::{ComPtr, ComWrapper};
 use vv_audio::PluginProcessor;
 use vv_core::{PluginState, Vst3Effect};
@@ -160,11 +160,8 @@ impl Vst3Instance {
         // SAFETY: setup is complete; these start the processing the mixer drives.
         unsafe {
             ok(this.component.setActive(1), "setActive")?;
-            // The SDK's AudioEffect default returns kNotImplemented; hosts accept it.
-            let res = this.processor.setProcessing(1);
-            if res != kNotImplemented {
-                ok(res, "setProcessing")?;
-            }
+            // Informational: the SDK default returns kNotImplemented.
+            this.processor.setProcessing(1);
             this.latency
                 .store(this.processor.getLatencySamples(), Ordering::Relaxed);
         }
