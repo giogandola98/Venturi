@@ -4533,6 +4533,7 @@ impl VenturiApp {
             &mut self.session.history,
             self.timeline_id,
             self.timeline_audio.as_mut(),
+            self.edit_drag_group.is_some() || self.timeline_state.holds_undo_group(),
         );
 
         let mut transport_action = transport::TransportResponse::default();

@@ -87,20 +87,27 @@ fn record_edit(
 }
 
 /// Records a gesture the instance still holds, and consumes it either way so
-/// it can never become an out-of-order step later.
+/// it can never become an out-of-order step later. While an undo group is
+/// open the gesture stays pending: recorded now it would fold into that step.
+/// Returns whether a gesture was consumed.
 fn record_gesture(
     project: &mut Project,
     history: &mut History,
     key: Key,
     instance: &dyn HostedPlugin,
-) {
+    group_open: bool,
+) -> bool {
+    if group_open {
+        return false;
+    }
     let Some((component, controller)) = instance.take_gesture() else {
-        return;
+        return false;
     };
     if let Some(hash) = record_edit(project, history, key, component, controller) {
         // The pool must not read the state back into the instance.
         instance.set_state_hash(hash);
     }
+    true
 }
 
 impl PluginEditors {
@@ -125,7 +132,7 @@ impl PluginEditors {
             };
             let instance = editor.instance().clone();
             drop(editor);
-            record_gesture(project, history, key, &*instance);
+            record_gesture(project, history, key, &*instance, false);
         }
     }
 
@@ -179,6 +186,7 @@ impl PluginEditors {
         history: &mut History,
         current: Option<TimelineId>,
         audio: Option<&mut TimelineAudio>,
+        group_open: bool,
     ) {
         if self.open.is_empty() && !self.holding {
             return;
@@ -206,12 +214,11 @@ impl PluginEditors {
             let Some(instance) = editor.instance().as_vst3() else {
                 continue;
             };
-            if instance.take_dirty() {
-                let (component, controller) = instance.get_state();
-                if let Some(hash) = record_edit(project, history, *key, component, controller) {
-                    instance.set_state_hash(hash);
-                }
-            } else if changed
+            // The sync below would overwrite a gesture still pending.
+            if group_open || record_gesture(project, history, *key, instance, false) {
+                continue;
+            }
+            if changed
                 && let Some(plugin) = find(project, *key).and_then(|(_, e)| plugin(e))
                 && plugin.content_hash() != instance.state_hash()
             {
@@ -221,7 +228,9 @@ impl PluginEditors {
             }
         }
         // Edits, closing and resizing wake the app; only a plugin's own timers need this.
-        self.checked = history.generation();
+        if !group_open {
+            self.checked = history.generation();
+        }
         if let Some(wake) = wake {
             ctx.request_repaint_after(wake);
         }
