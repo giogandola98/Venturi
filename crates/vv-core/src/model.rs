@@ -2,6 +2,8 @@
 //! `EffectStack`. The transforms are evaluated at runtime from
 //! the keyframes, never "baked" into the cached frames (see ARCHITECTURE.md).
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -2277,6 +2279,113 @@ impl AudioEffect {
             kind,
         }
     }
+
+    /// Pasted or duplicated plugins must not share their instance id.
+    pub fn with_fresh_ids(mut self) -> Self {
+        if let AudioEffectKind::Vst3(plugin) = &mut self.kind {
+            plugin.id = EffectId::fresh();
+        }
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EffectId(pub u64);
+
+impl EffectId {
+    pub fn fresh() -> Self {
+        use std::hash::{BuildHasher, Hasher};
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+            hasher.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
+            let id = hasher.finish();
+            if id != 0 {
+                return Self(id);
+            }
+        }
+    }
+}
+
+/// A VST3 plugin in an insert slot, with the state it was saved with.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct Vst3Effect {
+    pub id: EffectId,
+    /// 32 uppercase hex chars of the class TUID.
+    pub class_id: String,
+    pub name: String,
+    pub vendor: String,
+    pub version: String,
+    pub component_state: PluginState,
+    pub controller_state: PluginState,
+}
+
+impl Vst3Effect {
+    /// FNV-1a, the same hash as `StableHasher` in vv-audio.
+    pub fn content_hash(&self) -> u64 {
+        let mut hash = FNV_OFFSET_BASIS;
+        hash = fnv1a(hash, self.class_id.as_bytes());
+        hash = fnv1a(hash, self.version.as_bytes());
+        for state in [&self.component_state.0, &self.controller_state.0] {
+            hash = fnv1a(hash, &(state.len() as u64).to_le_bytes());
+            hash = fnv1a(hash, state);
+        }
+        hash
+    }
+}
+
+impl std::fmt::Debug for Vst3Effect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Vst3Effect")
+            .field("id", &self.id)
+            .field("class_id", &self.class_id)
+            .field("name", &self.name)
+            .field("component_state", &self.component_state)
+            .field("controller_state", &self.controller_state)
+            .finish()
+    }
+}
+
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+
+fn fnv1a(mut hash: u64, bytes: &[u8]) -> u64 {
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+/// Opaque plugin state. Stored as base64 and printed as its length and hash.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct PluginState(pub Vec<u8>);
+
+impl std::fmt::Debug for PluginState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "PluginState {{ len: {}, hash: {:016x} }}",
+            self.0.len(),
+            fnv1a(FNV_OFFSET_BASIS, &self.0)
+        )
+    }
+}
+
+impl Serialize for PluginState {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&BASE64.encode(&self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for PluginState {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        BASE64
+            .decode(text)
+            .map(Self)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 /// An audio effect of the mixer. The variety is open: new variants for new
@@ -2297,6 +2406,7 @@ pub enum AudioEffectKind {
     /// comes out of both.
     Mono,
     Equalizer(Equalizer),
+    Vst3(Vst3Effect),
 }
 
 impl AudioEffectKind {
@@ -3173,3 +3283,7 @@ mod keyframe_tests;
 #[cfg(test)]
 #[path = "tests/model_timeline.rs"]
 mod timeline_tests;
+
+#[cfg(test)]
+#[path = "tests/model_audio_effect.rs"]
+mod audio_effect_tests;

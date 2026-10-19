@@ -335,6 +335,7 @@ pub(crate) fn effect_name(kind: &AudioEffectKind) -> String {
         AudioEffectKind::MultibandCompressor(_) => t!("mixer.effect_multiband").into_owned(),
         AudioEffectKind::Mono => t!("mixer.effect_mono").into_owned(),
         AudioEffectKind::Equalizer(_) => t!("mixer.effect_eq").into_owned(),
+        AudioEffectKind::Vst3(v) => v.name.clone(),
     }
 }
 
@@ -431,6 +432,7 @@ fn effect_window(
                 AudioEffectKind::Equalizer(params) => {
                     crate::eq_panel::show(ui, params, &mut state.effect_panel, presets.eq)
                 }
+                AudioEffectKind::Vst3(_) => None,
             };
             if let Some(kind) = edited {
                 let edited = AudioEffect {

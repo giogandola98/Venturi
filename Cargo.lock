@@ -4689,6 +4689,7 @@ dependencies = [
 name = "vv-core"
 version = "0.8.1"
 dependencies = [
+ "base64 0.22.1",
  "ron",
  "serde",
  "serde_json",

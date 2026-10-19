@@ -1181,6 +1181,7 @@ fn resolve_chain(
             AudioEffectKind::MultibandCompressor(params) => Insert::Compressor(params.clone()),
             AudioEffectKind::Mono => Insert::Mono,
             AudioEffectKind::Equalizer(params) => Insert::Eq(params.clone()),
+            AudioEffectKind::Vst3(_) => Insert::Off,
         };
         inserts.push(insert);
     }
