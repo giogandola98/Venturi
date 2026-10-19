@@ -6,6 +6,9 @@ edition.workspace = true
 [lints]
 workspace = true
 
+[features]
+testing = []
+
 [dependencies]
 libloading = "0.8"
 serde = { version = "1", features = ["derive"] }

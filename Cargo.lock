@@ -4749,6 +4749,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vv-plugin-fixture"
+version = "0.8.1"
+dependencies = [
+ "vst3",
+]
+
+[[package]]
 name = "vv-render"
 version = "0.8.1"
 dependencies = [
