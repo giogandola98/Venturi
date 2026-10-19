@@ -26,31 +26,36 @@ pub fn default_dirs() -> Vec<PathBuf> {
 
 /// Effects only (category "Audio Module Class", subcategories without "Instrument").
 pub fn scan(dirs: &[PathBuf]) -> Vec<PluginInfo> {
-    let mut out = Vec::new();
+    let mut bundles = Vec::new();
     for dir in dirs {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            continue;
-        };
-        let mut bundles: Vec<PathBuf> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e == "vst3"))
-            .collect();
-        bundles.sort();
-        for bundle in bundles {
-            out.extend(scan_bundle(&bundle));
+        collect_bundles(dir, &mut bundles);
+    }
+    bundles.iter().flat_map(|b| scan_bundle(b)).collect()
+}
+
+// Vendor sub-folders are common; bundles are never descended into.
+fn collect_bundles(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        if path.extension().is_some_and(|e| e == "vst3") {
+            out.push(path);
+        } else if path.is_dir() {
+            collect_bundles(&path, out);
         }
     }
-    out
 }
 
 fn scan_bundle(bundle: &Path) -> Vec<PluginInfo> {
     let info_path = bundle.join("Contents/Resources/moduleinfo.json");
-    if let Ok(json) = std::fs::read_to_string(info_path) {
-        let infos = parse_module_info(&json, bundle);
-        if !infos.is_empty() {
-            return infos;
-        }
+    if let Some(infos) = std::fs::read_to_string(info_path)
+        .ok()
+        .and_then(|json| parse_module_info(&json, bundle))
+    {
+        return infos;
     }
     // A broken plugin must not hide the others.
     crate::module::module(bundle)
@@ -96,11 +101,10 @@ pub(crate) fn is_effect(category: &str, sub_categories: &[String]) -> bool {
     category == AUDIO_CLASS && !sub_categories.iter().any(|s| s.contains("Instrument"))
 }
 
-pub(crate) fn parse_module_info(json: &str, path: &Path) -> Vec<PluginInfo> {
-    let Ok(info) = serde_json::from_str::<ModuleInfo>(&strip_trailing_commas(json)) else {
-        return Vec::new();
-    };
-    info.classes
+pub(crate) fn parse_module_info(json: &str, path: &Path) -> Option<Vec<PluginInfo>> {
+    let info = serde_json::from_str::<ModuleInfo>(&strip_trailing_commas(json)).ok()?;
+    let infos = info
+        .classes
         .into_iter()
         .filter(|c| is_effect(&c.category, &c.sub_categories))
         .map(|c| PluginInfo {
@@ -110,7 +114,8 @@ pub(crate) fn parse_module_info(json: &str, path: &Path) -> Vec<PluginInfo> {
             version: c.version.unwrap_or_else(|| info.version.clone()),
             path: path.to_path_buf(),
         })
-        .collect()
+        .collect();
+    Some(infos)
 }
 
 fn strip_trailing_commas(json: &str) -> String {

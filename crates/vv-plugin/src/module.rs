@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::ffi::{CStr, c_char, c_void};
+use std::ffi::{c_char, c_void};
+use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -12,8 +13,8 @@ use vst3::Steinberg::{
 use crate::scan::{AUDIO_CLASS, PluginInfo, is_effect};
 
 pub(crate) struct Module {
-    // Never dropped: unloading plugin code is unsafe in practice.
-    _library: libloading::Library,
+    // Never unloaded: unloading plugin code is unsafe in practice.
+    _library: ManuallyDrop<libloading::Library>,
     factory: ComPtr<IPluginFactory>,
 }
 
@@ -56,18 +57,25 @@ fn load(bundle: &Path) -> Result<Module, String> {
     enter(&library, handle, bundle)?;
     // SAFETY: GetPluginFactory is the VST3 module entry point with this signature.
     let raw = unsafe {
-        let get = library
+        library
             .get::<unsafe extern "C" fn() -> *mut c_void>(b"GetPluginFactory\0")
-            .map_err(|e| e.to_string())?;
-        get()
+            .map(|get| get())
     };
     // SAFETY: a non-null result is an owned reference to the factory.
-    let factory = unsafe { ComPtr::from_raw(raw.cast::<IPluginFactory>()) }
-        .ok_or("GetPluginFactory returned null")?;
-    Ok(Module {
-        _library: library,
-        factory,
-    })
+    let factory = raw.map_err(|e| e.to_string()).and_then(|raw| {
+        unsafe { ComPtr::from_raw(raw.cast::<IPluginFactory>()) }
+            .ok_or("GetPluginFactory returned null".to_string())
+    });
+    match factory {
+        Ok(factory) => Ok(Module {
+            _library: ManuallyDrop::new(library),
+            factory,
+        }),
+        Err(e) => {
+            exit(&library);
+            Err(e)
+        }
+    }
 }
 
 // ModuleEntry wants the raw dlopen handle, so open through the unix layer.
@@ -111,10 +119,25 @@ fn enter(library: &libloading::Library, handle: *mut c_void, _bundle: &Path) -> 
     ok.then_some(()).ok_or_else(|| "ModuleEntry failed".into())
 }
 
-fn c_str(chars: &[c_char]) -> String {
-    // SAFETY: the SDK fixed-size strings are NUL-terminated within their array.
-    let bytes = unsafe { CStr::from_ptr(chars.as_ptr()) };
-    bytes.to_string_lossy().into_owned()
+// Plugins fill these arrays; a missing NUL must not read past the end.
+pub(crate) fn c_str(chars: &[c_char]) -> String {
+    let len = chars.iter().position(|&c| c == 0).unwrap_or(chars.len());
+    let bytes: Vec<u8> = chars[..len].iter().map(|&c| c as u8).collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn exit(library: &libloading::Library) {
+    let name: &[u8] = if cfg!(target_os = "macos") {
+        b"bundleExit\0"
+    } else {
+        b"ModuleExit\0"
+    };
+    // SAFETY: both exit points are `bool ()` functions in the VST3 spec.
+    unsafe {
+        if let Ok(f) = library.get::<unsafe extern "C" fn() -> bool>(name) {
+            f();
+        }
+    }
 }
 
 fn hex(cid: &[c_char; 16]) -> String {
@@ -179,3 +202,7 @@ impl Module {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/module.rs"]
+mod tests;
