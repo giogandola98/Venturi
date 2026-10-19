@@ -71,6 +71,8 @@ pub struct Vst3Instance {
     mode: ProcessMode,
     state_hash: AtomicU64,
     latency: AtomicU32,
+    // Read before any state is loaded: what an empty saved state means.
+    defaults: (Vec<u8>, Vec<u8>),
 }
 
 // SAFETY: `rt` is only used by whoever holds `busy`; the COM pointers are to
@@ -153,10 +155,15 @@ impl Vst3Instance {
             mode,
             state_hash: AtomicU64::new(0),
             latency: AtomicU32::new(0),
+            defaults: (Vec::new(), Vec::new()),
         };
         this.attach_controller(&module)?;
         this.setup(sample_rate)?;
-        this.load_state(effect);
+        this.defaults = this.read_state();
+        if !effect.component_state.bytes().is_empty() || !effect.controller_state.bytes().is_empty()
+        {
+            this.load_state(effect);
+        }
         // SAFETY: setup is complete; these start the processing the mixer drives.
         unsafe {
             ok(this.component.setActive(1), "setActive")?;
@@ -255,8 +262,17 @@ impl Vst3Instance {
     // A plugin that rejects a state keeps its defaults: not worth failing the insert.
     fn load_state(&self, effect: &Vst3Effect) {
         let stream = |bytes: &[u8]| MemStream::new(bytes.to_vec());
-        let component = &effect.component_state.bytes();
-        let controller = &effect.controller_state.bytes();
+        // An empty half is the plugin's defaults, not "leave as is".
+        let half = |saved: &PluginState, default: &[u8]| -> Vec<u8> {
+            let bytes = saved.bytes();
+            if bytes.is_empty() {
+                default.to_vec()
+            } else {
+                bytes.to_vec()
+            }
+        };
+        let component = &half(&effect.component_state, &self.defaults.0);
+        let controller = &half(&effect.controller_state, &self.defaults.1);
         // SAFETY: the streams outlive each call; the plugin copies what it needs.
         unsafe {
             if !component.is_empty() {
@@ -321,6 +337,11 @@ impl Vst3Instance {
     /// component state includes them even when no audio is running.
     pub fn get_state(&self) -> (PluginState, PluginState) {
         self.flush_params();
+        let (component, controller) = self.read_state();
+        (PluginState::new(component), PluginState::new(controller))
+    }
+
+    fn read_state(&self) -> (Vec<u8>, Vec<u8>) {
         let save = |write: &dyn Fn(*mut IBStream)| {
             let stream = MemStream::new(Vec::new());
             if let Some(p) = stream.to_com_ptr::<IBStream>() {
@@ -337,7 +358,7 @@ impl Vst3Instance {
                 c.getState(s);
             }
         });
-        (PluginState::new(component), PluginState::new(controller))
+        (component, controller)
     }
 
     fn flush_params(&self) {
