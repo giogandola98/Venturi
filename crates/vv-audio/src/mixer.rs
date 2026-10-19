@@ -356,19 +356,6 @@ impl MixSnapshot {
                 _ => groups.push((clip.track, i..i + 1)),
             }
         }
-        // A stateful chain keeps running on silence between clips (and across
-        // the chunks of an offline render), so its tail rings out.
-        for (track, channel) in tracks.iter().enumerate() {
-            let stateful = channel.inserts.iter().any(|insert| match insert {
-                Insert::Compressor(_) | Insert::Eq(_) => true,
-                Insert::Plugin(plugin) => plugin.handle.is_some(),
-                _ => false,
-            });
-            if stateful && !groups.iter().any(|(t, _)| *t == track) {
-                groups.push((track, 0..0));
-            }
-        }
-        groups.sort_by_key(|(track, _)| *track);
         let meters = MixMeters::new(&tracks, &master);
         Self {
             sample_rate,
@@ -379,6 +366,17 @@ impl MixSnapshot {
             master,
             meters,
         }
+    }
+
+    /// Runs the chains of `tracks` that have no clip here on silence, so
+    /// their tails ring through gaps and across offline chunks.
+    fn keep_running(&mut self, tracks: &[usize]) {
+        for &track in tracks {
+            if !self.groups.iter().any(|(t, _)| *t == track) {
+                self.groups.push((track, 0..0));
+            }
+        }
+        self.groups.sort_by_key(|(track, _)| *track);
     }
 
     /// Clips whose audio is `Pending` are silent.
@@ -1088,6 +1086,7 @@ fn collect_clips(
     let measured_channel = measuring.map(|m| m.channel);
     let format = (sample_rate, channels);
     let mut tracks: Vec<Channel> = Vec::with_capacity(timeline.tracks.len());
+    let mut running = Vec::new();
     for (index, track) in timeline.tracks.iter().enumerate() {
         let channel = MixerChannel::Track(index);
         if matches!(measured_channel, Some(MixerChannel::Track(t)) if t != index) {
@@ -1136,6 +1135,9 @@ fn collect_clips(
             analyze,
         );
         attach_plugins(&track.mix, &mut inserts, source, sample_rate);
+        if !track_inputs.is_empty() && has_state(&inserts) {
+            running.push(index);
+        }
         // Measured before the fader.
         let bus = match stop {
             Some(_) => Bus::UNITY,
@@ -1195,7 +1197,8 @@ fn collect_clips(
         };
         Channel { inserts, bus }
     };
-    let snapshot = MixSnapshot::new(sample_rate, channels, clips, tracks, master);
+    let mut snapshot = MixSnapshot::new(sample_rate, channels, clips, tracks, master);
+    snapshot.keep_running(&running);
     (snapshot, cyclic)
 }
 

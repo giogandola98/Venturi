@@ -866,17 +866,21 @@ fn export_applies_fixture_gain() {
 const ECHO_FRAMES: usize = 7 * PROJECT_SAMPLE_RATE as usize;
 
 /// One 0.5 tap `ECHO_FRAMES` after the input, so its tail outlives a chunk.
-struct Echo(std::sync::Mutex<(Vec<f32>, usize)>);
+struct Echo(
+    std::sync::Mutex<(Vec<f32>, usize)>,
+    Arc<std::sync::atomic::AtomicUsize>,
+);
 
 impl Echo {
-    fn new() -> Self {
+    fn new(calls: Arc<std::sync::atomic::AtomicUsize>) -> Self {
         let len = ECHO_FRAMES * PROJECT_CHANNELS as usize;
-        Self(std::sync::Mutex::new((vec![0.0; len], 0)))
+        Self(std::sync::Mutex::new((vec![0.0; len], 0)), calls)
     }
 }
 
 impl vv_audio::PluginProcessor for Echo {
     fn process(&self, samples: &mut [f32], _: usize) {
+        self.1.fetch_add(1, Ordering::SeqCst);
         let (line, at) = &mut *self.0.lock().unwrap();
         for s in samples {
             let delayed = line[*at];
@@ -921,8 +925,10 @@ fn a_tail_rings_through_a_gap_spanning_chunks_and_no_ghost_follows() {
         version: "1.0.0".into(),
         path: PathBuf::from("/fake.vst3"),
     }];
-    let plugins =
-        vv_plugin::Instances::with_maker(known, Box::new(|_, _| Some(Arc::new(Echo::new()))));
+    let plugins = vv_plugin::Instances::with_maker(
+        known,
+        Box::new(|_, _| Some(Arc::new(Echo::new(Default::default())))),
+    );
     let mut chunked = Vec::new();
     render_with_plugins(
         &project,
@@ -948,4 +954,62 @@ fn a_tail_rings_through_a_gap_spanning_chunks_and_no_ghost_follows() {
         echoes += (tap != 0.0) as usize;
     }
     assert!(echoes > 0);
+}
+
+fn echo_plugins(calls: Arc<std::sync::atomic::AtomicUsize>) -> vv_plugin::Instances {
+    let known = vec![vv_plugin::PluginInfo {
+        class_id: FIXTURE_CLASS.into(),
+        name: "Test".into(),
+        vendor: "Venturi".into(),
+        version: "1.0.0".into(),
+        path: PathBuf::from("/fake.vst3"),
+    }];
+    vv_plugin::Instances::with_maker(
+        known,
+        Box::new(move |_, _| Some(Arc::new(Echo::new(calls.clone())))),
+    )
+}
+
+#[test]
+fn a_muted_track_with_a_plugin_renders_silence() {
+    let mut project = Project::default();
+    let id = media(&mut project, chirp("muted.wav", 48_000, 2), 48_000, 1);
+    let mut track = audio_track(vec![clip(1, id, 0, 25, 0)]);
+    track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    track.muted = true;
+    let tl = timeline(vec![track]);
+    let mut out = Vec::new();
+    render_with_plugins(
+        &project,
+        Mix::Timeline(&tl),
+        samples(0..300),
+        &mut LevelCache::default(),
+        Some(echo_plugins(Default::default())),
+        |chunk| {
+            out.extend_from_slice(chunk);
+            ControlFlow::Continue(())
+        },
+    )
+    .unwrap();
+    assert!(!out.is_empty() && out.iter().all(|s| *s == 0.0));
+}
+
+#[test]
+fn a_clipless_track_with_a_plugin_is_not_processed() {
+    let mut project = Project::default();
+    let id = media(&mut project, chirp("clipless.wav", 48_000, 2), 48_000, 1);
+    let mut empty = audio_track(Vec::new());
+    empty.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    let tl = timeline(vec![audio_track(vec![clip(1, id, 0, 25, 0)]), empty]);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    render_with_plugins(
+        &project,
+        Mix::Timeline(&tl),
+        samples(0..300),
+        &mut LevelCache::default(),
+        Some(echo_plugins(calls.clone())),
+        |_| ControlFlow::Continue(()),
+    )
+    .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
