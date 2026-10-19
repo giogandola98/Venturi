@@ -178,9 +178,13 @@ fn interleave_maps_mono_and_surround() {
 }
 
 fn effect(state: Vec<u8>) -> Vst3Effect {
+    effect_of("56565445535447414E00000000000001", state)
+}
+
+fn effect_of(class_id: &str, state: Vec<u8>) -> Vst3Effect {
     Vst3Effect {
         id: EffectId(1),
-        class_id: "56565445535447414E00000000000001".into(),
+        class_id: class_id.into(),
         name: "Venturi Test Gain".into(),
         vendor: "Venturi".into(),
         version: "1.0.0".into(),
@@ -254,6 +258,38 @@ fn fixture_param_change_reaches_processor() {
     assert!(!instance.take_dirty());
     assert_scaled(&run(&instance, &input), &input, 0.5);
     assert_scaled(&run(&instance, &input), &input, 0.5);
+}
+
+fn split_fixture() -> Arc<Vst3Instance> {
+    let effect = effect_of("56565445535447414E00000000000002", Vec::new());
+    Vst3Instance::new(&fixture_bundle(), &effect, 48_000, ProcessMode::Realtime)
+        .expect("split fixture instance")
+}
+
+#[test]
+fn get_state_flushes_pending_edits_to_a_split_processor() {
+    let instance = split_fixture();
+    assert!(instance.separate_controller);
+    // SAFETY: the handler is a live COM object owned by the instance.
+    unsafe {
+        instance.handler.beginEdit(0);
+        instance.handler.performEdit(0, 0.25);
+        instance.handler.endEdit(0);
+    }
+    assert!(instance.take_dirty());
+    let (component, _) = instance.get_state();
+    assert_eq!(component.bytes(), 0.25f32.to_le_bytes());
+    let input = ramp(64, 2);
+    assert_scaled(&run(&instance, &input), &input, 0.5);
+}
+
+#[test]
+fn get_state_flush_does_not_replay_edits_on_the_next_process() {
+    let instance = split_fixture();
+    // SAFETY: the handler is a live COM object owned by the instance.
+    unsafe { instance.handler.performEdit(0, 0.25) };
+    instance.get_state();
+    assert!(instance.shared.params.lock().unwrap().is_empty());
 }
 
 #[test]
