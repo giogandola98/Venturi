@@ -1,0 +1,490 @@
+//! A hosted VST3 effect, driven with the mixer's interleaved blocks.
+use std::cell::UnsafeCell;
+use std::ffi::c_char;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, TryLockError};
+
+use vst3::Steinberg::Vst::{
+    AudioBusBuffers, AudioBusBuffers__type0, IAudioProcessor, IAudioProcessorTrait, IComponent,
+    IComponentHandler, IComponentTrait, IConnectionPoint, IConnectionPointTrait, IEditController,
+    IEditControllerTrait, IParameterChanges, ProcessContext, ProcessData, ProcessSetup, SpeakerArr,
+    SpeakerArrangement,
+};
+use vst3::Steinberg::{FUnknown, IBStream, IPluginBaseTrait, TUID, kResultOk};
+use vst3::{ComPtr, ComWrapper};
+use vv_audio::PluginProcessor;
+use vv_core::{PluginState, Vst3Effect};
+
+use crate::host::{ComponentHandler, HostApp, MemStream, ParamChanges, Shared};
+use crate::module::{Module, module};
+
+/// The mixer's block size; the plugin is set up for it and never gets more.
+const BLOCK_FRAMES: usize = 512;
+
+// The generated enum constants are u32 on some targets and i32 on others.
+#[allow(clippy::unnecessary_cast)]
+mod ids {
+    use vst3::Steinberg::Vst::{BusDirections_, MediaTypes_, ProcessModes_, SymbolicSampleSizes_};
+    pub const INPUT: i32 = BusDirections_::kInput as i32;
+    pub const OUTPUT: i32 = BusDirections_::kOutput as i32;
+    pub const AUDIO: i32 = MediaTypes_::kAudio as i32;
+    pub const REALTIME: i32 = ProcessModes_::kRealtime as i32;
+    pub const OFFLINE: i32 = ProcessModes_::kOffline as i32;
+    pub const SAMPLE32: i32 = SymbolicSampleSizes_::kSample32 as i32;
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ProcessMode {
+    Realtime,
+    Offline,
+}
+
+/// Everything the audio thread touches; guarded by `Vst3Instance::busy`.
+struct Rt {
+    inp: [Vec<f32>; 2],
+    out: [Vec<f32>; 2],
+    changes: ComWrapper<ParamChanges>,
+    changes_ptr: ComPtr<IParameterChanges>,
+    sink_ptr: ComPtr<IParameterChanges>,
+    context: ProcessContext,
+}
+
+pub struct Vst3Instance {
+    // Declared first: the plugin's code must outlive everything below.
+    _module: Arc<Module>,
+    component: ComPtr<IComponent>,
+    processor: ComPtr<IAudioProcessor>,
+    controller: Option<ComPtr<IEditController>>,
+    // Only a separate controller object is initialized and terminated by us.
+    controller_initialized: bool,
+    connections: Option<(ComPtr<IConnectionPoint>, ComPtr<IConnectionPoint>)>,
+    handler: ComPtr<IComponentHandler>,
+    host: ComPtr<FUnknown>,
+    shared: Arc<Shared>,
+    rt: UnsafeCell<Rt>,
+    busy: AtomicBool,
+    mode: ProcessMode,
+    state_hash: AtomicU64,
+    latency: AtomicU32,
+}
+
+// SAFETY: `rt` is only used by whoever holds `busy`; the COM pointers are to
+// objects VST3 requires to be callable from the threads we use them on.
+unsafe impl Send for Vst3Instance {}
+unsafe impl Sync for Vst3Instance {}
+
+fn parse_cid(hex: &str) -> Result<TUID, String> {
+    let bad = || format!("bad class id {hex:?}");
+    if hex.len() != 32 || !hex.is_ascii() {
+        return Err(bad());
+    }
+    let mut cid: TUID = [0; 16];
+    for (byte, pair) in cid.iter_mut().zip(hex.as_bytes().chunks(2)) {
+        let pair = std::str::from_utf8(pair).map_err(|_| bad())?;
+        *byte = u8::from_str_radix(pair, 16).map_err(|_| bad())? as c_char;
+    }
+    Ok(cid)
+}
+
+fn ok(res: i32, what: &str) -> Result<(), String> {
+    (res == kResultOk)
+        .then_some(())
+        .ok_or_else(|| format!("{what} failed ({res})"))
+}
+
+impl Vst3Instance {
+    /// On a non-realtime thread. Stereo in/out, blocks of at most 512 frames, f32.
+    /// Drop it on the UI thread too: teardown calls into the plugin.
+    pub fn new(
+        info_path: &Path,
+        effect: &Vst3Effect,
+        sample_rate: u32,
+        mode: ProcessMode,
+    ) -> Result<Arc<Self>, String> {
+        let module = module(info_path)?;
+        let cid = parse_cid(&effect.class_id)?;
+        let component = module
+            .create::<IComponent>(&cid)
+            .ok_or("the plugin could not create its component")?;
+        let processor = component
+            .cast::<IAudioProcessor>()
+            .ok_or("the plugin has no audio processor")?;
+
+        let shared = Arc::new(Shared::new());
+        let host = ComWrapper::new(HostApp)
+            .to_com_ptr::<FUnknown>()
+            .ok_or("host context")?;
+        let handler = ComWrapper::new(ComponentHandler(shared.clone()))
+            .to_com_ptr::<IComponentHandler>()
+            .ok_or("component handler")?;
+        let changes = ParamChanges::input();
+        let rt = Rt {
+            inp: [vec![0.0; BLOCK_FRAMES], vec![0.0; BLOCK_FRAMES]],
+            out: [vec![0.0; BLOCK_FRAMES], vec![0.0; BLOCK_FRAMES]],
+            changes_ptr: changes.to_com_ptr().ok_or("parameter changes")?,
+            sink_ptr: ParamChanges::output_sink()
+                .to_com_ptr()
+                .ok_or("parameter changes")?,
+            changes,
+            // SAFETY: a plain C struct; all zero means no transport state.
+            context: unsafe { std::mem::zeroed() },
+        };
+
+        // SAFETY: a live component and a host context that outlives it.
+        ok(unsafe { component.initialize(host.as_ptr()) }, "initialize")?;
+        // From here Drop undoes whatever was done, error or not.
+        let mut this = Self {
+            _module: module.clone(),
+            component,
+            processor,
+            controller: None,
+            controller_initialized: false,
+            connections: None,
+            handler,
+            host,
+            shared,
+            rt: UnsafeCell::new(rt),
+            busy: AtomicBool::new(false),
+            mode,
+            state_hash: AtomicU64::new(0),
+            latency: AtomicU32::new(0),
+        };
+        this.attach_controller(&module)?;
+        this.setup(sample_rate)?;
+        this.load_state(effect);
+        // SAFETY: setup is complete; these start the processing the mixer drives.
+        unsafe {
+            ok(this.component.setActive(1), "setActive")?;
+            ok(this.processor.setProcessing(1), "setProcessing")?;
+            this.latency
+                .store(this.processor.getLatencySamples(), Ordering::Relaxed);
+        }
+        Ok(Arc::new(this))
+    }
+
+    fn attach_controller(&mut self, module: &Module) -> Result<(), String> {
+        let mut class_id: TUID = [0; 16];
+        // SAFETY: out-parameter call on a live component.
+        let separate = unsafe { self.component.getControllerClassId(&mut class_id) } == kResultOk
+            && class_id.iter().any(|&b| b != 0);
+        if !separate {
+            self.controller = self.component.cast::<IEditController>();
+        } else {
+            let controller = module
+                .create::<IEditController>(&class_id)
+                .ok_or("the plugin could not create its controller")?;
+            // SAFETY: a live controller and host context.
+            ok(
+                unsafe { controller.initialize(self.host.as_ptr()) },
+                "controller initialize",
+            )?;
+            self.controller_initialized = true;
+            self.controller = Some(controller);
+            let pair = self.component.cast::<IConnectionPoint>().zip(
+                self.controller
+                    .as_ref()
+                    .and_then(|c| c.cast::<IConnectionPoint>()),
+            );
+            if let Some((a, b)) = pair {
+                // SAFETY: both ends are live; each is told about the other.
+                unsafe {
+                    a.connect(b.as_ptr());
+                    b.connect(a.as_ptr());
+                }
+                self.connections = Some((a, b));
+            }
+        }
+        if let Some(controller) = &self.controller {
+            // SAFETY: the handler outlives the controller's use of it (cleared in Drop).
+            unsafe { controller.setComponentHandler(self.handler.as_ptr()) };
+        }
+        Ok(())
+    }
+
+    fn setup(&self, sample_rate: u32) -> Result<(), String> {
+        let mut stereo = [SpeakerArr::kStereo];
+        let mut arranged = [0 as SpeakerArrangement; 2];
+        // SAFETY: calls on live interfaces with arrays of the lengths passed.
+        unsafe {
+            // A rejection is fine if the default arrangement is already stereo.
+            self.processor
+                .setBusArrangements(stereo.as_mut_ptr(), 1, stereo.as_mut_ptr(), 1);
+            let dirs = [ids::INPUT, ids::OUTPUT];
+            for (arr, dir) in arranged.iter_mut().zip(dirs) {
+                let res = self.processor.getBusArrangement(dir, 0, arr);
+                if res != kResultOk || *arr != SpeakerArr::kStereo {
+                    return Err("the plugin does not support a stereo bus".into());
+                }
+                // Not every plugin enables its buses by default.
+                self.component.activateBus(ids::AUDIO, dir, 0, 1);
+            }
+            ok(
+                self.processor.canProcessSampleSize(ids::SAMPLE32),
+                "32-bit processing",
+            )?;
+            let mut setup = ProcessSetup {
+                processMode: match self.mode {
+                    ProcessMode::Realtime => ids::REALTIME,
+                    ProcessMode::Offline => ids::OFFLINE,
+                },
+                symbolicSampleSize: ids::SAMPLE32,
+                maxSamplesPerBlock: BLOCK_FRAMES as i32,
+                sampleRate: f64::from(sample_rate),
+            };
+            ok(
+                self.processor.setupProcessing(&mut setup),
+                "setupProcessing",
+            )?;
+            (*self.rt.get()).context.sampleRate = f64::from(sample_rate);
+        }
+        Ok(())
+    }
+
+    // A plugin that rejects a state keeps its defaults: not worth failing the insert.
+    fn load_state(&self, effect: &Vst3Effect) {
+        let stream = |bytes: &[u8]| MemStream::new(bytes.to_vec());
+        let component = &effect.component_state.0;
+        let controller = &effect.controller_state.0;
+        // SAFETY: the streams outlive each call; the plugin copies what it needs.
+        unsafe {
+            if !component.is_empty() {
+                let s = stream(component);
+                if let Some(p) = s.to_com_ptr::<IBStream>() {
+                    self.component.setState(p.as_ptr());
+                }
+                let s = stream(component);
+                if let (Some(c), Some(p)) = (&self.controller, s.to_com_ptr::<IBStream>()) {
+                    c.setComponentState(p.as_ptr());
+                }
+            }
+            if !controller.is_empty() {
+                let s = stream(controller);
+                if let (Some(c), Some(p)) = (&self.controller, s.to_com_ptr::<IBStream>()) {
+                    c.setState(p.as_ptr());
+                }
+            }
+        }
+    }
+
+    fn lock_audio(&self) -> impl Drop + '_ {
+        while self
+            .busy
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            std::thread::yield_now();
+        }
+        struct Release<'a>(&'a AtomicBool);
+        impl Drop for Release<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Release);
+            }
+        }
+        Release(&self.busy)
+    }
+
+    /// Waits for the audio thread to leave `process`; UI thread only.
+    pub fn set_state(&self, effect: &Vst3Effect) {
+        let _audio = self.lock_audio();
+        self.load_state(effect);
+        // SAFETY: a live processor.
+        self.latency.store(
+            unsafe { self.processor.getLatencySamples() },
+            Ordering::Relaxed,
+        );
+    }
+
+    pub fn get_state(&self) -> (PluginState, PluginState) {
+        let save = |write: &dyn Fn(*mut IBStream)| {
+            let stream = MemStream::new(Vec::new());
+            if let Some(p) = stream.to_com_ptr::<IBStream>() {
+                write(p.as_ptr());
+            }
+            stream.take()
+        };
+        // SAFETY: the stream is live for the call.
+        let component = save(&|s| unsafe {
+            self.component.getState(s);
+        });
+        let controller = save(&|s| unsafe {
+            if let Some(c) = &self.controller {
+                c.getState(s);
+            }
+        });
+        (PluginState(component), PluginState(controller))
+    }
+
+    /// An edit gesture ended since the last call.
+    pub fn take_dirty(&self) -> bool {
+        if self.shared.latency_changed.swap(false, Ordering::AcqRel) {
+            // SAFETY: a live processor, from the UI thread as the spec requires.
+            self.latency.store(
+                unsafe { self.processor.getLatencySamples() },
+                Ordering::Relaxed,
+            );
+        }
+        self.shared.dirty.swap(false, Ordering::AcqRel)
+    }
+
+    pub fn state_hash(&self) -> u64 {
+        self.state_hash.load(Ordering::Relaxed)
+    }
+
+    pub fn set_state_hash(&self, hash: u64) {
+        self.state_hash.store(hash, Ordering::Relaxed);
+    }
+
+    fn run_slice(&self, rt: &mut Rt, frames: usize) {
+        let mut ins = [rt.inp[0].as_mut_ptr(), rt.inp[1].as_mut_ptr()];
+        let mut outs = [rt.out[0].as_mut_ptr(), rt.out[1].as_mut_ptr()];
+        let mut input = AudioBusBuffers {
+            numChannels: 2,
+            silenceFlags: 0,
+            __field0: AudioBusBuffers__type0 {
+                channelBuffers32: ins.as_mut_ptr(),
+            },
+        };
+        let mut output = AudioBusBuffers {
+            numChannels: 2,
+            silenceFlags: 0,
+            __field0: AudioBusBuffers__type0 {
+                channelBuffers32: outs.as_mut_ptr(),
+            },
+        };
+        let mut data = ProcessData {
+            processMode: match self.mode {
+                ProcessMode::Realtime => ids::REALTIME,
+                ProcessMode::Offline => ids::OFFLINE,
+            },
+            symbolicSampleSize: ids::SAMPLE32,
+            numSamples: frames as i32,
+            numInputs: 1,
+            numOutputs: 1,
+            inputs: &mut input,
+            outputs: &mut output,
+            inputParameterChanges: rt.changes_ptr.as_ptr(),
+            outputParameterChanges: rt.sink_ptr.as_ptr(),
+            inputEvents: std::ptr::null_mut(),
+            outputEvents: std::ptr::null_mut(),
+            processContext: &mut rt.context,
+        };
+        // SAFETY: buffers hold `frames` samples each; `data` lives for the call.
+        let res = unsafe { self.processor.process(&mut data) };
+        if res != kResultOk {
+            for c in 0..2 {
+                rt.out[c][..frames].copy_from_slice(&rt.inp[c][..frames]);
+            }
+        }
+    }
+}
+
+impl PluginProcessor for Vst3Instance {
+    fn process(&self, samples: &mut [f32], channels: usize) {
+        if channels == 0 {
+            return;
+        }
+        if self
+            .busy
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+        // SAFETY: `busy` gives this thread exclusive use of `rt`.
+        let rt = unsafe { &mut *self.rt.get() };
+        rt.changes.clear();
+        match self.shared.params.try_lock() {
+            Ok(mut params) => {
+                for (id, value) in params.drain(..) {
+                    rt.changes.push(id, value);
+                }
+            }
+            Err(TryLockError::Poisoned(e)) => e.into_inner().clear(),
+            Err(TryLockError::WouldBlock) => {}
+        }
+        let total = samples.len() / channels;
+        for start in (0..total).step_by(BLOCK_FRAMES) {
+            let frames = BLOCK_FRAMES.min(total - start);
+            let block = &mut samples[start * channels..(start + frames) * channels];
+            deinterleave(block, channels, &mut rt.inp, frames);
+            self.run_slice(rt, frames);
+            interleave(&rt.out, channels, block, frames);
+            // Changes go to the first slice only.
+            rt.changes.clear();
+        }
+        self.busy.store(false, Ordering::Release);
+    }
+
+    fn reset(&self) {
+        if self
+            .busy
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+        // SAFETY: restarting processing is allowed from the audio thread.
+        unsafe {
+            self.processor.setProcessing(0);
+            self.processor.setProcessing(1);
+        }
+        self.busy.store(false, Ordering::Release);
+    }
+
+    fn latency(&self) -> u32 {
+        self.latency.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for Vst3Instance {
+    fn drop(&mut self) {
+        // SAFETY: tears down in reverse of setup on live interfaces.
+        unsafe {
+            self.processor.setProcessing(0);
+            self.component.setActive(0);
+            if let Some(c) = &self.controller {
+                c.setComponentHandler(std::ptr::null_mut());
+            }
+            if let Some((a, b)) = &self.connections {
+                a.disconnect(b.as_ptr());
+                b.disconnect(a.as_ptr());
+            }
+            if let Some(c) = self
+                .controller
+                .as_ref()
+                .filter(|_| self.controller_initialized)
+            {
+                c.terminate();
+            }
+            self.component.terminate();
+        }
+    }
+}
+
+/// Mono feeds both plugin inputs; more than two channels: only the first two.
+pub(crate) fn deinterleave(
+    samples: &[f32],
+    channels: usize,
+    out: &mut [Vec<f32>; 2],
+    frames: usize,
+) {
+    let right = usize::from(channels > 1);
+    for (n, frame) in samples.chunks_exact(channels).take(frames).enumerate() {
+        out[0][n] = frame[0];
+        out[1][n] = frame[right];
+    }
+}
+
+pub(crate) fn interleave(inp: &[Vec<f32>; 2], channels: usize, samples: &mut [f32], frames: usize) {
+    for (n, frame) in samples.chunks_exact_mut(channels).take(frames).enumerate() {
+        frame[0] = inp[0][n];
+        if channels > 1 {
+            frame[1] = inp[1][n];
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/instance.rs"]
+mod tests;

@@ -4746,6 +4746,8 @@ dependencies = [
  "serde",
  "serde_json",
  "vst3",
+ "vv-audio",
+ "vv-core",
 ]
 
 [[package]]

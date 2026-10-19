@@ -4,11 +4,11 @@ use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use vst3::ComPtr;
 use vst3::Steinberg::{
     IPluginFactory, IPluginFactory2, IPluginFactory2Trait, IPluginFactoryTrait, PClassInfo,
-    PClassInfo2, PFactoryInfo, kResultOk,
+    PClassInfo2, PFactoryInfo, TUID, kResultOk,
 };
+use vst3::{ComPtr, Interface};
 
 use crate::scan::{AUDIO_CLASS, PluginInfo, is_effect};
 
@@ -145,6 +145,19 @@ fn hex(cid: &[c_char; 16]) -> String {
 }
 
 impl Module {
+    pub(crate) fn create<I: Interface>(&self, cid: &TUID) -> Option<ComPtr<I>> {
+        let mut obj = std::ptr::null_mut();
+        // SAFETY: a live factory, 16-byte ids (a Guid has the TUID layout).
+        let res = unsafe {
+            self.factory
+                .createInstance(cid.as_ptr(), I::IID.as_ptr().cast(), &mut obj)
+        };
+        // SAFETY: on success `obj` is an owned reference of the requested interface.
+        (res == kResultOk)
+            .then(|| unsafe { ComPtr::from_raw(obj.cast::<I>()) })
+            .flatten()
+    }
+
     pub(crate) fn effect_classes(&self, path: &Path) -> Vec<PluginInfo> {
         let factory = &self.factory;
         // SAFETY: plain out-parameter calls on a live factory with zeroed structs.
