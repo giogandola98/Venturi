@@ -1720,3 +1720,80 @@ fn reset_reaches_plugin() {
     mix_range_from(&snap, &mut state, 500, &mut out);
     assert_eq!(plugin.resets.load(Ordering::Relaxed), before + 1);
 }
+
+#[test]
+fn pitch_corrected_compounds_get_their_own_plugin_keys() {
+    let (mut project, compound) = project_with_long_compound();
+    let nested = project.media_pool[compound].compound.unwrap();
+    project.timelines[nested].tracks[0].mix.effects = vec![vst3(1, b"")];
+    let corrected = |start| {
+        let mut clip = sped_up_clip(compound, Rational::new(2, 1), 2);
+        clip.timeline_start = start;
+        clip.pitch_correction = true;
+        clip
+    };
+    let tl = timeline(vec![audio_track(vec![
+        corrected(0),
+        corrected(10),
+        clip_at(compound, 20, 0, 5),
+    ])]);
+    let mut source = PluginSource::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    let mut keys = source.keys.clone();
+    keys.sort_unstable();
+    keys.dedup();
+    assert_eq!(keys.len(), 3, "{:?}", source.keys);
+}
+
+#[test]
+fn a_strips_plugin_key_does_not_depend_on_the_other_strips() {
+    let (project, a, _) = project();
+    let strip = |effects| {
+        let mut track = audio_track(vec![clip_at(a, 0, 0, 5)]);
+        track.mix.effects = effects;
+        track
+    };
+    let tl = timeline(vec![strip(vec![vst3(1, b"")]), strip(vec![vst3(1, b"")])]);
+    let mut live = PluginSource::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut live);
+    assert_eq!(live.keys.len(), 2);
+    assert_ne!(live.keys[0], live.keys[1]);
+
+    let mut measuring = PluginSource::default();
+    let measured = Measured {
+        channel: MixerChannel::Track(1),
+        insert: 1,
+        clip: None,
+    };
+    MixSnapshot::measured(&project, &tl, measured, RATE, 1, &mut measuring, None);
+    assert_eq!(measuring.keys, [live.keys[1]]);
+}
+
+#[test]
+fn plugin_insert_equality_ignores_the_handle() {
+    let insert = |handle| PluginInsert {
+        key: 1,
+        content: 2,
+        handle,
+    };
+    let with: PluginHandle = FakePlugin::new(1.0);
+    assert_eq!(insert(Some(with)), insert(None));
+    assert_ne!(
+        insert(None),
+        PluginInsert {
+            key: 2,
+            ..insert(None)
+        }
+    );
+}
+
+#[test]
+fn a_chain_with_a_plugin_has_state() {
+    let plugin = Insert::Plugin(PluginInsert {
+        key: 1,
+        content: 2,
+        handle: None,
+    });
+    assert!(has_state(&[Insert::Gain(1.0), plugin]));
+    assert!(!has_state(&[Insert::Gain(1.0)]));
+}

@@ -38,7 +38,7 @@ struct OwnedStretch {
 
 enum OwnedInput {
     File(PathBuf, usize),
-    Nested(Timeline, u32),
+    Nested(Timeline, u32, u64),
 }
 
 impl OwnedStretch {
@@ -50,9 +50,10 @@ impl OwnedStretch {
                     path,
                     stream: *stream,
                 },
-                OwnedInput::Nested(timeline, depth) => StretchInput::Nested {
+                OwnedInput::Nested(timeline, depth, scope) => StretchInput::Nested {
                     timeline,
                     depth: *depth,
+                    scope: *scope,
                 },
             },
             frames: self.frames.clone(),
@@ -821,9 +822,11 @@ impl AudioSource for MixBufferCache {
             cancelled: cancelled.clone(),
             input: match request.input {
                 StretchInput::File { path, stream } => OwnedInput::File(path.to_path_buf(), stream),
-                StretchInput::Nested { timeline, depth } => {
-                    OwnedInput::Nested(timeline.clone(), depth)
-                }
+                StretchInput::Nested {
+                    timeline,
+                    depth,
+                    scope,
+                } => OwnedInput::Nested(timeline.clone(), depth, scope),
             },
             frames: request.frames,
             tempo: request.tempo,

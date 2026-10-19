@@ -423,6 +423,7 @@ impl MixSnapshot {
         project: &Project,
         timeline: &Timeline,
         depth: u32,
+        scope: u64,
         sample_rate: u32,
         channels: u16,
         source: &mut impl AudioSource,
@@ -437,7 +438,7 @@ impl MixSnapshot {
             Some(range),
             depth,
             0,
-            0,
+            scope,
             None,
         )
         .0
@@ -907,7 +908,6 @@ fn collect_clips(
     scope: u64,
     measuring: Option<Measured>,
 ) -> (MixSnapshot, bool) {
-    let mut plugin_keys = PluginKeys::new(scope);
     let fps = timeline.fps.as_f64().max(1e-9);
     let mut clips = Vec::new();
     let mut cyclic = false;
@@ -959,11 +959,13 @@ fn collect_clips(
                         continue;
                     }
                 }
+                let nested_scope = stable_hash((scope, clip.id));
                 let (input, content) = match nested {
                     Some(timeline) => (
                         StretchInput::Nested {
                             timeline,
                             depth: depth + 1,
+                            scope: nested_scope,
                         },
                         timeline_key(project, timeline, sample_rate, depth + 1),
                     ),
@@ -977,6 +979,7 @@ fn collect_clips(
                 };
                 let key = stable_hash((
                     content,
+                    nested_scope,
                     (frames.start, frames.end),
                     span.step.to_bits(),
                     (sample_rate, channels),
@@ -1100,6 +1103,7 @@ fn collect_clips(
                 segments,
             })
         };
+        let mut plugin_keys = PluginKeys::new(scope, index as u64);
         let mut inserts = resolve_chain(
             &track.mix,
             stop,
@@ -1152,6 +1156,7 @@ fn collect_clips(
                 segments,
             })
         };
+        let mut plugin_keys = PluginKeys::new(scope, MASTER_STRIP);
         let mut inserts = resolve_chain(
             &timeline.master,
             stop,
@@ -1250,16 +1255,21 @@ fn resolve_chain(
     inserts
 }
 
-/// Keys of the plugin placements of one `collect_clips` pass.
+/// Keys of the plugin placements of one strip. Counted per strip, so a pass
+/// that skips other strips (a measure) keys this one like the live pass.
 struct PluginKeys {
     scope: u64,
+    strip: u64,
     met: HashMap<EffectId, u32>,
 }
 
+const MASTER_STRIP: u64 = u64::MAX;
+
 impl PluginKeys {
-    fn new(scope: u64) -> Self {
+    fn new(scope: u64, strip: u64) -> Self {
         Self {
             scope,
+            strip,
             met: HashMap::new(),
         }
     }
@@ -1269,7 +1279,7 @@ impl PluginKeys {
         let seen = self.met.entry(effect.id).or_insert(0);
         let occurrence = *seen;
         *seen += 1;
-        stable_hash((self.scope, effect.id.0, occurrence))
+        stable_hash((self.scope, self.strip, effect.id.0, occurrence))
     }
 }
 
