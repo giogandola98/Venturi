@@ -25,6 +25,10 @@ const SPLIT_CONTROLLER_CID: TUID = [
 const NOT_IMPL_CID: TUID = [
     0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 4,
 ];
+// Same, returning kResultFalse.
+const FALSE_CID: TUID = [
+    0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 5,
+];
 const DEFAULT_NORMALIZED: f64 = 0.5;
 
 fn copy_cstring(src: &str, dst: &mut [c_char]) {
@@ -420,6 +424,10 @@ impl IPluginFactoryTrait for Factory {
             CID => Gain::new(None),
             NOT_IMPL_CID => Gain {
                 set_processing_result: kNotImplemented,
+                ..Gain::new(None)
+            },
+            FALSE_CID => Gain {
+                set_processing_result: kResultFalse,
                 ..Gain::new(None)
             },
             SPLIT_CID => Gain::new(Some(SPLIT_CONTROLLER_CID)),
