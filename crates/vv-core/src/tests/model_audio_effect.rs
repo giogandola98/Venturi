@@ -75,5 +75,7 @@ fn with_fresh_ids_changes_only_vst3() {
     };
     assert_ne!(before.id, after.id);
     assert_eq!(before.class_id, after.class_id);
+    assert_eq!(before.vendor, after.vendor);
+    assert_eq!(before.version, after.version);
     assert_eq!(before.component_state, after.component_state);
 }

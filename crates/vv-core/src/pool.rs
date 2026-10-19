@@ -173,6 +173,7 @@ pub fn duplicate_timeline(
     let mut timeline = project.timelines.get(item.compound?)?.clone();
     timeline.name = name;
     project.reallocate_clip_ids(&mut timeline);
+    timeline.refresh_effect_ids();
     let mut add = AddEntities::new(CommandLabel::DuplicateTimeline);
     let (_, media_id) = add.timeline(project, timeline, folder);
     Some((media_id, add))

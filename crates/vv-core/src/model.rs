@@ -2824,6 +2824,20 @@ pub struct Timeline {
 }
 
 impl Timeline {
+    /// A copy of a timeline must not share plugin instance ids with its source.
+    pub(crate) fn refresh_effect_ids(&mut self) {
+        let strips = self
+            .tracks
+            .iter_mut()
+            .map(|track| &mut track.mix)
+            .chain(std::iter::once(&mut self.master));
+        for strip in strips {
+            for effect in &mut strip.effects {
+                *effect = effect.clone().with_fresh_ids();
+            }
+        }
+    }
+
     pub fn marker(&self, id: MarkerId) -> Option<&Marker> {
         self.markers.iter().find(|m| m.id == id)
     }

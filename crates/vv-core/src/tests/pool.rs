@@ -1,7 +1,8 @@
 use super::*;
 use crate::{
-    Clip, ClipId, CrossTransition, Ease, FrameIdx, History, InsertClip, MediaMeta, PushDirection,
-    Rational, Track, TrackKind, Transition, TransitionKind,
+    AudioEffect, AudioEffectKind, Clip, ClipId, CrossTransition, Ease, EffectId, FrameIdx, History,
+    InsertClip, MediaMeta, PluginState, PushDirection, Rational, Track, TrackKind, Transition,
+    TransitionKind, Vst3Effect,
 };
 
 fn clip_at(timeline_start: FrameIdx, len: FrameIdx, id: u64) -> Clip {
@@ -103,6 +104,45 @@ fn duplicate_timeline_copies_clips_with_fresh_ids() {
     assert_ne!(dup.clips[0].linked_group, src.clips[0].linked_group);
     assert_eq!(dup.crossings[0].left_clip, dup.clips[0].id);
     assert_eq!(dup.crossings[0].right_clip, dup.clips[1].id);
+}
+
+#[test]
+fn duplicate_timeline_gives_plugin_effects_fresh_ids() {
+    let (mut project, source) = project_with_timeline_item();
+    let timeline = project.media_pool[source].compound.unwrap();
+    let plugin = |id: EffectId| {
+        AudioEffect::new(AudioEffectKind::Vst3(Vst3Effect {
+            id,
+            class_id: "0123456789ABCDEF0123456789ABCDEF".into(),
+            name: "Plugin".into(),
+            vendor: "Vendor".into(),
+            version: "1.0".into(),
+            component_state: PluginState(vec![1, 2, 3]),
+            controller_state: PluginState(vec![4]),
+        }))
+    };
+    let track_effect = plugin(EffectId::fresh());
+    let master_effect = plugin(EffectId::fresh());
+    let tl = &mut project.timelines[timeline];
+    tl.tracks[0].mix.effects.push(track_effect.clone());
+    tl.master.effects.push(master_effect.clone());
+
+    let (copy, add) = duplicate_timeline(&mut project, source, "copy".into()).expect("a timeline");
+    History::default().do_command(&mut project, Box::new(add));
+    let copy_tl = &project.timelines[project.media_pool[copy].compound.unwrap()];
+
+    let ids = |effect: &AudioEffect| match &effect.kind {
+        AudioEffectKind::Vst3(v) => (v.id, v.class_id.clone(), v.component_state.clone()),
+        _ => unreachable!(),
+    };
+    let (src_track, dup_track) = (ids(&track_effect), ids(&copy_tl.tracks[0].mix.effects[0]));
+    let (src_master, dup_master) = (ids(&master_effect), ids(&copy_tl.master.effects[0]));
+    assert_ne!(src_track.0, dup_track.0);
+    assert_ne!(src_master.0, dup_master.0);
+    assert_eq!(src_track.1, dup_track.1);
+    assert_eq!(src_track.2, dup_track.2);
+    assert_eq!(src_master.1, dup_master.1);
+    assert_eq!(src_master.2, dup_master.2);
 }
 
 #[test]
