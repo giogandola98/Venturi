@@ -476,6 +476,29 @@ impl MixBufferCache {
         self.plugins = None;
     }
 
+    /// The instance playing under `live`, else one made for `aside` that no
+    /// mix uses: the pool's sweep drops its own copy at the next pass.
+    pub fn plugin_instance(
+        &mut self,
+        live: Option<u64>,
+        aside: u64,
+        effect: &vv_core::Vst3Effect,
+        sample_rate: u32,
+    ) -> Option<Arc<dyn vv_plugin::HostedPlugin>> {
+        let plugins = self
+            .plugins
+            .get_or_insert_with(|| vv_plugin::Instances::realtime(vv_plugin::installed().to_vec()));
+        if let Some(instance) = live.and_then(|key| plugins.instance(key)) {
+            return Some(instance);
+        }
+        plugins.get(PluginRequest {
+            key: aside,
+            effect,
+            sample_rate,
+        });
+        plugins.instance(aside)
+    }
+
     pub fn plugin_latency(&self, key: u64) -> Option<u32> {
         self.plugins.as_ref()?.instance(key).map(|p| p.latency())
     }

@@ -94,6 +94,8 @@ pub(crate) struct MixerPanelState {
     effect_panel: crate::compressor_panel::EffectPanelState,
     /// "Rescan" was clicked; the app takes it.
     pub(crate) rescan_requested: bool,
+    /// A plugin row was clicked; the app takes it and opens its editor.
+    pub(crate) editor_requested: Option<(TimelineId, MixerChannel, usize)>,
 }
 
 /// The user's own presets of each effect.
@@ -108,6 +110,9 @@ impl MixerPanelState {
     fn follow_edit(&mut self, edit: &StripEdit, timeline: TimelineId, channel: MixerChannel) {
         if let Some(index) = edit.open_settings {
             self.open_effect = Some((timeline, channel, index));
+        }
+        if let Some(index) = edit.open_editor {
+            self.editor_requested = Some((timeline, channel, index));
         }
         let Some((tl, open_channel, open_index)) = &mut self.open_effect else {
             return;
@@ -331,7 +336,7 @@ fn channel_label(timeline: &Timeline, channel: MixerChannel) -> String {
     }
 }
 
-fn channel_strip(timeline: &Timeline, channel: MixerChannel) -> Option<&ChannelStrip> {
+pub(crate) fn channel_strip(timeline: &Timeline, channel: MixerChannel) -> Option<&ChannelStrip> {
     match channel {
         MixerChannel::Track(index) => timeline.tracks.get(index).map(|t| &t.mix),
         MixerChannel::Master => Some(&timeline.master),
@@ -520,6 +525,7 @@ struct StripEdit {
     move_effect: Option<(usize, usize)>,
     set_effect: Option<(usize, AudioEffect)>,
     open_settings: Option<usize>,
+    open_editor: Option<usize>,
     rescan: bool,
 }
 
@@ -689,9 +695,12 @@ fn effects(
             .truncate()
             .sense(egui::Sense::click_and_drag());
         let response = ui.add_sized(row, button).on_hover_text(&hover);
-        // The plugin's own editor comes with its window.
-        if response.clicked() && !matches!(effect.kind, AudioEffectKind::Vst3(_)) {
-            edit.open_settings = Some(index);
+        if response.clicked() {
+            if matches!(effect.kind, AudioEffectKind::Vst3(_)) {
+                edit.open_editor = Some(index);
+            } else {
+                edit.open_settings = Some(index);
+            }
         }
         if response.drag_started() {
             response.dnd_set_drag_payload(EffectDrag { channel, index });
@@ -773,7 +782,7 @@ fn effects(
     });
 }
 
-fn plugin_key_of(channel: MixerChannel, effects: &[AudioEffect], index: usize) -> u64 {
+pub(crate) fn plugin_key_of(channel: MixerChannel, effects: &[AudioEffect], index: usize) -> u64 {
     let AudioEffectKind::Vst3(plugin) = &effects[index].kind else {
         return 0;
     };

@@ -588,6 +588,17 @@ impl TimelineAudio {
         Some(samples as f32 * 1000.0 / self.mix.sample_rate as f32)
     }
 
+    /// For an editor window; see `MixBufferCache::plugin_instance`.
+    pub fn plugin_instance(
+        &mut self,
+        live: Option<u64>,
+        aside: u64,
+        effect: &vv_core::Vst3Effect,
+    ) -> Option<std::sync::Arc<dyn vv_plugin::HostedPlugin>> {
+        let rate = self.mix.sample_rate;
+        self.buffers.plugin_instance(live, aside, effect, rate)
+    }
+
     /// After a rescan: the pool is rebuilt on the next pass.
     pub fn plugins_rescanned(&mut self) {
         self.buffers.reset_plugins();

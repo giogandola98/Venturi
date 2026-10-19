@@ -29,6 +29,7 @@ mod mixer_panel;
 mod new_timeline_dialog;
 mod paste_attributes;
 mod paste_image;
+mod plugin_editors;
 mod pool_view;
 mod presets;
 mod project_io;
@@ -277,6 +278,7 @@ struct VenturiApp {
     media_pool_state: media_pool::MediaPoolState,
     keyframe_editor: keyframe_editor::KeyframeEditorState,
     mixer_panel: mixer_panel::MixerPanelState,
+    plugin_editors: plugin_editors::PluginEditors,
     take: Option<voiceover::ActiveTake>,
     /// Media or elements not imported, shown in a separate window
     /// until the user closes it.
@@ -510,6 +512,7 @@ impl Default for VenturiApp {
             media_pool_state: media_pool::MediaPoolState::default(),
             keyframe_editor: keyframe_editor::KeyframeEditorState::default(),
             mixer_panel: mixer_panel::MixerPanelState::default(),
+            plugin_editors: Default::default(),
             take: None,
             import_warnings: Vec::new(),
             preview_meta: None,
@@ -2469,6 +2472,7 @@ impl VenturiApp {
         self.settings.vst3_plugins = list;
         if let Some(audio) = &mut self.timeline_audio {
             audio.plugins_rescanned();
+            self.plugin_editors.close_all();
         }
         self.persist_settings();
     }
@@ -4514,6 +4518,20 @@ impl VenturiApp {
         // its changes go into a single undo step, like a drag.
         let holding = ui.input(|i| i.pointer.any_down()) || preview_combo_open(ui.ctx());
         self.apply_effect_changes(pending_effects, holding);
+        if let Some(request) = self.mixer_panel.editor_requested.take() {
+            let current = self.timeline_id;
+            self.timeline_audio();
+            if let Some(audio) = &mut self.timeline_audio {
+                self.plugin_editors
+                    .open(&self.session.project, request, current, audio);
+            }
+        }
+        self.plugin_editors.update(
+            ui.ctx(),
+            &mut self.session.project,
+            &mut self.session.history,
+            self.timeline_id,
+        );
 
         let mut transport_action = transport::TransportResponse::default();
         let mut viewer_rect = None;
