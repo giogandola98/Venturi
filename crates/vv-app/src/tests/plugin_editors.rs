@@ -171,12 +171,12 @@ fn a_gesture_pending_at_close_is_recorded_once() {
     let (mut project, id, key) = setup();
     let mut history = History::default();
     let fake = Fake::with_gesture(vec![9]);
-    record_gesture(&mut project, &mut history, key, &fake);
+    record_gesture(&mut project, &mut history, key, &fake, false);
     assert_eq!(state_of(&project, id, 1), [9]);
     assert_eq!(history.labels().count(), 1);
     assert_ne!(fake.state_hash(), 0, "the pool must not reload the state");
 
-    record_gesture(&mut project, &mut history, key, &fake);
+    record_gesture(&mut project, &mut history, key, &fake, false);
     assert_eq!(history.labels().count(), 1);
 }
 
@@ -186,7 +186,38 @@ fn the_gesture_of_a_removed_effect_is_consumed_not_recorded() {
     let mut history = History::default();
     let gone = (id, MixerChannel::Master, EffectId(99));
     let fake = Fake::with_gesture(vec![9]);
-    record_gesture(&mut project, &mut history, gone, &fake);
+    record_gesture(&mut project, &mut history, gone, &fake, false);
     assert_eq!(history.labels().count(), 0);
     assert!(fake.take_gesture().is_none(), "nothing left for a reopen");
+}
+
+#[test]
+fn a_gesture_during_an_undo_group_is_its_own_step_after_it() {
+    let (mut project, id, key) = setup();
+    let mut history = History::default();
+    let fake = Fake::with_gesture(vec![9]);
+
+    let mark = history.begin_group();
+    assert!(!record_gesture(
+        &mut project,
+        &mut history,
+        key,
+        &fake,
+        true
+    ));
+    assert_eq!(history.labels().count(), 0);
+    assert_eq!(state_of(&project, id, 1), [1]);
+    history.end_group(mark);
+
+    assert!(record_gesture(
+        &mut project,
+        &mut history,
+        key,
+        &fake,
+        false
+    ));
+    assert_eq!(state_of(&project, id, 1), [9]);
+    assert_eq!(history.labels().count(), 1);
+    history.undo(&mut project);
+    assert_eq!(state_of(&project, id, 1), [1]);
 }
