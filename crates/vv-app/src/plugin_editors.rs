@@ -86,7 +86,49 @@ fn record_edit(
     Some(hash)
 }
 
+/// Records a gesture the instance still holds, and consumes it either way so
+/// it can never become an out-of-order step later.
+fn record_gesture(
+    project: &mut Project,
+    history: &mut History,
+    key: Key,
+    instance: &dyn HostedPlugin,
+) {
+    let Some((component, controller)) = instance.take_gesture() else {
+        return;
+    };
+    if let Some(hash) = record_edit(project, history, key, component, controller) {
+        // The pool must not read the state back into the instance.
+        instance.set_state_hash(hash);
+    }
+}
+
 impl PluginEditors {
+    /// Closes the editors `keep` rejects. A gesture that ended before the
+    /// window went away (or inside its `removed`) is recorded while the
+    /// effect can still be found.
+    fn close_where(
+        &mut self,
+        project: &mut Project,
+        history: &mut History,
+        keep: impl Fn(&Project, &Key, &Editor) -> bool,
+    ) {
+        let gone: Vec<Key> = self
+            .open
+            .iter()
+            .filter(|(key, editor)| !keep(project, key, editor))
+            .map(|(key, _)| *key)
+            .collect();
+        for key in gone {
+            let Some(editor) = self.open.remove(&key) else {
+                continue;
+            };
+            let instance = editor.instance().clone();
+            drop(editor);
+            record_gesture(project, history, key, &*instance);
+        }
+    }
+
     /// `current` is the timeline the audio is playing.
     pub fn open(
         &mut self,
@@ -141,7 +183,7 @@ impl PluginEditors {
         if self.open.is_empty() && !self.holding {
             return;
         }
-        self.open.retain(|key, editor| {
+        self.close_where(project, history, |project, key, editor| {
             Some(key.0) == current && find(project, *key).is_some() && editor.is_open()
         });
         if let Some(audio) = audio {
@@ -167,7 +209,6 @@ impl PluginEditors {
             if instance.take_dirty() {
                 let (component, controller) = instance.get_state();
                 if let Some(hash) = record_edit(project, history, *key, component, controller) {
-                    // The pool must not read the state back into the instance.
                     instance.set_state_hash(hash);
                 }
             } else if changed
@@ -186,8 +227,8 @@ impl PluginEditors {
         }
     }
 
-    pub fn close_all(&mut self) {
-        self.open.clear();
+    pub fn close_all(&mut self, project: &mut Project, history: &mut History) {
+        self.close_where(project, history, |_, _, _| false);
     }
 }
 

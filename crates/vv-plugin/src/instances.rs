@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use vv_audio::{PluginHandle, PluginRequest};
-use vv_core::Vst3Effect;
+use vv_core::{PluginState, Vst3Effect};
 
 use crate::{PluginInfo, ProcessMode, Vst3Instance};
 
@@ -15,6 +15,10 @@ pub trait HostedPlugin: vv_audio::PluginProcessor {
     fn state_hash(&self) -> u64;
     fn set_state_hash(&self, hash: u64);
     fn as_vst3(&self) -> Option<&Vst3Instance> {
+        None
+    }
+    /// The state to record when an edit gesture ended since the last call.
+    fn take_gesture(&self) -> Option<(PluginState, PluginState)> {
         None
     }
 }
@@ -176,6 +180,10 @@ impl HostedPlugin for Vst3Instance {
 
     fn as_vst3(&self) -> Option<&Vst3Instance> {
         Some(self)
+    }
+
+    fn take_gesture(&self) -> Option<(PluginState, PluginState)> {
+        self.take_dirty().then(|| self.get_state())
     }
 }
 

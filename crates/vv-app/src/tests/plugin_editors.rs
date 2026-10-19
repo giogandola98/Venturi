@@ -105,7 +105,20 @@ fn a_gesture_of_a_removed_effect_is_dropped() {
     assert_eq!(history.labels().count(), 0);
 }
 
-struct Fake;
+#[derive(Default)]
+struct Fake {
+    gesture: std::sync::Mutex<Option<(PluginState, PluginState)>>,
+    hash: std::sync::atomic::AtomicU64,
+}
+
+impl Fake {
+    fn with_gesture(component: Vec<u8>) -> Self {
+        let fake = Fake::default();
+        *fake.gesture.lock().unwrap() =
+            Some((PluginState::new(component), PluginState::new(Vec::new())));
+        fake
+    }
+}
 
 impl vv_audio::PluginProcessor for Fake {
     fn process(&self, _: &mut [f32], _: usize) {}
@@ -118,15 +131,20 @@ impl vv_audio::PluginProcessor for Fake {
 impl HostedPlugin for Fake {
     fn set_state(&self, _: &Vst3Effect) {}
     fn state_hash(&self) -> u64 {
-        0
+        self.hash.load(std::sync::atomic::Ordering::Relaxed)
     }
-    fn set_state_hash(&self, _: u64) {}
+    fn set_state_hash(&self, hash: u64) {
+        self.hash.store(hash, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn take_gesture(&self) -> Option<(PluginState, PluginState)> {
+        self.gesture.lock().unwrap().take()
+    }
 }
 
 #[test]
 fn an_editor_instance_is_held_under_the_key_the_mix_asks() {
     let (mut project, id, key) = setup();
-    let instance: Arc<dyn HostedPlugin> = Arc::new(Fake);
+    let instance: Arc<dyn HostedPlugin> = Arc::new(Fake::default());
     let held = held_instances(&project, [(key, instance.clone())].into_iter());
     let effects = &project.timelines[id].master.effects;
     assert_eq!(held.len(), 1);
@@ -139,5 +157,36 @@ fn an_editor_instance_is_held_under_the_key_the_mix_asks() {
     assert_eq!(again[0].0, held[0].0);
 
     let gone = (id, MixerChannel::Master, EffectId(99));
-    assert!(held_instances(&project, [(gone, Arc::new(Fake) as _)].into_iter()).is_empty());
+    assert!(
+        held_instances(
+            &project,
+            [(gone, Arc::new(Fake::default()) as _)].into_iter()
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_gesture_pending_at_close_is_recorded_once() {
+    let (mut project, id, key) = setup();
+    let mut history = History::default();
+    let fake = Fake::with_gesture(vec![9]);
+    record_gesture(&mut project, &mut history, key, &fake);
+    assert_eq!(state_of(&project, id, 1), [9]);
+    assert_eq!(history.labels().count(), 1);
+    assert_ne!(fake.state_hash(), 0, "the pool must not reload the state");
+
+    record_gesture(&mut project, &mut history, key, &fake);
+    assert_eq!(history.labels().count(), 1);
+}
+
+#[test]
+fn the_gesture_of_a_removed_effect_is_consumed_not_recorded() {
+    let (mut project, id, _) = setup();
+    let mut history = History::default();
+    let gone = (id, MixerChannel::Master, EffectId(99));
+    let fake = Fake::with_gesture(vec![9]);
+    record_gesture(&mut project, &mut history, gone, &fake);
+    assert_eq!(history.labels().count(), 0);
+    assert!(fake.take_gesture().is_none(), "nothing left for a reopen");
 }

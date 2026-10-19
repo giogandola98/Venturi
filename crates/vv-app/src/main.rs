@@ -2472,7 +2472,8 @@ impl VenturiApp {
         self.settings.vst3_plugins = list;
         if let Some(audio) = &mut self.timeline_audio {
             audio.plugins_rescanned();
-            self.plugin_editors.close_all();
+            self.plugin_editors
+                .close_all(&mut self.session.project, &mut self.session.history);
         }
         self.persist_settings();
     }
