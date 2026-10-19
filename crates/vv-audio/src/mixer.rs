@@ -273,7 +273,8 @@ pub enum Insert {
 }
 
 /// A hosted plugin in a chain. Equality is by what it plays, not by the
-/// instance: `handle` is `None` when the source has none (it passes through).
+/// instance, but whether it processes counts: `handle` is `None` when the
+/// source has none (it passes through).
 #[derive(Clone)]
 pub struct PluginInsert {
     pub key: u64,
@@ -283,7 +284,8 @@ pub struct PluginInsert {
 
 impl PartialEq for PluginInsert {
     fn eq(&self, other: &Self) -> bool {
-        (self.key, self.content) == (other.key, other.content)
+        (self.key, self.content, self.handle.is_some())
+            == (other.key, other.content, other.handle.is_some())
     }
 }
 
@@ -292,6 +294,7 @@ impl std::fmt::Debug for PluginInsert {
         f.debug_struct("PluginInsert")
             .field("key", &self.key)
             .field("content", &self.content)
+            .field("processes", &self.handle.is_some())
             .finish()
     }
 }
@@ -818,7 +821,7 @@ pub(crate) fn hash_insert(insert: &Insert, h: &mut impl Hasher) {
                 fields.map(f32::to_bits).hash(h);
             }
         }
-        Insert::Plugin(plugin) => (6u8, plugin.content).hash(h),
+        Insert::Plugin(plugin) => (6u8, plugin.content, plugin.handle.is_some()).hash(h),
         Insert::Eq(params) => {
             4u8.hash(h);
             for band in &params.bands {
@@ -891,6 +894,12 @@ pub trait AudioSource {
     /// pass-through. The same `key` asked again gets the same instance.
     fn plugin(&mut self, _: PluginRequest<'_>) -> Option<PluginHandle> {
         None
+    }
+
+    /// Whether `plugin` would play here: the keys of what a nested timeline
+    /// renders (stretches, segments) cannot ask for its handles.
+    fn plugin_available(&mut self, _: &Vst3Effect) -> bool {
+        false
     }
 }
 
@@ -988,7 +997,9 @@ fn collect_clips(
                             depth: depth + 1,
                             scope: nested_scope,
                         },
-                        timeline_key(project, timeline, sample_rate, depth + 1),
+                        timeline_key(project, timeline, sample_rate, depth + 1, &mut |effect| {
+                            source.plugin_available(effect)
+                        }),
                     ),
                     None => (
                         StretchInput::File {
@@ -1082,7 +1093,9 @@ fn collect_clips(
         .find(|(_, t)| std::ptr::eq(*t, timeline))
         .map(|(id, _)| id);
     let slot = |channel, insert, clip| timeline_id.map(|id| (id, channel, insert, clip));
-    let inputs = input_clips(project, timeline, sample_rate);
+    let inputs = input_clips(project, timeline, sample_rate, &mut |effect| {
+        source.plugin_available(effect)
+    });
     let measured_channel = measuring.map(|m| m.channel);
     let format = (sample_rate, channels);
     let mut tracks: Vec<Channel> = Vec::with_capacity(timeline.tracks.len());
@@ -1098,6 +1111,8 @@ fn collect_clips(
         let mut track_clips: Vec<(ClipId, u64)> =
             track_inputs.iter().map(|c| (c.id, c.start)).collect();
         track_clips.sort_by_key(|&(_, start)| start);
+        let mut plugin_keys = PluginKeys::new(scope, index as u64);
+        let plugins = request_plugins(&track.mix, stop, &mut plugin_keys, source, sample_rate);
         let analyze = |inserts: &[Insert], clip: Option<(usize, ClipId)>, mode| {
             let input: Vec<&InputClip> = match clip {
                 Some((_, id)) => track_inputs
@@ -1125,16 +1140,14 @@ fn collect_clips(
                 segments,
             })
         };
-        let mut plugin_keys = PluginKeys::new(scope, index as u64);
-        let mut inserts = resolve_chain(
+        let inserts = resolve_chain(
             &track.mix,
             stop,
             !track_inputs.is_empty(),
             &track_clips,
-            &mut plugin_keys,
+            plugins,
             analyze,
         );
-        attach_plugins(&track.mix, &mut inserts, source, sample_rate);
         if !track_inputs.is_empty() && has_state(&inserts) {
             running.push(index);
         }
@@ -1155,6 +1168,14 @@ fn collect_clips(
                 .get(clip.track)
                 .is_some_and(|t| has_state(&t.inserts))
         });
+        let mut plugin_keys = PluginKeys::new(scope, MASTER_STRIP);
+        let plugins = request_plugins(
+            &timeline.master,
+            stop,
+            &mut plugin_keys,
+            source,
+            sample_rate,
+        );
         let analyze = |inserts: &[Insert], _: Option<(usize, ClipId)>, mode| {
             let stateful = has_state(inserts) || tracks_have_state || inputs_have_state(&all);
             let track_key = |track: usize| {
@@ -1181,16 +1202,14 @@ fn collect_clips(
                 segments,
             })
         };
-        let mut plugin_keys = PluginKeys::new(scope, MASTER_STRIP);
-        let mut inserts = resolve_chain(
+        let inserts = resolve_chain(
             &timeline.master,
             stop,
             !all.is_empty(),
             &[],
-            &mut plugin_keys,
+            plugins,
             analyze,
         );
-        attach_plugins(&timeline.master, &mut inserts, source, sample_rate);
         let bus = match stop {
             Some(_) => Bus::UNITY,
             None => Bus::from_strip(&timeline.master),
@@ -1215,17 +1234,23 @@ fn chain_key(mode: NormalizeMode, (sample_rate, channels): (u32, u16), inserts: 
 /// normalization measures the channel through the effects before it
 /// (`analyze`), so it stays right after a compressor too. `clips`: a
 /// track's, by start, measured one by one when its normalization asks so;
-/// the master is measured whole.
+/// the master is measured whole. `plugins`: `request_plugins` of the same
+/// `strip` and `stop`, so the keys of the measures see what plays.
 fn resolve_chain(
     strip: &ChannelStrip,
     stop: Option<usize>,
     has_audio: bool,
     clips: &[(ClipId, u64)],
-    plugin_keys: &mut PluginKeys,
+    mut plugins: Vec<Option<PluginInsert>>,
     mut analyze: impl FnMut(&[Insert], Option<(usize, ClipId)>, NormalizeMode) -> LevelReading,
 ) -> Vec<Insert> {
     let mut inserts = Vec::new();
-    for effect in strip.effects.iter().take(stop.unwrap_or(usize::MAX)) {
+    for (effect, plugin) in strip
+        .effects
+        .iter()
+        .zip(plugins.iter_mut())
+        .take(stop.unwrap_or(usize::MAX))
+    {
         if !effect.enabled {
             inserts.push(Insert::Off);
             continue;
@@ -1270,11 +1295,7 @@ fn resolve_chain(
             AudioEffectKind::MultibandCompressor(params) => Insert::Compressor(params.clone()),
             AudioEffectKind::Mono => Insert::Mono,
             AudioEffectKind::Equalizer(params) => Insert::Eq(params.clone()),
-            AudioEffectKind::Vst3(plugin) => Insert::Plugin(PluginInsert {
-                key: plugin_keys.next(plugin),
-                content: plugin.content_hash(),
-                handle: None,
-            }),
+            AudioEffectKind::Vst3(_) => plugin.take().map_or(Insert::Off, Insert::Plugin),
         };
         inserts.push(insert);
     }
@@ -1315,23 +1336,38 @@ impl PluginKeys {
     }
 }
 
-/// Asks `source` for the processor of each plugin of `inserts`, which
-/// `resolve_chain` produced one per effect of `strip`, in order.
-fn attach_plugins(
+/// Asks `source` for the processor of each enabled plugin of `strip` up to
+/// `stop`, once: aligned with its effects, `None` for the others. Before the
+/// chain is resolved, since the keys of its measures include whether each
+/// plugin processes.
+fn request_plugins(
     strip: &ChannelStrip,
-    inserts: &mut [Insert],
+    stop: Option<usize>,
+    plugin_keys: &mut PluginKeys,
     source: &mut impl AudioSource,
     sample_rate: u32,
-) {
-    for (effect, insert) in strip.effects.iter().zip(inserts) {
-        if let (AudioEffectKind::Vst3(plugin), Insert::Plugin(slot)) = (&effect.kind, insert) {
-            slot.handle = source.plugin(PluginRequest {
-                key: slot.key,
-                effect: plugin,
-                sample_rate,
-            });
-        }
-    }
+) -> Vec<Option<PluginInsert>> {
+    strip
+        .effects
+        .iter()
+        .take(stop.unwrap_or(usize::MAX))
+        .map(|effect| match &effect.kind {
+            AudioEffectKind::Vst3(plugin) if effect.enabled => {
+                let key = plugin_keys.next(plugin);
+                let handle = source.plugin(PluginRequest {
+                    key,
+                    effect: plugin,
+                    sample_rate,
+                });
+                Some(PluginInsert {
+                    key,
+                    content: plugin.content_hash(),
+                    handle,
+                })
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// A reading still on its way plays the last one. `None` for silence,

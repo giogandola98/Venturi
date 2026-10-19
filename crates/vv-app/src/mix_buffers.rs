@@ -843,6 +843,12 @@ impl AudioSource for MixBufferCache {
             .get(request)
     }
 
+    fn plugin_available(&mut self, effect: &vv_core::Vst3Effect) -> bool {
+        self.plugins
+            .get_or_insert_with(|| vv_plugin::Instances::realtime(vv_plugin::installed().to_vec()))
+            .knows(effect)
+    }
+
     /// The mixer always asks for frames: a whole file is never held.
     fn file(&mut self, _path: &Path, _stream: usize) -> ClipAudio {
         ClipAudio::Missing
