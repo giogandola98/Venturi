@@ -400,6 +400,7 @@ fn a_failed_stretch_is_not_retried_every_frame() {
         .stretch_tx
         .send(StretchResult {
             id: failed.id,
+            _mix: audio.mix.clone(),
             samples: Err("failed".into()),
         })
         .unwrap();

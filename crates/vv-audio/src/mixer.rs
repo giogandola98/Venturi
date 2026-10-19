@@ -533,7 +533,7 @@ impl MixSnapshot {
 
 impl Insert {
     /// What runs it, if it keeps a state from one block to the next.
-    fn effect(&self, sample_rate: u32, channels: u16) -> Option<Box<dyn Effect>> {
+    fn effect(&self, sample_rate: u32, channels: u16, plugins: bool) -> Option<Box<dyn Effect>> {
         match self {
             Insert::Off | Insert::Gain(_) | Insert::ClipGains(_) | Insert::Mono => None,
             Insert::Compressor(params) => Some(Box::new(MultibandProcessor::new(
@@ -542,7 +542,7 @@ impl Insert {
                 channels,
             ))),
             Insert::Eq(params) => Some(Box::new(EqProcessor::new(params, sample_rate, channels))),
-            Insert::Plugin(plugin) => plugin.handle.clone().map(|handle| {
+            Insert::Plugin(plugin) => plugin.handle.clone().filter(|_| plugins).map(|handle| {
                 Box::new(PluginEffect {
                     handle,
                     channels: channels as usize,
@@ -568,12 +568,22 @@ pub struct MixState {
 
 impl MixState {
     pub fn new(snapshot: &MixSnapshot) -> Self {
+        Self::build(snapshot, true)
+    }
+
+    /// Without the hosted plugins, which pass through: for a thread other
+    /// than the one playing them, as an instance takes one caller at a time.
+    pub fn without_plugins(snapshot: &MixSnapshot) -> Self {
+        Self::build(snapshot, false)
+    }
+
+    fn build(snapshot: &MixSnapshot, plugins: bool) -> Self {
         let (rate, channels) = (snapshot.sample_rate, snapshot.channels);
         let processors = |channel: &Channel| -> Vec<Option<Box<dyn Effect>>> {
             channel
                 .inserts
                 .iter()
-                .map(|insert| insert.effect(rate, channels))
+                .map(|insert| insert.effect(rate, channels, plugins))
                 .collect()
         };
         Self {
@@ -583,7 +593,7 @@ impl MixState {
                 .clips
                 .iter()
                 .map(|clip| match &clip.input {
-                    ClipInput::Nested(nested) => Some(NestedState::new(clip, nested)),
+                    ClipInput::Nested(nested) => Some(NestedState::new(clip, nested, plugins)),
                     ClipInput::Blocks(_) => None,
                 })
                 .collect(),
@@ -652,13 +662,13 @@ struct NestedState {
 }
 
 impl NestedState {
-    fn new(clip: &MixClip, nested: &NestedMix) -> Self {
+    fn new(clip: &MixClip, nested: &NestedMix, plugins: bool) -> Self {
         let ch = nested.mix.channels.max(1) as usize;
         // What one mixer block reads, so the callback never allocates.
         let frames = (MIX_BLOCK_FRAMES as f64 * clip.step).ceil() as usize + clip.step as usize + 3;
         Self {
             key: clip.clip,
-            state: MixState::new(&nested.mix),
+            state: MixState::build(&nested.mix, plugins),
             rendered: Vec::with_capacity(frames * ch),
             from: 0,
             channels: ch,
@@ -1511,6 +1521,12 @@ pub fn sample_to_timeline_frame(sample: u64, fps: f64, sample_rate: u32) -> Fram
 /// from scratch.
 pub fn mix_range(snapshot: &MixSnapshot, start: u64, out: &mut [f32]) {
     mix_into(snapshot, &mut MixState::new(snapshot), start, out, false);
+}
+
+/// `mix_range` with the hosted plugins passing through.
+pub fn mix_range_without_plugins(snapshot: &MixSnapshot, start: u64, out: &mut [f32]) {
+    let mut state = MixState::without_plugins(snapshot);
+    mix_into(snapshot, &mut state, start, out, false);
 }
 
 /// `mix_range` carrying on the effects from the previous call through
