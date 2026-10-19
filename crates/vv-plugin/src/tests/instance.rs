@@ -440,3 +440,29 @@ mod real_plugins {
         assert!(db < -90.0, "residual {db} dB");
     }
 }
+
+#[test]
+fn set_state_with_an_empty_effect_restores_the_defaults() {
+    let instance = fixture(Vec::new());
+    let (defaults, _) = instance.get_state();
+    instance.set_state(&effect(0.25f32.to_le_bytes().to_vec()));
+    let input = ramp(64, 2);
+    assert_scaled(&run(&instance, &input), &input, 0.5);
+    instance.set_state(&effect(Vec::new()));
+    assert_scaled(&run(&instance, &input), &input, 1.0);
+    assert_eq!(instance.get_state().0.bytes(), defaults.bytes());
+}
+
+#[test]
+fn set_state_with_an_empty_effect_restores_the_defaults_of_a_split_plugin() {
+    let instance = split_fixture();
+    let (defaults, _) = instance.get_state();
+    instance.set_state(&effect_of(
+        "56565445535447414E00000000000002",
+        0.25f32.to_le_bytes().to_vec(),
+    ));
+    instance.set_state(&effect_of("56565445535447414E00000000000002", Vec::new()));
+    let input = ramp(64, 2);
+    assert_scaled(&run(&instance, &input), &input, 1.0);
+    assert_eq!(instance.get_state().0.bytes(), defaults.bytes());
+}
