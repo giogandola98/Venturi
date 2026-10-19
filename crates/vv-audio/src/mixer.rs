@@ -356,6 +356,19 @@ impl MixSnapshot {
                 _ => groups.push((clip.track, i..i + 1)),
             }
         }
+        // A stateful chain keeps running on silence between clips (and across
+        // the chunks of an offline render), so its tail rings out.
+        for (track, channel) in tracks.iter().enumerate() {
+            let stateful = channel.inserts.iter().any(|insert| match insert {
+                Insert::Compressor(_) | Insert::Eq(_) => true,
+                Insert::Plugin(plugin) => plugin.handle.is_some(),
+                _ => false,
+            });
+            if stateful && !groups.iter().any(|(t, _)| *t == track) {
+                groups.push((track, 0..0));
+            }
+        }
+        groups.sort_by_key(|(track, _)| *track);
         let meters = MixMeters::new(&tracks, &master);
         Self {
             sample_rate,
