@@ -267,6 +267,16 @@ fn split_fixture() -> Arc<Vst3Instance> {
 }
 
 #[test]
+fn plugin_whose_set_processing_is_not_implemented_loads_and_processes() {
+    let effect = effect_of("56565445535447414E00000000000004", Vec::new());
+    let instance = Vst3Instance::new(&fixture_bundle(), &effect, 48_000, ProcessMode::Realtime)
+        .expect("kNotImplemented from setProcessing is not an error");
+    instance.reset();
+    let input = ramp(64, 2);
+    assert_scaled(&run(&instance, &input), &input, 1.0);
+}
+
+#[test]
 fn get_state_flushes_pending_edits_to_a_split_processor() {
     let instance = split_fixture();
     assert!(instance.separate_controller);

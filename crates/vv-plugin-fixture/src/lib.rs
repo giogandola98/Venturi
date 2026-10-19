@@ -21,6 +21,10 @@ const SPLIT_CID: TUID = [
 const SPLIT_CONTROLLER_CID: TUID = [
     0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 3,
 ];
+// Single-component variant whose setProcessing returns kNotImplemented, like the SDK default.
+const NOT_IMPL_CID: TUID = [
+    0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 4,
+];
 const DEFAULT_NORMALIZED: f64 = 0.5;
 
 fn copy_cstring(src: &str, dst: &mut [c_char]) {
@@ -55,6 +59,7 @@ struct Gain {
     // (in the split variant each object has its own copy).
     normalized: AtomicU64,
     controller_cid: Option<TUID>,
+    set_processing_result: tresult,
 }
 
 impl Gain {
@@ -62,6 +67,7 @@ impl Gain {
         Self {
             normalized: AtomicU64::new(DEFAULT_NORMALIZED.to_bits()),
             controller_cid,
+            set_processing_result: kResultOk,
         }
     }
 
@@ -228,7 +234,7 @@ impl IAudioProcessorTrait for Gain {
     }
 
     unsafe fn setProcessing(&self, _state: TBool) -> tresult {
-        kResultOk
+        self.set_processing_result
     }
 
     unsafe fn process(&self, data: *mut ProcessData) -> tresult {
@@ -412,6 +418,10 @@ impl IPluginFactoryTrait for Factory {
         }
         let gain = match unsafe { *cid.cast::<TUID>() } {
             CID => Gain::new(None),
+            NOT_IMPL_CID => Gain {
+                set_processing_result: kNotImplemented,
+                ..Gain::new(None)
+            },
             SPLIT_CID => Gain::new(Some(SPLIT_CONTROLLER_CID)),
             SPLIT_CONTROLLER_CID => Gain::new(None),
             _ => return kInvalidArgument,
