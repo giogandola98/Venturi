@@ -499,6 +499,13 @@ impl MixBufferCache {
         plugins.instance(aside)
     }
 
+    /// The instances open editors drive, by live key; see `Instances::set_held`.
+    pub fn hold_plugins(&mut self, held: Vec<(u64, Arc<dyn vv_plugin::HostedPlugin>)>) {
+        if let Some(plugins) = &mut self.plugins {
+            plugins.set_held(held);
+        }
+    }
+
     pub fn plugin_latency(&self, key: u64) -> Option<u32> {
         self.plugins.as_ref()?.instance(key).map(|p| p.latency())
     }

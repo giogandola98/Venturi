@@ -104,3 +104,40 @@ fn a_gesture_of_a_removed_effect_is_dropped() {
     );
     assert_eq!(history.labels().count(), 0);
 }
+
+struct Fake;
+
+impl vv_audio::PluginProcessor for Fake {
+    fn process(&self, _: &mut [f32], _: usize) {}
+    fn reset(&self) {}
+    fn latency(&self) -> u32 {
+        0
+    }
+}
+
+impl HostedPlugin for Fake {
+    fn set_state(&self, _: &Vst3Effect) {}
+    fn state_hash(&self) -> u64 {
+        0
+    }
+    fn set_state_hash(&self, _: u64) {}
+}
+
+#[test]
+fn an_editor_instance_is_held_under_the_key_the_mix_asks() {
+    let (mut project, id, key) = setup();
+    let instance: Arc<dyn HostedPlugin> = Arc::new(Fake);
+    let held = held_instances(&project, [(key, instance.clone())].into_iter());
+    let effects = &project.timelines[id].master.effects;
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].0, plugin_key_of(MixerChannel::Master, effects, 1));
+    assert!(Arc::ptr_eq(&held[0].1, &instance));
+
+    // Disabled, the key is the same one the enabled effect plays under.
+    project.timelines[id].master.effects[1].enabled = false;
+    let again = held_instances(&project, [(key, instance)].into_iter());
+    assert_eq!(again[0].0, held[0].0);
+
+    let gone = (id, MixerChannel::Master, EffectId(99));
+    assert!(held_instances(&project, [(gone, Arc::new(Fake) as _)].into_iter()).is_empty());
+}

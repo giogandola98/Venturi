@@ -4531,6 +4531,7 @@ impl VenturiApp {
             &mut self.session.project,
             &mut self.session.history,
             self.timeline_id,
+            self.timeline_audio.as_mut(),
         );
 
         let mut transport_action = transport::TransportResponse::default();

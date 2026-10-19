@@ -1,10 +1,11 @@
 //! Open plugin editor windows, and what a gesture in one does to the project.
 use std::collections::HashMap;
+use std::sync::Arc;
 use vv_core::{
     AudioEffect, AudioEffectKind, CommandLabel, EffectId, History, Id, MixerChannel, PluginState,
     Project, SetAudioEffect, TimelineId, Vst3Effect,
 };
-use vv_plugin::Editor;
+use vv_plugin::{Editor, HostedPlugin};
 
 use crate::mixer_panel::{channel_strip, plugin_key_of};
 use crate::timeline_audio::TimelineAudio;
@@ -19,6 +20,23 @@ pub(crate) struct PluginEditors {
     open: HashMap<Key, Editor>,
     /// `History::generation` the instances were last compared with the project at.
     checked: u64,
+    /// The pool was handed instances that must be taken back.
+    holding: bool,
+}
+
+/// The live key each editor's instance stands for, so the pool reuses it
+/// when the effect plays again instead of making an instance no window drives.
+fn held_instances(
+    project: &Project,
+    editors: impl Iterator<Item = (Key, Arc<dyn HostedPlugin>)>,
+) -> Vec<(u64, Arc<dyn HostedPlugin>)> {
+    editors
+        .filter_map(|(key, instance)| {
+            let (index, _) = find(project, key)?;
+            let strip = channel_strip(project.timelines.get(key.0)?, key.1)?;
+            Some((plugin_key_of(key.1, &strip.effects, index), instance))
+        })
+        .collect()
 }
 
 fn find(project: &Project, (timeline, channel, id): Key) -> Option<(usize, &AudioEffect)> {
@@ -118,13 +136,22 @@ impl PluginEditors {
         project: &mut Project,
         history: &mut History,
         current: Option<TimelineId>,
+        audio: Option<&mut TimelineAudio>,
     ) {
-        if self.open.is_empty() {
+        if self.open.is_empty() && !self.holding {
             return;
         }
         self.open.retain(|key, editor| {
             Some(key.0) == current && find(project, *key).is_some() && editor.is_open()
         });
+        if let Some(audio) = audio {
+            let held = held_instances(
+                project,
+                self.open.iter().map(|(k, e)| (*k, e.instance().clone())),
+            );
+            self.holding = !held.is_empty();
+            audio.hold_plugins(held);
+        }
         let generation = history.generation();
         let changed = generation != self.checked;
         let mut wake: Option<std::time::Duration> = None;

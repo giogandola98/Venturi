@@ -239,3 +239,71 @@ fn failure_is_forgotten_once_its_key_is_not_asked() {
     assert!(pool.get(request(7, &e)).is_none());
     assert_eq!(counts.made.load(Ordering::SeqCst), 2);
 }
+
+fn same<A: ?Sized, B: ?Sized>(a: &Arc<A>, b: &Arc<B>) -> bool {
+    Arc::as_ptr(a).cast::<()>() == Arc::as_ptr(b).cast::<()>()
+}
+
+#[test]
+fn a_held_instance_survives_a_disable_and_is_the_one_played_again() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = pool(&counts);
+    let e = effect(CLASS, &[1]);
+    pool.begin_pass();
+    pool.get(request(1, &e)).unwrap();
+    let editor = pool.instance(1).unwrap();
+    pool.set_held(vec![(1, editor.clone())]);
+    pool.sweep();
+    pool.begin_pass();
+    pool.sweep();
+    assert!(pool.instance(1).is_none(), "disabled: not in the mix");
+    pool.begin_pass();
+    let played = pool.get(request(1, &e)).unwrap();
+    assert!(same(&played, &editor));
+    assert_eq!(counts.made.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_held_instance_is_adopted_by_a_key_made_after_it() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = pool(&counts);
+    let e = effect(CLASS, &[1]);
+    pool.begin_pass();
+    pool.get(request(99, &e)).unwrap();
+    let aside = pool.instance(99).unwrap();
+    pool.set_held(vec![(1, aside.clone())]);
+    pool.sweep();
+    pool.begin_pass();
+    let played = pool.get(request(1, &e)).unwrap();
+    assert!(same(&played, &aside));
+    assert!(Arc::ptr_eq(&pool.instance(1).unwrap(), &aside));
+    assert_eq!(counts.made.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_held_instance_with_stale_state_is_reloaded_when_adopted() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = pool(&counts);
+    pool.begin_pass();
+    pool.get(request(99, &effect(CLASS, &[1]))).unwrap();
+    let aside = pool.instance(99).unwrap();
+    pool.set_held(vec![(1, aside)]);
+    pool.begin_pass();
+    pool.get(request(1, &effect(CLASS, &[2]))).unwrap();
+    assert_eq!(counts.loads.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn released_instances_are_no_longer_adopted() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = pool(&counts);
+    let e = effect(CLASS, &[1]);
+    pool.begin_pass();
+    pool.get(request(99, &e)).unwrap();
+    let aside = pool.instance(99).unwrap();
+    pool.set_held(vec![(1, aside)]);
+    pool.set_held(Vec::new());
+    pool.begin_pass();
+    pool.get(request(1, &e)).unwrap();
+    assert_eq!(counts.made.load(Ordering::SeqCst), 2);
+}
