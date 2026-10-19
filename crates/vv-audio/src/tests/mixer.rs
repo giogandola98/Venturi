@@ -1537,3 +1537,186 @@ fn a_snapshot_is_ready_where_its_clips_have_their_audio() {
     assert!(!snap.is_ready(400..450), "b.wav inside the compound clip");
     assert!(snap.is_ready(1000..2000), "nothing plays there");
 }
+
+struct FakePlugin {
+    gain: f32,
+    processed: std::sync::atomic::AtomicUsize,
+    resets: std::sync::atomic::AtomicUsize,
+}
+
+impl FakePlugin {
+    fn new(gain: f32) -> Arc<Self> {
+        Arc::new(Self {
+            gain,
+            processed: Default::default(),
+            resets: Default::default(),
+        })
+    }
+}
+
+impl crate::effect::PluginProcessor for FakePlugin {
+    fn process(&self, samples: &mut [f32], _channels: usize) {
+        self.processed.fetch_add(1, Ordering::Relaxed);
+        samples.iter_mut().for_each(|s| *s *= self.gain);
+    }
+
+    fn reset(&self) {
+        self.resets.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn latency(&self) -> u32 {
+        0
+    }
+}
+
+/// `CountingSource` that hands out `plugin` and records the keys asked.
+#[derive(Default)]
+struct PluginSource {
+    inner: CountingSource,
+    plugin: Option<Arc<FakePlugin>>,
+    keys: Vec<u64>,
+}
+
+impl AudioSource for PluginSource {
+    fn file(&mut self, path: &Path, stream: usize) -> ClipAudio {
+        self.inner.file(path, stream)
+    }
+
+    fn plugin(&mut self, request: crate::effect::PluginRequest<'_>) -> Option<PluginHandle> {
+        self.keys.push(request.key);
+        self.plugin.clone().map(|p| p as PluginHandle)
+    }
+}
+
+fn vst3(id: u64, state: &[u8]) -> vv_core::AudioEffect {
+    vv_core::AudioEffect::new(vv_core::AudioEffectKind::Vst3(vv_core::Vst3Effect {
+        id: vv_core::EffectId(id),
+        class_id: "00".repeat(16),
+        name: "Fake".into(),
+        vendor: String::new(),
+        version: "1".into(),
+        component_state: vv_core::PluginState(state.to_vec()),
+        controller_state: Default::default(),
+    }))
+}
+
+fn plugin_timeline(effects: Vec<vv_core::AudioEffect>) -> (Project, Timeline) {
+    let (project, a, _) = project();
+    let mut track = audio_track(vec![clip_at(a, 0, 0, 5)]);
+    track.mix.effects = effects;
+    (project, timeline(vec![track]))
+}
+
+fn mixed(snap: &MixSnapshot, frames: usize) -> Vec<f32> {
+    let mut out = vec![9.0; frames];
+    mix_range(snap, 0, &mut out);
+    out
+}
+
+#[test]
+fn plugin_insert_applies_in_chain_order() {
+    let (project, tl) = plugin_timeline(vec![vst3(1, b"")]);
+    let plugin = FakePlugin::new(0.5);
+    let mut source = PluginSource {
+        plugin: Some(plugin.clone()),
+        ..Default::default()
+    };
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    let out = mixed(&snap, 40);
+    assert!(out.iter().all(|&s| s == 0.25));
+    assert!(plugin.processed.load(Ordering::Relaxed) > 0);
+}
+
+#[test]
+fn missing_plugin_passes_through() {
+    let (project, tl) = plugin_timeline(vec![vst3(1, b"")]);
+    let mut source = PluginSource::default();
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    assert!(mixed(&snap, 40).iter().all(|&s| s == 0.5));
+}
+
+#[test]
+fn disabled_plugin_is_off() {
+    let mut effect = vst3(1, b"");
+    effect.enabled = false;
+    let (project, tl) = plugin_timeline(vec![effect]);
+    let mut source = PluginSource {
+        plugin: Some(FakePlugin::new(0.5)),
+        ..Default::default()
+    };
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    assert!(source.keys.is_empty());
+    assert!(matches!(snap.tracks[0].inserts[0], Insert::Off));
+    assert!(mixed(&snap, 40).iter().all(|&s| s == 0.5));
+}
+
+#[test]
+fn rebuild_requests_same_key() {
+    let (project, tl) = plugin_timeline(vec![vst3(1, b"")]);
+    let mut keys = Vec::new();
+    for _ in 0..2 {
+        let mut source = PluginSource::default();
+        MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+        keys.push(source.keys);
+    }
+    assert_eq!(keys[0].len(), 1);
+    assert_eq!(keys[0], keys[1]);
+}
+
+#[test]
+fn nested_placements_get_distinct_keys() {
+    let (mut project, compound) = project_with_compound();
+    let nested = project.media_pool[compound].compound.unwrap();
+    project.timelines[nested].tracks[0].mix.effects = vec![vst3(1, b"")];
+    let tl = timeline(vec![audio_track(vec![
+        clip_at(compound, 0, 0, 5),
+        clip_at(compound, 10, 0, 5),
+    ])]);
+    let mut source = PluginSource::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    assert_eq!(source.keys.len(), 2);
+    assert_ne!(source.keys[0], source.keys[1]);
+}
+
+#[test]
+fn duplicate_ids_get_distinct_keys() {
+    let (project, tl) = plugin_timeline(vec![vst3(1, b""), vst3(1, b"")]);
+    let mut source = PluginSource::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    assert_eq!(source.keys.len(), 2);
+    assert_ne!(source.keys[0], source.keys[1]);
+}
+
+#[test]
+fn plugin_state_changes_chain_key() {
+    let key = |state: &[u8]| {
+        let (project, tl) = plugin_timeline(vec![vst3(1, state)]);
+        let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut buffers);
+        chain_key(
+            NormalizeMode::SamplePeak,
+            (RATE, 1),
+            &snap.tracks[0].inserts,
+        )
+    };
+    assert_ne!(key(b"x"), key(b"y"));
+    assert_eq!(key(b"x"), key(b"x"));
+}
+
+#[test]
+fn reset_reaches_plugin() {
+    let (project, tl) = plugin_timeline(vec![vst3(1, b"")]);
+    let plugin = FakePlugin::new(0.5);
+    let mut source = PluginSource {
+        plugin: Some(plugin.clone()),
+        ..Default::default()
+    };
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    let mut state = MixState::new(&snap);
+    let mut out = vec![0.0; 10];
+    mix_range_from(&snap, &mut state, 0, &mut out);
+    let before = plugin.resets.load(Ordering::Relaxed);
+    mix_range_from(&snap, &mut state, 10, &mut out);
+    assert_eq!(plugin.resets.load(Ordering::Relaxed), before, "continuous");
+    mix_range_from(&snap, &mut state, 500, &mut out);
+    assert_eq!(plugin.resets.load(Ordering::Relaxed), before + 1);
+}

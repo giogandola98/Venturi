@@ -4,18 +4,20 @@
 //! produce the same mix.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use vv_core::{
-    AudioEffectKind, ChannelStrip, ClipId, ClipSource, Equalizer, FrameIdx, Keyframed, MediaId,
-    MixerChannel, MultibandCompressor, NormalizeMode, Project, SetLevel, Timeline, TimelineId,
+    AudioEffectKind, ChannelStrip, ClipId, ClipSource, EffectId, Equalizer, FrameIdx, Keyframed,
+    MediaId, MixerChannel, MultibandCompressor, NormalizeMode, Project, SetLevel, Timeline,
+    TimelineId, Vst3Effect,
 };
 
 use crate::blocks::{Run, SampleBlocks};
 use crate::dynamics::{BandActivity, MultibandProcessor};
-use crate::effect::Effect;
+use crate::effect::{Effect, PluginEffect, PluginHandle, PluginRequest};
 use crate::eq::EqProcessor;
 use crate::levels::{
     InputClip, LevelAnalysis, Measured, StableHasher, has_state, hash_channel, hash_inserts,
@@ -267,6 +269,31 @@ pub enum Insert {
     Compressor(MultibandCompressor),
     Mono,
     Eq(Equalizer),
+    Plugin(PluginInsert),
+}
+
+/// A hosted plugin in a chain. Equality is by what it plays, not by the
+/// instance: `handle` is `None` when the source has none (it passes through).
+#[derive(Clone)]
+pub struct PluginInsert {
+    pub key: u64,
+    pub content: u64,
+    pub handle: Option<PluginHandle>,
+}
+
+impl PartialEq for PluginInsert {
+    fn eq(&self, other: &Self) -> bool {
+        (self.key, self.content) == (other.key, other.content)
+    }
+}
+
+impl std::fmt::Debug for PluginInsert {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginInsert")
+            .field("key", &self.key)
+            .field("content", &self.content)
+            .finish()
+    }
 }
 
 /// A mixer strip, ready for the mix: its inserts, then fader and balance.
@@ -358,6 +385,7 @@ impl MixSnapshot {
             None,
             0,
             0,
+            0,
             None,
         )
         .0
@@ -381,6 +409,7 @@ impl MixSnapshot {
             channels,
             source,
             Some(range),
+            0,
             0,
             0,
             None,
@@ -407,6 +436,7 @@ impl MixSnapshot {
             source,
             Some(range),
             depth,
+            0,
             0,
             None,
         )
@@ -470,6 +500,7 @@ impl MixSnapshot {
             range,
             0,
             0,
+            0,
             Some(measured),
         )
         .0
@@ -510,6 +541,12 @@ impl Insert {
                 channels,
             ))),
             Insert::Eq(params) => Some(Box::new(EqProcessor::new(params, sample_rate, channels))),
+            Insert::Plugin(plugin) => plugin.handle.clone().map(|handle| {
+                Box::new(PluginEffect {
+                    handle,
+                    channels: channels as usize,
+                }) as Box<dyn Effect>
+            }),
         }
     }
 }
@@ -759,6 +796,7 @@ pub(crate) fn hash_insert(insert: &Insert, h: &mut impl Hasher) {
                 fields.map(f32::to_bits).hash(h);
             }
         }
+        Insert::Plugin(plugin) => (6u8, plugin.content).hash(h),
         Insert::Eq(params) => {
             4u8.hash(h);
             for band in &params.bands {
@@ -826,6 +864,12 @@ pub trait AudioSource {
     {
         LevelReading::Ready(analysis.measure_with(self))
     }
+
+    /// The processor of a plugin placement, `None` to play it as a
+    /// pass-through. The same `key` asked again gets the same instance.
+    fn plugin(&mut self, _: PluginRequest<'_>) -> Option<PluginHandle> {
+        None
+    }
 }
 
 pub fn stretch_range(
@@ -860,8 +904,10 @@ fn collect_clips(
     range: Option<std::ops::Range<u64>>,
     depth: u32,
     placement: i64,
+    scope: u64,
     measuring: Option<Measured>,
 ) -> (MixSnapshot, bool) {
+    let mut plugin_keys = PluginKeys::new(scope);
     let fps = timeline.fps.as_f64().max(1e-9);
     let mut clips = Vec::new();
     let mut cyclic = false;
@@ -957,6 +1003,7 @@ fn collect_clips(
                     range.is_some().then(|| needed.clone()),
                     depth,
                     nested_placement,
+                    stable_hash((scope, clip.id)),
                 ) else {
                     continue;
                 };
@@ -1053,13 +1100,15 @@ fn collect_clips(
                 segments,
             })
         };
-        let inserts = resolve_chain(
+        let mut inserts = resolve_chain(
             &track.mix,
             stop,
             !track_inputs.is_empty(),
             &track_clips,
+            &mut plugin_keys,
             analyze,
         );
+        attach_plugins(&track.mix, &mut inserts, source, sample_rate);
         // Measured before the fader.
         let bus = match stop {
             Some(_) => Bus::UNITY,
@@ -1103,7 +1152,15 @@ fn collect_clips(
                 segments,
             })
         };
-        let inserts = resolve_chain(&timeline.master, stop, !all.is_empty(), &[], analyze);
+        let mut inserts = resolve_chain(
+            &timeline.master,
+            stop,
+            !all.is_empty(),
+            &[],
+            &mut plugin_keys,
+            analyze,
+        );
+        attach_plugins(&timeline.master, &mut inserts, source, sample_rate);
         let bus = match stop {
             Some(_) => Bus::UNITY,
             None => Bus::from_strip(&timeline.master),
@@ -1133,6 +1190,7 @@ fn resolve_chain(
     stop: Option<usize>,
     has_audio: bool,
     clips: &[(ClipId, u64)],
+    plugin_keys: &mut PluginKeys,
     mut analyze: impl FnMut(&[Insert], Option<(usize, ClipId)>, NormalizeMode) -> LevelReading,
 ) -> Vec<Insert> {
     let mut inserts = Vec::new();
@@ -1181,11 +1239,57 @@ fn resolve_chain(
             AudioEffectKind::MultibandCompressor(params) => Insert::Compressor(params.clone()),
             AudioEffectKind::Mono => Insert::Mono,
             AudioEffectKind::Equalizer(params) => Insert::Eq(params.clone()),
-            AudioEffectKind::Vst3(_) => Insert::Off,
+            AudioEffectKind::Vst3(plugin) => Insert::Plugin(PluginInsert {
+                key: plugin_keys.next(plugin),
+                content: plugin.content_hash(),
+                handle: None,
+            }),
         };
         inserts.push(insert);
     }
     inserts
+}
+
+/// Keys of the plugin placements of one `collect_clips` pass.
+struct PluginKeys {
+    scope: u64,
+    met: HashMap<EffectId, u32>,
+}
+
+impl PluginKeys {
+    fn new(scope: u64) -> Self {
+        Self {
+            scope,
+            met: HashMap::new(),
+        }
+    }
+
+    /// The same id twice in a pass (a duplicated strip) is two placements.
+    fn next(&mut self, effect: &Vst3Effect) -> u64 {
+        let seen = self.met.entry(effect.id).or_insert(0);
+        let occurrence = *seen;
+        *seen += 1;
+        stable_hash((self.scope, effect.id.0, occurrence))
+    }
+}
+
+/// Asks `source` for the processor of each plugin of `inserts`, which
+/// `resolve_chain` produced one per effect of `strip`, in order.
+fn attach_plugins(
+    strip: &ChannelStrip,
+    inserts: &mut [Insert],
+    source: &mut impl AudioSource,
+    sample_rate: u32,
+) {
+    for (effect, insert) in strip.effects.iter().zip(inserts) {
+        if let (AudioEffectKind::Vst3(plugin), Insert::Plugin(slot)) = (&effect.kind, insert) {
+            slot.handle = source.plugin(PluginRequest {
+                key: slot.key,
+                effect: plugin,
+                sample_rate,
+            });
+        }
+    }
 }
 
 /// A reading still on its way plays the last one. `None` for silence,
@@ -1211,6 +1315,7 @@ fn nested_mix(
     frames: Option<std::ops::Range<u64>>,
     depth: u32,
     placement: i64,
+    scope: u64,
 ) -> Option<(MixSnapshot, bool)> {
     if depth >= vv_core::MAX_COMPOUND_DEPTH {
         return Some((MixSnapshot::empty(sample_rate, channels), true));
@@ -1226,6 +1331,7 @@ fn nested_mix(
         frames,
         depth + 1,
         placement,
+        scope,
         None,
     ))
 }
@@ -1516,7 +1622,7 @@ fn apply_inserts(
                     frame.fill(average);
                 }
             }
-            Insert::Compressor(_) | Insert::Eq(_) => {
+            Insert::Compressor(_) | Insert::Eq(_) | Insert::Plugin(_) => {
                 let Some(Some(processor)) = processors.get_mut(index) else {
                     continue;
                 };

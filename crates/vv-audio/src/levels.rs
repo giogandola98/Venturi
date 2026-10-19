@@ -231,9 +231,12 @@ pub(crate) fn hash_inserts(inserts: &[Insert], h: &mut impl Hasher) {
 }
 
 pub(crate) fn has_state(inserts: &[Insert]) -> bool {
-    inserts
-        .iter()
-        .any(|insert| matches!(insert, Insert::Compressor(_) | Insert::Eq(_)))
+    inserts.iter().any(|insert| {
+        matches!(
+            insert,
+            Insert::Compressor(_) | Insert::Eq(_) | Insert::Plugin(_)
+        )
+    })
 }
 
 /// The segments of `inputs` between their edit points; the silence

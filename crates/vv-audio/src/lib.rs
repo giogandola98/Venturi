@@ -16,6 +16,7 @@ pub mod stretch;
 pub mod stretched;
 
 pub use blocks::{BLOCK_FRAMES, SampleBlocks};
+pub use effect::{PluginHandle, PluginProcessor, PluginRequest};
 pub use levels::{LevelAnalysis, LevelSegment, Measured};
 pub use mixer::{
     AnalysisSlot, AudioSource, BandMeter, ClipAudio, ClipInput, LevelReading, MixSnapshot, Mixer,

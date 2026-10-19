@@ -2,6 +2,9 @@
 //! a plugin host later (see plans/AUDIO_LIVE_MIX.md §3.6).
 
 use std::any::Any;
+use std::sync::Arc;
+
+use vv_core::Vst3Effect;
 
 use crate::dynamics::BandActivity;
 
@@ -19,4 +22,45 @@ pub trait Effect: Send {
     fn take_memory_from(&mut self, previous: &dyn Effect);
 
     fn as_any(&self) -> &dyn Any;
+}
+
+/// A hosted plugin, shared by the snapshots that play the same placement.
+pub trait PluginProcessor: Send + Sync {
+    /// In place, interleaved; never blocks: passes through when busy.
+    fn process(&self, samples: &mut [f32], channels: usize);
+    fn reset(&self);
+    fn latency(&self) -> u32;
+}
+
+pub type PluginHandle = Arc<dyn PluginProcessor>;
+
+pub struct PluginRequest<'a> {
+    /// Unique per place the effect plays in this pass: compound path, id, occurrence.
+    pub key: u64,
+    pub effect: &'a Vst3Effect,
+    pub sample_rate: u32,
+}
+
+/// Runs a plugin in a mix. The instance outlives the snapshots, so a new
+/// one has nothing to take over.
+pub(crate) struct PluginEffect {
+    pub handle: PluginHandle,
+    pub channels: usize,
+}
+
+impl Effect for PluginEffect {
+    fn process(&mut self, samples: &mut [f32]) -> Option<BandActivity> {
+        self.handle.process(samples, self.channels);
+        None
+    }
+
+    fn reset(&mut self) {
+        self.handle.reset();
+    }
+
+    fn take_memory_from(&mut self, _: &dyn Effect) {}
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
