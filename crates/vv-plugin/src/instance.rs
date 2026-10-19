@@ -254,8 +254,8 @@ impl Vst3Instance {
     // A plugin that rejects a state keeps its defaults: not worth failing the insert.
     fn load_state(&self, effect: &Vst3Effect) {
         let stream = |bytes: &[u8]| MemStream::new(bytes.to_vec());
-        let component = &effect.component_state.0;
-        let controller = &effect.controller_state.0;
+        let component = &effect.component_state.bytes();
+        let controller = &effect.controller_state.bytes();
         // SAFETY: the streams outlive each call; the plugin copies what it needs.
         unsafe {
             if !component.is_empty() {
@@ -333,7 +333,7 @@ impl Vst3Instance {
                 c.getState(s);
             }
         });
-        (PluginState(component), PluginState(controller))
+        (PluginState::new(component), PluginState::new(controller))
     }
 
     /// An edit gesture ended since the last call.

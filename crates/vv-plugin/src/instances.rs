@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -24,12 +24,19 @@ struct Entry {
     used_this_pass: bool,
 }
 
+/// A key whose creation failed: not retried until its state changes.
+struct Failure {
+    hash: u64,
+    used_this_pass: bool,
+}
+
 /// Instances are torn down on drop, which calls into the plugin: `sweep` and
 /// the drop run on the owner's thread (the UI thread for live, the render's
 /// worker for offline).
 pub struct Instances {
     entries: HashMap<u64, Entry>,
-    known: HashMap<String, PluginInfo>,
+    failed: HashMap<u64, Failure>,
+    known: HashSet<String>,
     make: MakeInstance,
 }
 
@@ -63,7 +70,8 @@ impl Instances {
     pub fn with_maker(known: Vec<PluginInfo>, make: MakeInstance) -> Self {
         Self {
             entries: HashMap::new(),
-            known: known.into_iter().map(|i| (i.class_id.clone(), i)).collect(),
+            failed: HashMap::new(),
+            known: known.into_iter().map(|i| i.class_id).collect(),
             make,
         }
     }
@@ -81,10 +89,26 @@ impl Instances {
             }
             return Some(entry.instance.clone());
         }
-        if !self.known.contains_key(&request.effect.class_id) {
+        if !self.known.contains(&request.effect.class_id) {
             return None;
         }
-        let instance = (self.make)(request.effect, request.sample_rate)?;
+        if let Some(failure) = self.failed.get_mut(&request.key) {
+            failure.used_this_pass = true;
+            if failure.hash == hash {
+                return None;
+            }
+        }
+        let Some(instance) = (self.make)(request.effect, request.sample_rate) else {
+            self.failed.insert(
+                request.key,
+                Failure {
+                    hash,
+                    used_this_pass: true,
+                },
+            );
+            return None;
+        };
+        self.failed.remove(&request.key);
         instance.set_state_hash(hash);
         let handle = instance.clone();
         self.entries.insert(
@@ -101,11 +125,15 @@ impl Instances {
         for entry in self.entries.values_mut() {
             entry.used_this_pass = false;
         }
+        for failure in self.failed.values_mut() {
+            failure.used_this_pass = false;
+        }
     }
 
     /// Drops what the last pass did not ask for.
     pub fn sweep(&mut self) {
         self.entries.retain(|_, e| e.used_this_pass);
+        self.failed.retain(|_, f| f.used_this_pass);
     }
 
     pub fn instance(&self, key: u64) -> Option<Arc<dyn HostedPlugin>> {

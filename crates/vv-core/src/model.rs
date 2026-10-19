@@ -6,6 +6,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::grade::{GradePreset, GradeTracks, GradeValue};
 
@@ -2322,14 +2323,13 @@ pub struct Vst3Effect {
 }
 
 impl Vst3Effect {
-    /// FNV-1a, the same hash as `StableHasher` in vv-audio.
+    /// FNV-1a over the ids and the cached state hashes.
     pub fn content_hash(&self) -> u64 {
         let mut hash = FNV_OFFSET_BASIS;
         hash = fnv1a(hash, self.class_id.as_bytes());
         hash = fnv1a(hash, self.version.as_bytes());
-        for state in [&self.component_state.0, &self.controller_state.0] {
-            hash = fnv1a(hash, &(state.len() as u64).to_le_bytes());
-            hash = fnv1a(hash, state);
+        for state in [&self.component_state, &self.controller_state] {
+            hash = fnv1a(hash, &state.hash().to_le_bytes());
         }
         hash
     }
@@ -2358,23 +2358,59 @@ fn fnv1a(mut hash: u64, bytes: &[u8]) -> u64 {
 }
 
 /// Opaque plugin state. Stored as base64 and printed as its length and hash.
-#[derive(Clone, Default, PartialEq, Eq)]
-pub struct PluginState(pub Vec<u8>);
+/// Shared bytes and a hash computed once: copies and comparisons stay cheap.
+#[derive(Clone)]
+pub struct PluginState {
+    bytes: Arc<[u8]>,
+    hash: u64,
+}
+
+impl PluginState {
+    pub fn new(bytes: Vec<u8>) -> Self {
+        let hash = fnv1a(FNV_OFFSET_BASIS, &bytes);
+        Self {
+            bytes: bytes.into(),
+            hash,
+        }
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn hash(&self) -> u64 {
+        self.hash
+    }
+}
+
+impl Default for PluginState {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
+}
+
+impl PartialEq for PluginState {
+    fn eq(&self, other: &Self) -> bool {
+        self.hash == other.hash && self.bytes == other.bytes
+    }
+}
+
+impl Eq for PluginState {}
 
 impl std::fmt::Debug for PluginState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "PluginState {{ len: {}, hash: {:016x} }}",
-            self.0.len(),
-            fnv1a(FNV_OFFSET_BASIS, &self.0)
+            self.bytes.len(),
+            self.hash
         )
     }
 }
 
 impl Serialize for PluginState {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&BASE64.encode(&self.0))
+        serializer.serialize_str(&BASE64.encode(&self.bytes))
     }
 }
 
@@ -2383,7 +2419,7 @@ impl<'de> Deserialize<'de> for PluginState {
         let text = String::deserialize(deserializer)?;
         BASE64
             .decode(text)
-            .map(Self)
+            .map(Self::new)
             .map_err(serde::de::Error::custom)
     }
 }

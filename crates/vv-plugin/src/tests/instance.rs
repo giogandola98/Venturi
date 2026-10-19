@@ -184,8 +184,8 @@ fn effect(state: Vec<u8>) -> Vst3Effect {
         name: "Venturi Test Gain".into(),
         vendor: "Venturi".into(),
         version: "1.0.0".into(),
-        component_state: PluginState(state),
-        controller_state: PluginState(Vec::new()),
+        component_state: PluginState::new(state),
+        controller_state: PluginState::new(Vec::new()),
     }
 }
 
@@ -234,7 +234,7 @@ fn fixture_state_round_trips() {
     let instance = fixture(Vec::new());
     instance.set_state(&effect(bytes.clone()));
     let (component, _) = instance.get_state();
-    assert_eq!(component.0, bytes);
+    assert_eq!(component.bytes(), bytes);
     let input = ramp(64, 2);
     assert_scaled(&run(&instance, &input), &input, 0.5);
 }
@@ -353,13 +353,16 @@ mod real_plugins {
         let (path, e) = installed("TDR Nova").expect("TDR Nova installed");
         let a = Vst3Instance::new(&path, &e, 48_000, ProcessMode::Realtime).unwrap();
         let (c1, k1) = a.get_state();
-        assert!(!c1.0.is_empty());
+        assert!(!c1.bytes().is_empty());
         let mut saved = e.clone();
         saved.component_state = c1.clone();
         saved.controller_state = k1.clone();
         let b = Vst3Instance::new(&path, &saved, 48_000, ProcessMode::Realtime).unwrap();
         let (c2, k2) = b.get_state();
-        assert_eq!(mask_instance(c1.0), mask_instance(c2.0));
+        assert_eq!(
+            mask_instance(c1.bytes().to_vec()),
+            mask_instance(c2.bytes().to_vec())
+        );
         assert_eq!(k1, k2);
     }
 

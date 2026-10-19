@@ -1595,7 +1595,7 @@ fn vst3(id: u64, state: &[u8]) -> vv_core::AudioEffect {
         name: "Fake".into(),
         vendor: String::new(),
         version: "1".into(),
-        component_state: vv_core::PluginState(state.to_vec()),
+        component_state: vv_core::PluginState::new(state.to_vec()),
         controller_state: Default::default(),
     }))
 }

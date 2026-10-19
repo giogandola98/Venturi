@@ -80,8 +80,8 @@ fn effect(class_id: &str, state: &[u8]) -> Vst3Effect {
         name: "Fake".into(),
         vendor: "Venturi".into(),
         version: "1.0.0".into(),
-        component_state: PluginState(state.to_vec()),
-        controller_state: PluginState(Vec::new()),
+        component_state: PluginState::new(state.to_vec()),
+        controller_state: PluginState::new(Vec::new()),
     }
 }
 
@@ -192,4 +192,50 @@ fn fixture_instance_reused_across_passes() {
         pool.sweep();
     }
     assert!(Arc::ptr_eq(&handles[0], &handles[1]));
+}
+
+fn failing_pool(counts: &Arc<Counts>) -> Instances {
+    let counts = counts.clone();
+    Instances::with_maker(
+        vec![info(CLASS)],
+        Box::new(move |_, _| {
+            counts.made.fetch_add(1, Ordering::SeqCst);
+            None
+        }),
+    )
+}
+
+#[test]
+fn failed_instance_is_not_recreated_every_pass() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = failing_pool(&counts);
+    let e = effect(CLASS, &[1]);
+    for _ in 0..3 {
+        pool.begin_pass();
+        assert!(pool.get(request(7, &e)).is_none());
+        pool.sweep();
+    }
+    assert_eq!(counts.made.load(Ordering::SeqCst), 1);
+    pool.begin_pass();
+    assert!(pool.get(request(7, &effect(CLASS, &[2]))).is_none());
+    assert_eq!(
+        counts.made.load(Ordering::SeqCst),
+        2,
+        "a new state is tried again"
+    );
+}
+
+#[test]
+fn failure_is_forgotten_once_its_key_is_not_asked() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = failing_pool(&counts);
+    let e = effect(CLASS, &[1]);
+    pool.begin_pass();
+    assert!(pool.get(request(7, &e)).is_none());
+    pool.sweep();
+    pool.begin_pass();
+    pool.sweep();
+    pool.begin_pass();
+    assert!(pool.get(request(7, &e)).is_none());
+    assert_eq!(counts.made.load(Ordering::SeqCst), 2);
 }

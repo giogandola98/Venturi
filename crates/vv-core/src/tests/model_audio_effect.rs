@@ -7,8 +7,8 @@ fn vst3(state: Vec<u8>) -> Vst3Effect {
         name: "Test Plugin".into(),
         vendor: "Vendor".into(),
         version: "1.0".into(),
-        component_state: PluginState(state),
-        controller_state: PluginState(vec![7, 8, 9]),
+        component_state: PluginState::new(state),
+        controller_state: PluginState::new(vec![7, 8, 9]),
     }
 }
 
@@ -40,7 +40,7 @@ fn vst3_effect_round_trips_through_ron() {
 
 #[test]
 fn plugin_state_debug_is_compact() {
-    let state = PluginState(vec![0u8; 1 << 20]);
+    let state = PluginState::new(vec![0u8; 1 << 20]);
     assert!(format!("{state:?}").len() < 64);
 }
 
@@ -57,7 +57,7 @@ fn content_hash_depends_on_the_states() {
     let a = vst3(vec![1, 2, 3]);
     let mut b = a.clone();
     assert_eq!(a.content_hash(), b.content_hash());
-    b.controller_state = PluginState(vec![0]);
+    b.controller_state = PluginState::new(vec![0]);
     assert_ne!(a.content_hash(), b.content_hash());
 }
 

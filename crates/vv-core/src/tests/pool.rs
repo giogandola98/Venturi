@@ -117,8 +117,8 @@ fn duplicate_timeline_gives_plugin_effects_fresh_ids() {
             name: "Plugin".into(),
             vendor: "Vendor".into(),
             version: "1.0".into(),
-            component_state: PluginState(vec![1, 2, 3]),
-            controller_state: PluginState(vec![4]),
+            component_state: PluginState::new(vec![1, 2, 3]),
+            controller_state: PluginState::new(vec![4]),
         }))
     };
     let track_effect = plugin(EffectId::fresh());
