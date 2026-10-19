@@ -1245,10 +1245,10 @@ fn resolve_chain(
     mut analyze: impl FnMut(&[Insert], Option<(usize, ClipId)>, NormalizeMode) -> LevelReading,
 ) -> Vec<Insert> {
     let mut inserts = Vec::new();
-    for (effect, plugin) in strip
+    for (i, effect) in strip
         .effects
         .iter()
-        .zip(plugins.iter_mut())
+        .enumerate()
         .take(stop.unwrap_or(usize::MAX))
     {
         if !effect.enabled {
@@ -1295,7 +1295,10 @@ fn resolve_chain(
             AudioEffectKind::MultibandCompressor(params) => Insert::Compressor(params.clone()),
             AudioEffectKind::Mono => Insert::Mono,
             AudioEffectKind::Equalizer(params) => Insert::Eq(params.clone()),
-            AudioEffectKind::Vst3(_) => plugin.take().map_or(Insert::Off, Insert::Plugin),
+            AudioEffectKind::Vst3(_) => plugins
+                .get_mut(i)
+                .and_then(Option::take)
+                .map_or(Insert::Off, Insert::Plugin),
         };
         inserts.push(insert);
     }
@@ -1347,10 +1350,11 @@ fn request_plugins(
     source: &mut impl AudioSource,
     sample_rate: u32,
 ) -> Vec<Option<PluginInsert>> {
-    strip
-        .effects
-        .iter()
-        .take(stop.unwrap_or(usize::MAX))
+    let effects = || strip.effects.iter().take(stop.unwrap_or(usize::MAX));
+    if !effects().any(|e| e.enabled && matches!(e.kind, AudioEffectKind::Vst3(_))) {
+        return Vec::new();
+    }
+    effects()
         .map(|effect| match &effect.kind {
             AudioEffectKind::Vst3(plugin) if effect.enabled => {
                 let key = plugin_keys.next(plugin);
