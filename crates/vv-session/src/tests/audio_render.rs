@@ -862,3 +862,90 @@ fn export_applies_fixture_gain() {
         assert!((a - b).abs() < 1e-5, "sample {i}: {a} vs {b}");
     }
 }
+
+const ECHO_FRAMES: usize = 7 * PROJECT_SAMPLE_RATE as usize;
+
+/// One 0.5 tap `ECHO_FRAMES` after the input, so its tail outlives a chunk.
+struct Echo(std::sync::Mutex<(Vec<f32>, usize)>);
+
+impl Echo {
+    fn new() -> Self {
+        let len = ECHO_FRAMES * PROJECT_CHANNELS as usize;
+        Self(std::sync::Mutex::new((vec![0.0; len], 0)))
+    }
+}
+
+impl vv_audio::PluginProcessor for Echo {
+    fn process(&self, samples: &mut [f32], _: usize) {
+        let (line, at) = &mut *self.0.lock().unwrap();
+        for s in samples {
+            let delayed = line[*at];
+            line[*at] = *s;
+            *s += 0.5 * delayed;
+            *at = (*at + 1) % line.len();
+        }
+    }
+    fn reset(&self) {
+        let (line, at) = &mut *self.0.lock().unwrap();
+        line.fill(0.0);
+        *at = 0;
+    }
+    fn latency(&self) -> u32 {
+        0
+    }
+}
+
+impl vv_plugin::HostedPlugin for Echo {
+    fn set_state(&self, _: &vv_core::Vst3Effect) {}
+    fn state_hash(&self) -> u64 {
+        0
+    }
+    fn set_state_hash(&self, _: u64) {}
+}
+
+#[test]
+fn a_tail_rings_through_a_gap_spanning_chunks_and_no_ghost_follows() {
+    let mut project = Project::default();
+    let id = media(&mut project, chirp("echo.wav", 48_000, 5), 48_000, 1);
+    let mut dry = audio_track(vec![clip(1, id, 0, 25, 0), clip(2, id, 0, 25, 750)]);
+    let plain = timeline(vec![dry.clone()]);
+    dry.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    let echoed = timeline(vec![dry]);
+    let range = samples(0..875);
+    assert!(range.end - range.start > 6 * CHUNK_FRAMES);
+
+    let known = vec![vv_plugin::PluginInfo {
+        class_id: FIXTURE_CLASS.into(),
+        name: "Test".into(),
+        vendor: "Venturi".into(),
+        version: "1.0.0".into(),
+        path: PathBuf::from("/fake.vst3"),
+    }];
+    let plugins =
+        vv_plugin::Instances::with_maker(known, Box::new(|_, _| Some(Arc::new(Echo::new()))));
+    let mut chunked = Vec::new();
+    render_with_plugins(
+        &project,
+        Mix::Timeline(&echoed),
+        range.clone(),
+        &mut LevelCache::default(),
+        Some(plugins),
+        |chunk| {
+            chunked.extend_from_slice(chunk);
+            ControlFlow::Continue(())
+        },
+    )
+    .unwrap();
+
+    let dry = rendered(&project, &plain, range);
+    let delay = ECHO_FRAMES * PROJECT_CHANNELS as usize;
+    assert_eq!(chunked.len(), dry.len());
+    let mut echoes = 0;
+    for (i, got) in chunked.iter().enumerate() {
+        let tap = i.checked_sub(delay).map_or(0.0, |j| dry[j]);
+        let want = dry[i] + 0.5 * tap;
+        assert!((got - want).abs() < 1e-6, "sample {i}: {got} vs {want}");
+        echoes += (tap != 0.0) as usize;
+    }
+    assert!(echoes > 0);
+}
