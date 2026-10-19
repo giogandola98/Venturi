@@ -1,5 +1,5 @@
 //! The interface the mixer drives an effect with: the built-in ones today,
-//! a plugin host later (see plans/AUDIO_LIVE_MIX.md §3.6).
+//! VST3 plugins through the same seam (see plans/VST3_HOST.md).
 
 use std::any::Any;
 use std::sync::Arc;
