@@ -38,6 +38,8 @@ pub struct Instances {
     failed: HashMap<u64, Failure>,
     known: HashSet<String>,
     make: MakeInstance,
+    /// Instances an editor window drives, by the key they stand for.
+    held: HashMap<u64, Arc<dyn HostedPlugin>>,
 }
 
 impl Instances {
@@ -73,6 +75,7 @@ impl Instances {
             failed: HashMap::new(),
             known: known.into_iter().map(|i| i.class_id).collect(),
             make,
+            held: HashMap::new(),
         }
     }
 
@@ -98,7 +101,9 @@ impl Instances {
                 return None;
             }
         }
-        let Some(instance) = (self.make)(request.effect, request.sample_rate) else {
+        let held = self.held.get(&request.key).cloned();
+        let Some(instance) = held.or_else(|| (self.make)(request.effect, request.sample_rate))
+        else {
             self.failed.insert(
                 request.key,
                 Failure {
@@ -109,6 +114,9 @@ impl Instances {
             return None;
         };
         self.failed.remove(&request.key);
+        if self.held.contains_key(&request.key) && instance.state_hash() != hash {
+            instance.set_state(request.effect);
+        }
         instance.set_state_hash(hash);
         let handle = instance.clone();
         self.entries.insert(
@@ -119,6 +127,13 @@ impl Instances {
             },
         );
         Some(handle)
+    }
+
+    /// Replaces the held instances: when a key has none, `get` takes the held
+    /// one instead of making another, so a window keeps driving what plays
+    /// after the effect is disabled and enabled again.
+    pub fn set_held(&mut self, held: Vec<(u64, Arc<dyn HostedPlugin>)>) {
+        self.held = held.into_iter().collect();
     }
 
     /// Whether `effect` is a scanned plugin: what `get` needs to try it.
