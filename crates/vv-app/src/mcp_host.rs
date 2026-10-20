@@ -479,13 +479,14 @@ impl VenturiApp {
         let Some(mcp) = &self.mcp else {
             return Some(false);
         };
-        if self.session.epoch() != self.seen_epoch {
-            return None;
-        }
         let shared = mcp.shared.clone();
         let mut slot = shared.slot.lock().unwrap();
+        // Between frames `self.session` is only a placeholder.
         if slot.in_ui {
-            return Some(false);
+            return (self.session.epoch() == self.seen_epoch).then_some(false);
+        }
+        if slot.session.epoch() != self.seen_epoch {
+            return None;
         }
         std::mem::swap(&mut self.session, &mut slot.session);
         slot.in_ui = true;

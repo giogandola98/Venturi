@@ -5434,7 +5434,9 @@ fn a_scan_result_updates_installed_and_the_cache_together() {
 }
 
 #[derive(Default)]
-struct GestureOnce(std::sync::Mutex<Option<(vv_core::PluginState, vv_core::PluginState)>>);
+pub(crate) struct GestureOnce(
+    std::sync::Mutex<Option<(vv_core::PluginState, vv_core::PluginState)>>,
+);
 
 impl vv_audio::PluginProcessor for GestureOnce {
     fn process(&self, _: &mut [f32], _: usize) {}
@@ -5456,9 +5458,8 @@ impl vv_plugin::HostedPlugin for GestureOnce {
     }
 }
 
-// A hidden main window gets `App::logic` only, never `App::ui`.
-#[test]
-fn plugin_editors_are_pumped_by_logic_without_a_ui_pass() {
+/// An app whose timeline has one plugin and an editor holding an unrecorded gesture.
+pub(crate) fn app_with_pending_gesture() -> (VenturiApp, vv_core::TimelineId) {
     let mut app = VenturiApp::default();
     let id = app.ensure_timeline();
     let effect = vv_core::Vst3Effect {
@@ -5481,16 +5482,24 @@ fn plugin_editors_are_pumped_by_logic_without_a_ui_pass() {
     let key = (id, vv_core::MixerChannel::Master, vv_core::EffectId(7), 0);
     app.plugin_editors
         .defer_gesture(key, std::sync::Arc::new(gesture));
+    (app, id)
+}
 
+pub(crate) fn plugin_state(app: &VenturiApp, id: vv_core::TimelineId) -> Vec<u8> {
+    match &app.session.project.timelines[id].master.effects[0].kind {
+        vv_core::AudioEffectKind::Vst3(v) => v.component_state.bytes().to_vec(),
+        _ => panic!("not a plugin"),
+    }
+}
+
+// A hidden main window gets `App::logic` only, never `App::ui`.
+#[test]
+fn plugin_editors_are_pumped_by_logic_without_a_ui_pass() {
+    let (mut app, id) = app_with_pending_gesture();
     let steps = app.session.history.labels().count();
     let ctx = egui::Context::default();
     eframe::App::logic(&mut app, &ctx, &mut eframe::Frame::_new_kittest());
 
     assert_eq!(app.session.history.labels().count(), steps + 1);
-    let vv_core::AudioEffectKind::Vst3(v) =
-        &app.session.project.timelines[id].master.effects[0].kind
-    else {
-        panic!("not a plugin");
-    };
-    assert_eq!(v.component_state.bytes(), [9]);
+    assert_eq!(plugin_state(&app, id), [9]);
 }
