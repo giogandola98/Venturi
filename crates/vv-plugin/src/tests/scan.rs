@@ -231,11 +231,27 @@ fn json_bundle(dir: &Path, name: &str, cid: &str) {
     std::fs::write(res.join("moduleinfo.json"), info_json(cid)).unwrap();
 }
 
-fn fresh_dir(tag: &str) -> PathBuf {
+/// Removes its tree when dropped, also when the test panics.
+struct TempTree(PathBuf);
+
+impl std::ops::Deref for TempTree {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempTree {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn fresh_dir(tag: &str) -> TempTree {
     let root = std::env::temp_dir().join(format!("vv-scan-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
-    root
+    TempTree(root)
 }
 
 #[cfg(unix)]
@@ -259,9 +275,9 @@ fn a_root_symlinked_to_another_root_lists_each_plugin_once() {
 fn a_symlink_loop_terminates_and_lists_the_bundle_once() {
     let root = fresh_dir("loop");
     json_bundle(&root, "A.vst3", "AA");
-    std::os::unix::fs::symlink(&root, root.join("a")).unwrap();
-    std::os::unix::fs::symlink(&root, root.join("b")).unwrap();
-    assert_eq!(scan(&[root]).len(), 1);
+    std::os::unix::fs::symlink(&*root, root.join("a")).unwrap();
+    std::os::unix::fs::symlink(&*root, root.join("b")).unwrap();
+    assert_eq!(scan(&[root.to_path_buf()]).len(), 1);
 }
 
 #[cfg(unix)]
@@ -271,8 +287,8 @@ fn a_bundle_reached_through_two_links_is_listed_once() {
     json_bundle(&root.join("real"), "A.vst3", "AA");
     std::os::unix::fs::symlink(root.join("real"), root.join("l1")).unwrap();
     std::os::unix::fs::symlink(root.join("real/A.vst3"), root.join("A2.vst3")).unwrap();
-    assert_eq!(bundles_in(std::slice::from_ref(&root)).len(), 1);
-    assert_eq!(scan(&[root]).len(), 1);
+    assert_eq!(bundles_in(&[root.to_path_buf()]).len(), 1);
+    assert_eq!(scan(&[root.to_path_buf()]).len(), 1);
 }
 
 #[test]
@@ -281,7 +297,7 @@ fn the_same_class_id_in_two_bundles_is_listed_once() {
     json_bundle(&root, "A.vst3", "AA");
     json_bundle(&root.join("V"), "A.vst3", "AA");
     json_bundle(&root, "B.vst3", "BB");
-    let infos = scan(std::slice::from_ref(&root));
+    let infos = scan(&[root.to_path_buf()]);
     assert_eq!(infos.len(), 2);
     assert_eq!(infos[0].path, root.join("A.vst3"));
 }
