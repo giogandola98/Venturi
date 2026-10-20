@@ -64,6 +64,9 @@ pub struct Vst3Instance {
     // Only a separate controller object is initialized and terminated by us.
     separate_controller: bool,
     connections: Option<(ComPtr<IConnectionPoint>, ComPtr<IConnectionPoint>)>,
+    // Drop only undoes what succeeded: VST3 forbids deactivating a plugin never activated.
+    active: bool,
+    processing: bool,
     pub(crate) handler: ComPtr<IComponentHandler>,
     host: ComPtr<FUnknown>,
     shared: Arc<Shared>,
@@ -148,6 +151,8 @@ impl Vst3Instance {
             controller: None,
             separate_controller: false,
             connections: None,
+            active: false,
+            processing: false,
             handler,
             host,
             shared,
@@ -168,8 +173,10 @@ impl Vst3Instance {
         // SAFETY: setup is complete; these start the processing the mixer drives.
         unsafe {
             ok(this.component.setActive(1), "setActive")?;
+            this.active = true;
             // Informational: the SDK default returns kNotImplemented.
             this.processor.setProcessing(1);
+            this.processing = true;
             this.latency
                 .store(this.processor.getLatencySamples(), Ordering::Relaxed);
         }
@@ -604,8 +611,12 @@ impl Drop for Vst3Instance {
     fn drop(&mut self) {
         // SAFETY: tears down in reverse of setup on live interfaces.
         unsafe {
-            self.processor.setProcessing(0);
-            self.component.setActive(0);
+            if self.processing {
+                self.processor.setProcessing(0);
+            }
+            if self.active {
+                self.component.setActive(0);
+            }
             if let Some(c) = &self.controller {
                 c.setComponentHandler(std::ptr::null_mut());
             }
