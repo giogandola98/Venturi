@@ -18,6 +18,8 @@ pub struct TimelineInfo {
     /// In/out range, `None` if it covers the whole timeline.
     pub marks: Option<(FrameIdx, FrameIdx)>,
     pub has_audio: bool,
+    /// Plugins are being scanned and the project uses some.
+    pub waits_for_scan: bool,
 }
 
 pub enum ExportDialogAction {
@@ -433,7 +435,10 @@ impl ExportDialog {
         let mut action = ExportDialogAction::None;
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(path.is_ok(), egui::Button::new(t!("export.start")))
+                .add_enabled(
+                    path.is_ok() && !info.waits_for_scan,
+                    egui::Button::new(t!("export.start")),
+                )
                 .clicked()
                 && let Ok(path) = path
             {
@@ -447,6 +452,9 @@ impl ExportDialog {
             }
             if ui.button(t!("common.cancel")).clicked() {
                 action = ExportDialogAction::Cancel;
+            }
+            if info.waits_for_scan {
+                ui.weak(t!("mixer.vst3_scanning"));
             }
         });
         action

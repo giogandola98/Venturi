@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::PluginInfo;
@@ -14,6 +15,18 @@ pub fn installed() -> Arc<[PluginInfo]> {
 /// Replaces the list: the app seeds it from its cache and after a rescan.
 pub fn set_installed(list: Vec<PluginInfo>) {
     *INSTALLED.lock().unwrap_or_else(|e| e.into_inner()) = Some(list.into());
+}
+
+static SCANNING: AtomicBool = AtomicBool::new(false);
+
+/// Whether the app's background scan is still running: `installed()` may be
+/// incomplete until it ends.
+pub fn scanning() -> bool {
+    SCANNING.load(Ordering::Acquire)
+}
+
+pub fn set_scanning(on: bool) {
+    SCANNING.store(on, Ordering::Release);
 }
 
 #[cfg(test)]

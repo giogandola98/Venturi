@@ -851,6 +851,7 @@ impl VenturiApp {
             has_audio: timeline
                 .tracks_of_kind(TrackKind::Audio)
                 .any(|(_, t)| !t.clips.is_empty()),
+            waits_for_scan: self.session.export_waits_for_scan(),
         };
         match dialog.show(ui.ctx(), &info) {
             export_dialog::ExportDialogAction::None => {}

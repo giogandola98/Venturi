@@ -18,3 +18,12 @@ fn installed_is_empty_until_seeded_and_never_scans() {
     set_installed(vec![info.clone()]);
     assert_eq!(&*installed(), &[info]);
 }
+
+#[test]
+fn the_scan_flag_is_set_and_cleared() {
+    assert!(!scanning());
+    set_scanning(true);
+    assert!(scanning());
+    set_scanning(false);
+    assert!(!scanning());
+}

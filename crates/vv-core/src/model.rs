@@ -3086,6 +3086,23 @@ pub struct ProjectView {
 }
 
 impl Project {
+    /// Whether any timeline has a VST3 effect on a track or master strip.
+    pub fn uses_plugins(&self) -> bool {
+        self.timelines.values().any(|timeline| {
+            timeline
+                .tracks
+                .iter()
+                .map(|track| &track.mix)
+                .chain([&timeline.master])
+                .any(|strip| {
+                    strip
+                        .effects
+                        .iter()
+                        .any(|effect| matches!(effect.kind, AudioEffectKind::Vst3(_)))
+                })
+        })
+    }
+
     pub fn alloc_clip_id(&mut self) -> ClipId {
         let id = ClipId(self.next_clip_id);
         self.next_clip_id += 1;

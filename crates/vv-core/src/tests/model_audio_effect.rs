@@ -79,3 +79,25 @@ fn with_fresh_ids_changes_only_vst3() {
     assert_eq!(before.version, after.version);
     assert_eq!(before.component_state, after.component_state);
 }
+
+#[test]
+fn uses_plugins_sees_a_vst3_on_any_strip_of_any_timeline() {
+    let mut project = Project::default();
+    let mut timeline = Timeline {
+        name: "t".into(),
+        fps: Rational::new(30, 1),
+        resolution: (1920, 1080),
+        tracks: vec![Track::new(TrackKind::Audio)],
+        markers: Vec::new(),
+        master: Default::default(),
+    };
+    let id = project.timelines.insert(timeline.clone());
+    assert!(!project.uses_plugins());
+
+    timeline
+        .master
+        .effects
+        .push(AudioEffect::new(AudioEffectKind::Vst3(vst3(vec![1]))));
+    project.timelines[id] = timeline;
+    assert!(project.uses_plugins());
+}
