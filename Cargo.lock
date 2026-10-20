@@ -4717,6 +4717,7 @@ name = "vv-mcp"
 version = "0.8.1"
 dependencies = [
  "base64 0.22.1",
+ "libc",
  "png",
  "rmcp",
  "schemars",
