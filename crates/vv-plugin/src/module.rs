@@ -27,29 +27,38 @@ type Slot<T> = Arc<Mutex<Option<Result<T, String>>>>;
 type Registry<T> = Mutex<Option<HashMap<PathBuf, Slot<T>>>>;
 
 static MODULES: Registry<Arc<Module>> = Mutex::new(None);
-static BUILDS: Mutex<Option<HashMap<PathBuf, u64>>> = Mutex::new(None);
+type Stamp = Option<(u64, Option<std::time::Duration>)>;
+static STAMPS: Mutex<Option<HashMap<PathBuf, Stamp>>> = Mutex::new(None);
 
-/// Of the module binary (or the bundle itself when that is a file) at its
-/// first use and never refreshed: modules are never unloaded, so it describes
-/// the code this process runs, and every pool agrees.
+fn stamp_of(file: &Path) -> Stamp {
+    let meta = std::fs::metadata(file).ok()?;
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+    Some((meta.len(), modified))
+}
+
+fn stamps() -> std::sync::MutexGuard<'static, Option<HashMap<PathBuf, Stamp>>> {
+    STAMPS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Of the module binary as `load` opened it, so it describes the code this
+/// process runs and every pool agrees; modules are never unloaded. A module
+/// not loaded yet is stat'ed once (the bundle itself when that is a file).
 pub(crate) fn build(bundle: &Path, version: &str) -> u64 {
-    let mut guard = BUILDS.lock().unwrap_or_else(|e| e.into_inner());
-    *guard
-        .get_or_insert_with(HashMap::new)
-        .entry(bundle.to_path_buf())
-        .or_insert_with(|| {
-            let file = bundle_binary(bundle)
-                .filter(|binary| binary.is_file())
-                .unwrap_or_else(|| bundle.to_path_buf());
-            let stamp = std::fs::metadata(file).ok().map(|meta| {
-                let modified = meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
-                (meta.len(), modified)
-            });
-            vv_core::stable_hash((version, stamp))
-        })
+    let known = stamps().as_ref().and_then(|m| m.get(bundle).copied());
+    let stamp = known.unwrap_or_else(|| {
+        let file = bundle_binary(bundle)
+            .filter(|binary| binary.is_file())
+            .unwrap_or_else(|| bundle.to_path_buf());
+        let stamp = stamp_of(&file);
+        *stamps()
+            .get_or_insert_with(HashMap::new)
+            .entry(bundle.to_path_buf())
+            .or_insert(stamp)
+    });
+    vv_core::stable_hash((version, stamp))
 }
 
 pub(crate) struct LoadError {
@@ -169,6 +178,9 @@ fn load(bundle: &Path) -> Result<Module, LoadError> {
     let bin = binary_path(bundle, &cf_bundle)?;
     #[cfg(not(target_os = "macos"))]
     let bin = binary_path(bundle)?;
+    stamps()
+        .get_or_insert_with(HashMap::new)
+        .insert(bundle.to_path_buf(), stamp_of(&bin));
     let (library, handle) =
         open(&bin).map_err(|e| LoadError::early(format!("{}: {e}", bin.display())))?;
     #[cfg(target_os = "macos")]
