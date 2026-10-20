@@ -112,3 +112,20 @@ fn host_creates_messages_with_round_tripping_attributes() {
         assert_ne!(attrs.getInt(key("missing").as_ptr(), &mut i), kResultOk);
     }
 }
+
+#[test]
+fn stream_write_far_past_the_end_is_refused_without_allocating() {
+    use vst3::Steinberg::{IBStream, IBStreamTrait};
+    let stream = MemStream::new(Vec::new());
+    let s = stream.as_com_ref::<IBStream>().unwrap();
+    let body = [1u8];
+    // SAFETY: valid buffers and out-pointers on a live stream.
+    unsafe {
+        assert_eq!(s.seek(i64::MAX - 1, 0, std::ptr::null_mut()), kResultOk);
+        assert_ne!(
+            s.write(body.as_ptr().cast_mut().cast(), 1, std::ptr::null_mut()),
+            kResultOk
+        );
+    }
+    assert!(stream.take().is_empty());
+}
