@@ -139,7 +139,16 @@ mod macos {
 </dict></plist>
 "#;
 
-    fn renamed_bundle() -> PathBuf {
+    /// Removes the directory it names when dropped, also when a test panics.
+    struct RemoveOnDrop(PathBuf);
+
+    impl Drop for RemoveOnDrop {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn renamed_bundle() -> (PathBuf, RemoveOnDrop) {
         let src = fixture_bundle().join("Contents/MacOS");
         let binary = std::fs::read_dir(src)
             .unwrap()
@@ -153,12 +162,12 @@ mod macos {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::copy(binary, dir.join("PluginHooksVST3")).unwrap();
         std::fs::write(bundle.join("Contents/Info.plist"), PLIST).unwrap();
-        bundle
+        (bundle, RemoveOnDrop(root))
     }
 
     #[test]
     fn bundle_executable_may_differ_from_the_folder_name() {
-        let bundle = renamed_bundle();
+        let (bundle, _root) = renamed_bundle();
         let found = scan(&[bundle.parent().unwrap().to_path_buf()]);
         assert_eq!(found.len(), 1, "{found:?}");
         let effect = Vst3Effect {

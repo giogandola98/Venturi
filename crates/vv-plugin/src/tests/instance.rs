@@ -676,16 +676,47 @@ fn lifecycle_log_path(tag: u8) -> std::path::PathBuf {
     ))
 }
 
-fn lifecycle_calls(tag: u8, class: &str) -> (Result<Arc<Vst3Instance>, String>, Vec<String>) {
-    let path = lifecycle_log_path(tag);
-    let _ = std::fs::remove_file(&path);
-    let result = Vst3Instance::new(
+/// Clears the log on creation and removes it on drop, also when a test panics.
+struct FixtureLog(std::path::PathBuf);
+
+impl FixtureLog {
+    fn new(tag: u8) -> Self {
+        Self::at(lifecycle_log_path(tag))
+    }
+
+    fn at(path: std::path::PathBuf) -> Self {
+        let _ = std::fs::remove_file(&path);
+        Self(path)
+    }
+
+    fn calls(&self) -> Vec<String> {
+        read_log(&self.0)
+    }
+}
+
+impl Drop for FixtureLog {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+#[test]
+fn fixture_log_is_removed_on_drop() {
+    let path = std::env::temp_dir().join(format!("venturi-log-guard-{}", std::process::id()));
+    let log = FixtureLog::at(path.clone());
+    std::fs::write(&path, "call\n").unwrap();
+    assert_eq!(log.calls(), ["call"]);
+    drop(log);
+    assert!(!path.exists());
+}
+
+fn lifecycle_build(class: &str) -> Result<Arc<Vst3Instance>, String> {
+    Vst3Instance::new(
         &fixture_bundle(),
         &effect_of(class, Vec::new()),
         48_000,
         ProcessMode::Realtime,
-    );
-    (result, read_log(&path))
+    )
 }
 
 fn read_log(path: &std::path::Path) -> Vec<String> {
@@ -698,25 +729,27 @@ fn read_log(path: &std::path::Path) -> Vec<String> {
 
 #[test]
 fn a_plugin_that_rejects_the_stereo_bus_is_never_deactivated() {
-    let (result, calls) = lifecycle_calls(9, "56565445535447414E00000000000009");
+    let log = FixtureLog::new(9);
+    let result = lifecycle_build("56565445535447414E00000000000009");
     assert!(result.is_err());
-    assert_eq!(calls, ["terminate"]);
+    assert_eq!(log.calls(), ["terminate"]);
 }
 
 #[test]
 fn a_plugin_that_rejects_setup_is_never_deactivated() {
-    let (result, calls) = lifecycle_calls(10, "56565445535447414E0000000000000A");
+    let log = FixtureLog::new(10);
+    let result = lifecycle_build("56565445535447414E0000000000000A");
     assert!(result.is_err());
-    assert_eq!(calls, ["terminate"]);
+    assert_eq!(log.calls(), ["terminate"]);
 }
 
 #[test]
 fn a_built_instance_is_torn_down_in_reverse_order() {
-    let (result, calls) = lifecycle_calls(11, "56565445535447414E0000000000000B");
-    assert_eq!(calls, ["setActive(1)", "setProcessing(1)"]);
-    let instance = result.unwrap();
+    let log = FixtureLog::new(11);
+    let instance = lifecycle_build("56565445535447414E0000000000000B").unwrap();
+    assert_eq!(log.calls(), ["setActive(1)", "setProcessing(1)"]);
     instance.reactivate();
-    let calls = read_log(&lifecycle_log_path(11));
+    let calls = log.calls();
     assert_eq!(
         calls[2..],
         [
@@ -727,7 +760,7 @@ fn a_built_instance_is_torn_down_in_reverse_order() {
         ]
     );
     drop(instance);
-    let calls = read_log(&lifecycle_log_path(11));
+    let calls = log.calls();
     assert_eq!(
         calls[6..],
         ["setProcessing(0)", "setActive(0)", "terminate"]
