@@ -531,7 +531,9 @@ impl Vst3Instance {
 
     fn read_state(&self) -> Option<(Vec<u8>, Vec<u8>)> {
         let state = self.try_read_state();
-        if state.is_none() && first_failure(&format!("getState:{}", self.class_id)) {
+        if state.is_none()
+            && first_failure(&format!("getState:{}", self.class_id), "getState failed")
+        {
             eprintln!("vv-plugin: {}: getState failed", self.class_id);
         }
         state

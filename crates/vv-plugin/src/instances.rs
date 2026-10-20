@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use vv_audio::{PluginHandle, PluginRequest};
 use vv_core::{PluginState, Vst3Effect};
@@ -42,12 +42,50 @@ pub trait HostedPlugin: vv_audio::PluginProcessor {
     }
 }
 
-/// Whether `class_id` has not failed yet in this process: pools are per
-/// worker, so the same plugin would otherwise log once per pool.
-pub(crate) fn first_failure(class_id: &str) -> bool {
-    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    let mut seen = SEEN.get_or_init(Default::default).lock().unwrap();
-    seen.insert(class_id.to_owned())
+/// Bounds the log so a plugin with ever-changing messages cannot grow it.
+const FAILURE_LOG_CAP: usize = 256;
+
+/// The (key, reason) failures already printed since the last reset. Pools
+/// are per worker, so one failure would otherwise print once per pool.
+#[derive(Default)]
+struct FailureLog {
+    seen: HashSet<(String, String)>,
+}
+
+impl FailureLog {
+    /// Whether `reason` for `key` is new; it is then remembered.
+    fn first(&mut self, key: &str, reason: &str) -> bool {
+        if self.seen.len() >= FAILURE_LOG_CAP {
+            return false;
+        }
+        self.seen.insert((key.to_owned(), reason.to_owned()))
+    }
+
+    fn reset(&mut self) {
+        self.seen.clear();
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.seen.len()
+    }
+}
+
+static FAILURE_LOG: Mutex<Option<FailureLog>> = Mutex::new(None);
+
+fn with_failure_log<T>(f: impl FnOnce(&mut FailureLog) -> T) -> T {
+    let mut guard = FAILURE_LOG.lock().unwrap();
+    f(guard.get_or_insert_with(FailureLog::default))
+}
+
+/// Whether `reason` for `key` has not been printed since the last reset.
+pub(crate) fn first_failure(key: &str, reason: &str) -> bool {
+    with_failure_log(|log| log.first(key, reason))
+}
+
+/// Lets every failure print again: called on a rescan and on a retry.
+fn reset_failure_log() {
+    with_failure_log(FailureLog::reset);
 }
 
 struct Slot {
@@ -101,7 +139,7 @@ impl Instances {
             match made {
                 Ok(instance) => Some(instance as Arc<dyn HostedPlugin>),
                 Err(err) => {
-                    if first_failure(&effect.class_id) {
+                    if first_failure(&effect.class_id, &err.to_string()) {
                         eprintln!("vv-plugin: {}: {err}", effect.name);
                     }
                     None
@@ -316,6 +354,7 @@ impl Instances {
     /// the others are returned, and failures are forgotten so new plugins
     /// are tried.
     pub fn refresh(&mut self, known: Arc<[PluginInfo]>) -> Vec<Arc<dyn HostedPlugin>> {
+        reset_failure_log();
         self.known = known
             .iter()
             .map(|i| (i.class_id.clone(), i.clone()))
@@ -355,6 +394,7 @@ impl Instances {
 
     /// Forgets every failure so the next `get` tries again.
     pub fn clear_failures(&mut self) {
+        reset_failure_log();
         self.slots
             .retain(|_, slot| matches!(slot.state, SlotState::Ready { .. }));
     }
