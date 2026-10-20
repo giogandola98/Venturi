@@ -17,6 +17,9 @@ struct Timer {
     next: Instant,
 }
 
+/// Used only when no watcher thread could be started.
+const FD_POLL: Duration = Duration::from_millis(16);
+
 /// What the plugin asked of the host's event loop.
 ///
 /// Dropping a handler may run the plugin's destructor, which can unregister
@@ -28,6 +31,7 @@ pub(super) struct RunLoop {
     timers: RefCell<Vec<Timer>>,
     watcher: RefCell<Option<FdWatcher>>,
     extra_fd: Option<c_int>,
+    poll_fallback: bool,
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -39,6 +43,7 @@ impl RunLoop {
             w.set_fds(extra_fd.into_iter().collect());
         }
         Self {
+            poll_fallback: watcher.is_none(),
             watcher: RefCell::new(watcher),
             extra_fd,
             ..Default::default()
@@ -134,8 +139,11 @@ impl RunLoop {
         kResultOk
     }
 
-    /// The next timer deadline; fds wake the app through the watcher.
+    /// The next timer deadline; fds wake the app through the watcher (polled if it failed).
     pub fn next_wake(&self) -> Option<Duration> {
+        if self.poll_fallback && !self.handlers.try_borrow().ok()?.is_empty() {
+            return Some(FD_POLL);
+        }
         let now = Instant::now();
         let timers = self.timers.try_borrow().ok()?;
         let next = timers.iter().map(|t| t.next).min()?;
