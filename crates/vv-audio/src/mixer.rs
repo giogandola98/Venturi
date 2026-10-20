@@ -575,7 +575,7 @@ impl MixSnapshot {
 
     /// Whether the chain of `track` may output something once its input is
     /// silent: a processing plugin, here or in a compound clip. The
-    /// compressor and the equalizer give silence back within `settle_frames`.
+    /// compressor and the equalizer give silence back once they have settled.
     fn track_rings(&self, track: usize) -> bool {
         has_processing_plugin(&self.track(track).inserts)
             || self.groups.iter().any(|(t, range)| {
@@ -617,6 +617,26 @@ impl Insert {
     }
 }
 
+/// Below this a chain's output counts as silence.
+const SILENCE: f32 = 1e-6;
+
+/// Whether a track without a plugin may skip its blocks: its last clip
+/// ended `last_end` and the output of its chain has gone quiet.
+#[derive(Clone, Copy)]
+struct Idle {
+    last_end: u64,
+    settled: bool,
+    ringing: bool,
+}
+
+impl Idle {
+    const SETTLED: Self = Self {
+        last_end: 0,
+        settled: true,
+        ringing: false,
+    };
+}
+
 /// The memory of the mix between two calls: the state of the effects that
 /// have one, and where the previous call ended. A call that does not follow
 /// on starts them over.
@@ -633,9 +653,8 @@ pub struct MixState {
     /// measured through a plugin that passes through here: they are dropped.
     track_skip: Vec<usize>,
     master_skip: usize,
-    /// Per track: frames since a clip last played on it; `u64::MAX` when
-    /// nothing remembers. Unused for the tracks in `rings`.
-    quiet: Vec<u64>,
+    /// Per track, for those not in `rings`.
+    idle: Vec<Idle>,
     /// Per track: a plugin may ring on after the input stops, so the chain
     /// runs through the gaps.
     rings: Vec<bool>,
@@ -686,7 +705,7 @@ impl MixState {
             peaks: vec![[0.0; 2]; snapshot.tracks.len()],
             track_skip,
             master_skip,
-            quiet: vec![u64::MAX; snapshot.tracks.len()],
+            idle: vec![Idle::SETTLED; snapshot.tracks.len()],
             rings,
             #[cfg(test)]
             skipped_blocks: 0,
@@ -721,8 +740,8 @@ impl MixState {
             }
         }
         self.next = previous.next;
-        for (quiet, old) in self.quiet.iter_mut().zip(&previous.quiet) {
-            *quiet = *old;
+        for (idle, old) in self.idle.iter_mut().zip(&previous.idle) {
+            *idle = *old;
         }
     }
 
@@ -739,7 +758,7 @@ impl MixState {
         for nested in self.nested.iter_mut().flatten() {
             nested.rendered.clear();
         }
-        self.quiet.fill(u64::MAX);
+        self.idle.fill(Idle::SETTLED);
     }
 }
 
@@ -1845,22 +1864,26 @@ fn mix_into(
         for (track, range) in &snapshot.groups {
             if !state.rings.get(*track).copied().unwrap_or(true) {
                 let end = block_time + len as u64;
-                let plays = snapshot.clips[range.clone()]
-                    .iter()
-                    .any(|clip| clip.start < end && clip.start + clip.len > block_time);
-                let quiet = &mut state.quiet[*track];
-                if plays {
-                    *quiet = 0;
-                } else if *quiet != u64::MAX {
-                    *quiet = quiet.saturating_add(len as u64);
-                    if *quiet >= snapshot.settle_frames() {
-                        *quiet = u64::MAX;
-                        if let Some(chain) = state.tracks.get_mut(*track) {
-                            chain.iter_mut().flatten().for_each(|p| p.reset());
-                        }
+                let mut plays = false;
+                let idle = &mut state.idle[*track];
+                for clip in &snapshot.clips[range.clone()] {
+                    if clip.start < end {
+                        idle.last_end = idle.last_end.max(clip.start + clip.len);
+                        plays |= clip.start + clip.len > block_time;
                     }
                 }
-                if !plays && *quiet == u64::MAX {
+                if plays {
+                    idle.settled = false;
+                } else if !idle.settled
+                    && !idle.ringing
+                    && block_time >= idle.last_end + snapshot.settle_frames()
+                {
+                    idle.settled = true;
+                    if let Some(chain) = state.tracks.get_mut(*track) {
+                        chain.iter_mut().flatten().for_each(|p| p.reset());
+                    }
+                }
+                if idle.settled {
                     #[cfg(test)]
                     {
                         state.skipped_blocks += 1;
@@ -1887,14 +1910,19 @@ fn mix_into(
                 state.track_skip.get(*track).copied().unwrap_or(usize::MAX),
             );
             let mut peak = [0.0f32; 2];
+            let mut raw = 0.0f32;
             for (dst, src) in block.chunks_exact_mut(ch).zip(scratch.chunks_exact(ch)) {
                 for (c, (d, s)) in dst.iter_mut().zip(src).enumerate() {
+                    raw = raw.max(s.abs());
                     let value = s * channel.bus.channel_gain(c, ch);
                     *d += value;
                     if c < 2 {
                         peak[c] = peak[c].max(value.abs());
                     }
                 }
+            }
+            if let Some(idle) = state.idle.get_mut(*track) {
+                idle.ringing = raw > SILENCE;
             }
             if let Some(track_peak) = state.peaks.get_mut(*track) {
                 *track_peak = [track_peak[0].max(peak[0]), track_peak[1].max(peak[1])];
