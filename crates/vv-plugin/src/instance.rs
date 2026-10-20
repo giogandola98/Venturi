@@ -6,13 +6,14 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, TryLockError};
 
 use vst3::Steinberg::Vst::{
-    AudioBusBuffers, AudioBusBuffers__type0, BusInfo, IAudioProcessor, IAudioProcessorTrait,
-    IComponent, IComponentHandler, IComponentTrait, IConnectionPoint, IConnectionPointTrait,
-    IEditController, IEditControllerTrait, IParameterChanges, ParameterInfo, ParameterInfo_,
-    ProcessContext, ProcessData, ProcessSetup, RestartFlags_, SpeakerArr, SpeakerArrangement,
+    AudioBusBuffers, AudioBusBuffers__type0, IAudioProcessor, IAudioProcessorTrait, IComponent,
+    IComponentHandler, IComponentTrait, IConnectionPoint, IConnectionPointTrait, IEditController,
+    IEditControllerTrait, IParameterChanges, ParameterInfo, ParameterInfo_, ProcessContext,
+    ProcessData, ProcessSetup, RestartFlags_, SpeakerArr, SpeakerArrangement,
 };
 use vst3::Steinberg::{
-    FUnknown, IBStream, IPluginBaseTrait, TUID, kNotImplemented, kResultFalse, kResultOk, tresult,
+    FUnknown, IBStream, IPluginBaseTrait, TUID, kNotImplemented, kResultFalse, kResultOk,
+    kResultTrue, tresult,
 };
 use vst3::{ComPtr, ComWrapper};
 use vv_audio::{MIX_BLOCK_FRAMES, PluginProcessor};
@@ -57,8 +58,6 @@ impl ProcessMode {
     }
 }
 
-// Channels past this on an extra bus are not given a buffer.
-const MAX_BUS_CHANNELS: usize = 8;
 const MAX_BUSES: i32 = 16;
 
 /// One `AudioBusBuffers` per declared bus of a direction, built once so that
@@ -333,12 +332,18 @@ impl Vst3Instance {
                     .collect::<Vec<_>>()
             });
             // A rejection is fine if the default arrangement is already stereo.
-            self.processor.setBusArrangements(
+            let full = self.processor.setBusArrangements(
                 layouts[0].as_mut_ptr(),
                 counts[0],
                 layouts[1].as_mut_ptr(),
                 counts[1],
             );
+            if full != kResultTrue {
+                // Plugins that only take the main buses still get their stereo pair.
+                let mut stereo = [SpeakerArr::kStereo];
+                self.processor
+                    .setBusArrangements(stereo.as_mut_ptr(), 1, stereo.as_mut_ptr(), 1);
+            }
             let dirs = [ids::INPUT, ids::OUTPUT];
             for (arr, dir) in arranged.iter_mut().zip(dirs) {
                 let res = self.processor.getBusArrangement(dir, 0, arr);
@@ -390,14 +395,10 @@ impl Vst3Instance {
             for index in 1..count {
                 // SAFETY: a live component; `info` is a plain C struct filled by the callee.
                 let channels = unsafe {
-                    let mut info: BusInfo = std::mem::zeroed();
-                    let res = self.component.getBusInfo(ids::AUDIO, dir, index, &mut info);
+                    let mut arr = SpeakerArr::kStereo;
+                    self.processor.getBusArrangement(dir, index, &mut arr);
                     self.component.activateBus(ids::AUDIO, dir, index, 0);
-                    if res == kResultOk {
-                        (info.channelCount.max(1) as usize).min(MAX_BUS_CHANNELS)
-                    } else {
-                        2
-                    }
+                    (arr.count_ones() as usize).max(1)
                 };
                 let mut planes = vec![vec![0.0f32; MIX_BLOCK_FRAMES]; channels];
                 let table = planes.iter_mut().map(|c| c.as_mut_ptr()).collect();
