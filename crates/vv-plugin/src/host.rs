@@ -82,6 +82,9 @@ pub(crate) struct Shared {
     /// Latest value per parameter, coalesced by id. The UI thread may grow it; the
     /// audio thread takes at most `MAX_PARAMS` per block and leaves the rest queued.
     pub params: Mutex<Vec<(ParamID, ParamValue)>>,
+    /// Latest output parameter value per id, from the audio thread to the UI.
+    pub outputs: Mutex<Vec<(ParamID, ParamValue)>>,
+    pub has_outputs: AtomicBool,
     pub dirty: AtomicBool,
     pub latency_changed: AtomicBool,
     waker: Mutex<Option<Waker>>,
@@ -91,6 +94,8 @@ impl Shared {
     pub fn new() -> Self {
         Self {
             params: Mutex::new(Vec::with_capacity(MAX_PARAMS)),
+            outputs: Mutex::new(Vec::with_capacity(MAX_PARAMS)),
+            has_outputs: AtomicBool::new(false),
             dirty: AtomicBool::new(false),
             latency_changed: AtomicBool::new(false),
             waker: Mutex::new(None),
@@ -240,12 +245,13 @@ impl IBStreamTrait for MemStream {
     }
 }
 
-/// One parameter with its single point, at sample offset 0.
+/// One parameter with at most one point; an output queue keeps the last one added.
 struct ParamQueue {
     id: Cell<ParamID>,
     value: Cell<ParamValue>,
-    // The output side takes points from the plugin and forgets them.
-    sink: bool,
+    offset: Cell<int32>,
+    points: Cell<int32>,
+    output: bool,
 }
 
 impl Class for ParamQueue {
@@ -258,24 +264,27 @@ impl IParamValueQueueTrait for ParamQueue {
     }
 
     unsafe fn getPointCount(&self) -> int32 {
-        i32::from(!self.sink)
+        self.points.get()
     }
 
     unsafe fn getPoint(&self, index: int32, offset: *mut int32, value: *mut ParamValue) -> tresult {
-        if index != 0 || self.sink || offset.is_null() || value.is_null() {
+        if index != 0 || self.points.get() == 0 || offset.is_null() || value.is_null() {
             return kInvalidArgument;
         }
         unsafe {
-            *offset = 0;
+            *offset = self.offset.get();
             *value = self.value.get();
         }
         kResultOk
     }
 
-    unsafe fn addPoint(&self, _offset: int32, _value: ParamValue, index: *mut int32) -> tresult {
-        if !self.sink {
+    unsafe fn addPoint(&self, offset: int32, value: ParamValue, index: *mut int32) -> tresult {
+        if !self.output {
             return kResultFalse;
         }
+        self.offset.set(offset);
+        self.value.set(value);
+        self.points.set(1);
         if !index.is_null() {
             unsafe { *index = 0 };
         }
@@ -287,8 +296,7 @@ impl IParamValueQueueTrait for ParamQueue {
 pub(crate) struct ParamChanges {
     queues: Vec<ComWrapper<ParamQueue>>,
     count: Cell<usize>,
-    // Some plugins write output changes unconditionally.
-    sink: Option<ComWrapper<ParamQueue>>,
+    output: bool,
 }
 
 // SAFETY: the cells are only touched by the thread that holds the instance's
@@ -297,22 +305,21 @@ unsafe impl Send for ParamChanges {}
 unsafe impl Sync for ParamChanges {}
 
 impl ParamChanges {
-    fn make(sink: bool) -> ComWrapper<Self> {
-        let queue = |sink| {
-            ComWrapper::new(ParamQueue {
-                id: Cell::new(0),
-                value: Cell::new(0.0),
-                sink,
-            })
-        };
+    fn make(output: bool) -> ComWrapper<Self> {
         ComWrapper::new(Self {
-            queues: if sink {
-                Vec::new()
-            } else {
-                (0..MAX_PARAMS).map(|_| queue(false)).collect()
-            },
+            queues: (0..MAX_PARAMS)
+                .map(|_| {
+                    ComWrapper::new(ParamQueue {
+                        id: Cell::new(0),
+                        value: Cell::new(0.0),
+                        offset: Cell::new(0),
+                        points: Cell::new(0),
+                        output,
+                    })
+                })
+                .collect(),
             count: Cell::new(0),
-            sink: sink.then(|| queue(true)),
+            output,
         })
     }
 
@@ -320,7 +327,7 @@ impl ParamChanges {
         Self::make(false)
     }
 
-    pub fn output_sink() -> ComWrapper<Self> {
+    pub fn output() -> ComWrapper<Self> {
         Self::make(true)
     }
 
@@ -333,7 +340,17 @@ impl ParamChanges {
         if let Some(q) = self.queues.get(n) {
             q.id.set(id);
             q.value.set(value);
+            q.points.set(1);
             self.count.set(n + 1);
+        }
+    }
+
+    /// The last point of every queue that has one.
+    pub fn for_each_value(&self, mut f: impl FnMut(ParamID, ParamValue)) {
+        for q in self.queues.iter().take(self.count.get()) {
+            if q.points.get() > 0 {
+                f(q.id.get(), q.value.get());
+            }
         }
     }
 }
@@ -359,16 +376,36 @@ impl IParameterChangesTrait for ParamChanges {
 
     unsafe fn addParameterData(
         &self,
-        _id: *const ParamID,
+        id: *const ParamID,
         index: *mut int32,
     ) -> *mut IParamValueQueue {
-        let Some(sink) = &self.sink else {
+        if !self.output || id.is_null() {
             return std::ptr::null_mut();
+        }
+        // SAFETY: non-null id from the plugin.
+        let id = unsafe { *id };
+        let count = self.count.get();
+        let found = self
+            .queues
+            .iter()
+            .take(count)
+            .position(|q| q.id.get() == id);
+        let slot = match found {
+            Some(i) => i,
+            None if count < self.queues.len() => {
+                self.queues[count].id.set(id);
+                self.queues[count].points.set(0);
+                self.count.set(count + 1);
+                count
+            }
+            None => return std::ptr::null_mut(),
         };
         if !index.is_null() {
-            unsafe { *index = 0 };
+            unsafe { *index = slot as int32 };
         }
-        sink.as_com_ref::<IParamValueQueue>()
+        self.queues
+            .get(slot)
+            .and_then(|q| q.as_com_ref::<IParamValueQueue>())
             .map_or(std::ptr::null_mut(), |r| r.as_ptr())
     }
 }

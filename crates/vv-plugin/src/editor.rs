@@ -21,6 +21,8 @@ mod platform;
 #[path = "editor/x11.rs"]
 mod platform;
 
+const METER_POLL: std::time::Duration = std::time::Duration::from_millis(33);
+
 type Resizer = Rc<dyn Fn(i32, i32)>;
 
 /// What the plugin calls back on: resizes the window, then tells the view.
@@ -151,6 +153,9 @@ impl Editor {
 
     /// Pumps the window and, on Linux, the plugin's registered fds and timers.
     pub fn idle(&mut self) {
+        if let Some(vst3) = self.instance.as_vst3() {
+            vst3.forward_outputs();
+        }
         #[cfg(target_os = "linux")]
         self.frame.run_loop.pump();
         if let Some((width, height)) = self.window.idle() {
@@ -173,10 +178,19 @@ impl Editor {
 
     /// When `idle` is next needed besides the waker's calls; `None` to sleep.
     pub fn next_wake(&self) -> Option<std::time::Duration> {
+        // Meters driven by output parameters have no other reason to wake the app.
+        let meters = self
+            .instance
+            .as_vst3()
+            .is_some_and(|v| v.has_outputs())
+            .then_some(METER_POLL);
         #[cfg(target_os = "linux")]
-        return self.frame.run_loop.next_wake();
+        return match (meters, self.frame.run_loop.next_wake()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         #[cfg(not(target_os = "linux"))]
-        None
+        meters
     }
 
     pub fn is_open(&self) -> bool {
