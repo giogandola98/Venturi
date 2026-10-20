@@ -1428,8 +1428,9 @@ impl PluginKeys {
     }
 }
 
-/// Asks `source` for the processor of each enabled plugin of `strip` up to
-/// `stop`, once: aligned with its effects, `None` for the others. Before the
+/// Asks `source` for the processor of each plugin of `strip` up to `stop`,
+/// once (a bypassed one only to keep its instance): aligned with its
+/// effects, `None` for the bypassed and the others. Before the
 /// chain is resolved, since the keys of its measures include whether each
 /// plugin processes.
 fn request_plugins(
@@ -1456,13 +1457,14 @@ fn request_plugins(
         .zip(keys)
         .take(stop.unwrap_or(usize::MAX))
         .map(|(effect, key)| match (&effect.kind, key) {
-            (AudioEffectKind::Vst3(plugin), Some(key)) if effect.enabled => {
+            (AudioEffectKind::Vst3(plugin), Some(key)) => {
                 let handle = source.plugin(PluginRequest {
                     key,
                     effect: plugin,
                     sample_rate,
+                    process: effect.enabled,
                 });
-                Some(PluginInsert {
+                effect.enabled.then(|| PluginInsert {
                     key,
                     content: plugin.content_hash(),
                     handle,

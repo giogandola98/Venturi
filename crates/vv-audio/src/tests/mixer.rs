@@ -1634,6 +1634,7 @@ struct PluginSource {
     inner: CountingSource,
     plugin: Option<Arc<FakePlugin>>,
     keys: Vec<u64>,
+    processed: Vec<bool>,
 }
 
 impl AudioSource for PluginSource {
@@ -1643,6 +1644,7 @@ impl AudioSource for PluginSource {
 
     fn plugin(&mut self, request: crate::effect::PluginRequest<'_>) -> Option<PluginHandle> {
         self.keys.push(request.key);
+        self.processed.push(request.process);
         self.plugin.clone().map(|p| p as PluginHandle)
     }
 }
@@ -1822,7 +1824,7 @@ fn disabled_plugin_is_off() {
         ..Default::default()
     };
     let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
-    assert!(source.keys.is_empty());
+    assert_eq!(source.processed, [false], "kept alive, not processed");
     assert!(matches!(snap.tracks[0].inserts[0], Insert::Off));
     assert!(mixed(&snap, 40).iter().all(|&s| s == 0.5));
 }
@@ -2157,7 +2159,9 @@ fn a_disabled_duplicate_keeps_the_panel_and_mixer_keys_in_agreement() {
     let mut source = PluginSource::default();
     MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
     let key = crate::mixer::plugin_key_in(0, &tl, MixerChannel::Track(0), 1).unwrap();
-    assert_eq!(source.keys, [key]);
+    assert_eq!(source.keys.len(), 2);
+    assert_eq!(source.processed, [false, true]);
+    assert_eq!(source.keys[1], key);
 }
 
 #[test]

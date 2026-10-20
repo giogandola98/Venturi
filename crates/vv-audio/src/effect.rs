@@ -39,6 +39,9 @@ pub struct PluginRequest<'a> {
     pub key: u64,
     pub effect: &'a Vst3Effect,
     pub sample_rate: u32,
+    /// `false` for a bypassed plugin: its live instance is kept, nothing is
+    /// made or processed.
+    pub process: bool,
 }
 
 /// Runs a plugin in a mix. The instance outlives the snapshots, so a new
