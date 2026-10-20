@@ -898,7 +898,10 @@ fn build_in(path: &std::path::Path, version: &str, class_id: &str) -> Option<u64
         version: version.into(),
         ..info(CLASS)
     };
-    let pool = Instances::with_maker(vec![info].into(), Box::new(|_, _, _| None));
+    let pool = Instances::with_maker(
+        vec![info].into(),
+        Box::new(|_: &std::path::Path, _: &Vst3Effect, _: u32| None),
+    );
     pool.build(&effect(class_id, &[]))
 }
 
@@ -942,4 +945,21 @@ fn a_lowercase_project_class_id_finds_the_scanned_plugin() {
     let loaded: Vst3Effect = serde_json::from_value(json).unwrap();
     assert!(pool.knows(&loaded));
     assert!(pool.build(&loaded).is_some());
+}
+
+#[test]
+fn a_cached_lowercase_list_and_a_lowercase_project_still_match() {
+    let cached = format!(
+        r#"{{"class_id": "{}", "name": "n", "vendor": "v", "version": "1", "path": "/fake.vst3"}}"#,
+        FIXTURE_CLASS_ID.to_ascii_lowercase()
+    );
+    let info: PluginInfo = serde_json::from_str(&cached).unwrap();
+    let pool = Instances::with_maker(
+        vec![info].into(),
+        Box::new(|_: &std::path::Path, _: &Vst3Effect, _: u32| None),
+    );
+    let mut json = serde_json::to_value(fixture_effect(&[])).unwrap();
+    json["class_id"] = FIXTURE_CLASS_ID.to_ascii_lowercase().into();
+    let loaded: Vst3Effect = serde_json::from_value(json).unwrap();
+    assert!(pool.knows(&loaded));
 }

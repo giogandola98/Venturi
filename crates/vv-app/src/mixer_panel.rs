@@ -11,7 +11,7 @@ use vv_core::{
     SetLevel, SetMixerParam, SetTrackFlag, Timeline, TimelineId, TrackFlag, TrackKind,
 };
 
-use vv_core::{EffectId, PluginState, Vst3Effect};
+use vv_core::{EffectId, PluginState, Vst3Effect, canonical_class_id};
 use vv_plugin::PluginInfo;
 
 use crate::properties_panel::{BoxedCommand, drag_field, slider_field};
@@ -385,7 +385,7 @@ pub(crate) fn vst3_menu(list: &[PluginInfo]) -> Vec<(String, Vec<&PluginInfo>)> 
 pub(crate) fn add_plugin_effect(plugin: &PluginInfo) -> AudioEffectKind {
     AudioEffectKind::Vst3(Vst3Effect {
         id: EffectId::fresh(),
-        class_id: plugin.class_id.clone(),
+        class_id: canonical_class_id(&plugin.class_id),
         name: plugin.name.clone(),
         vendor: plugin.vendor.clone(),
         version: plugin.version.clone(),

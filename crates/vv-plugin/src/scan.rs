@@ -8,6 +8,7 @@ use vv_core::canonical_class_id;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PluginInfo {
+    #[serde(deserialize_with = "vv_core::deserialize_class_id")]
     pub class_id: String,
     pub name: String,
     pub vendor: String,

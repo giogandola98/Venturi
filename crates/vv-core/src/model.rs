@@ -2317,7 +2317,8 @@ pub fn canonical_class_id(cid: &str) -> String {
     cid.to_ascii_uppercase()
 }
 
-fn deserialize_class_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+/// Serde hook for class id fields: loads any spelling in canonical form.
+pub fn deserialize_class_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     String::deserialize(d).map(|cid| canonical_class_id(&cid))
 }
 

@@ -105,7 +105,7 @@ fn add_plugin_effect_has_fresh_id() {
         panic!("not a plugin");
     };
     assert_ne!(a.id, b.id);
-    assert_eq!((a.class_id.as_str(), a.name.as_str()), ("ab", "Comp"));
+    assert_eq!((a.class_id.as_str(), a.name.as_str()), ("AB", "Comp"));
     assert_eq!(a.component_state, vv_core::PluginState::default());
 }
 
