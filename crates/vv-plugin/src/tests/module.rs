@@ -36,7 +36,7 @@ fn a_cached_path_does_not_wait_for_another_path_loading() {
         started_rx.recv().unwrap();
         let (done_tx, done_rx) = mpsc::channel();
         s.spawn(move || {
-            let again = cached(&reg, Path::new("a"), || panic!("a is cached")).unwrap();
+            let again = cached(reg, Path::new("a"), || panic!("a is cached")).unwrap();
             done_tx.send(again).unwrap();
         });
         let again = done_rx.recv_timeout(Duration::from_secs(5));
@@ -64,7 +64,7 @@ fn another_path_loads_while_one_is_loading() {
         let (done_tx, done_rx) = mpsc::channel();
         s.spawn(move || {
             done_tx
-                .send(cached(&reg, Path::new("fast"), || Ok(Arc::new(2))))
+                .send(cached(reg, Path::new("fast"), || Ok(Arc::new(2))))
                 .unwrap();
         });
         let fast = done_rx.recv_timeout(Duration::from_secs(5));
