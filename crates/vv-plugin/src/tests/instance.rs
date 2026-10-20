@@ -193,6 +193,17 @@ fn split_fixture() -> Arc<Vst3Instance> {
 }
 
 #[test]
+fn a_fresh_split_controller_mirrors_the_processor_defaults() {
+    let instance = fixture_instance(&effect_of("56565445535447414E00000000000014", Vec::new()));
+    assert!(instance.separate_controller);
+    let controller = instance.controller().expect("controller");
+    // SAFETY: a live controller.
+    assert_eq!(unsafe { controller.getParamNormalized(0) }, 0.25);
+    let (component, _) = instance.get_state().expect("state");
+    assert_eq!(component.bytes(), 0.25f32.to_le_bytes());
+}
+
+#[test]
 fn plugin_whose_set_processing_fails_still_loads_and_processes() {
     for class_id in [
         "56565445535447414E00000000000004", // kNotImplemented
