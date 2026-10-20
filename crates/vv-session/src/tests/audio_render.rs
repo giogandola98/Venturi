@@ -837,8 +837,8 @@ fn render_creates_plugins_once_per_render() {
         path: PathBuf::from("/fake.vst3"),
     }];
     let plugins = vv_plugin::Instances::with_maker(
-        known,
-        Box::new(move |_, _| {
+        known.into(),
+        Box::new(move |_, _, _| {
             counter.fetch_add(1, Ordering::SeqCst);
             Some(Arc::new(Passthrough))
         }),
@@ -948,8 +948,8 @@ fn a_tail_rings_through_a_gap_spanning_chunks_and_no_ghost_follows() {
         path: PathBuf::from("/fake.vst3"),
     }];
     let plugins = vv_plugin::Instances::with_maker(
-        known,
-        Box::new(|_, _| Some(Arc::new(Echo::new(Default::default())))),
+        known.into(),
+        Box::new(|_, _, _| Some(Arc::new(Echo::new(Default::default())))),
     );
     let mut chunked = Vec::new();
     render_with_plugins(
@@ -987,8 +987,8 @@ fn echo_plugins(calls: Arc<std::sync::atomic::AtomicUsize>) -> vv_plugin::Instan
         path: PathBuf::from("/fake.vst3"),
     }];
     vv_plugin::Instances::with_maker(
-        known,
-        Box::new(move |_, _| Some(Arc::new(Echo::new(calls.clone())))),
+        known.into(),
+        Box::new(move |_, _, _| Some(Arc::new(Echo::new(calls.clone())))),
     )
 }
 
@@ -1081,8 +1081,8 @@ fn consecutive_renders_through_a_cache_reuse_its_plugins() {
     let counter = made.clone();
     let mut levels = fixed_list_cache();
     levels.plugins = Some(vv_plugin::Instances::with_maker(
-        fake_known(),
-        Box::new(move |_, _| {
+        fake_known().into(),
+        Box::new(move |_, _, _| {
             counter.fetch_add(1, Ordering::SeqCst);
             Some(Arc::new(Echo::new(Default::default())))
         }),
@@ -1109,8 +1109,8 @@ fn a_failing_plugin_is_attempted_once_across_renders() {
     let counter = tried.clone();
     let mut levels = fixed_list_cache();
     levels.plugins = Some(vv_plugin::Instances::with_maker(
-        fake_known(),
-        Box::new(move |_, _| {
+        fake_known().into(),
+        Box::new(move |_, _, _| {
             counter.fetch_add(1, Ordering::SeqCst);
             None
         }),
@@ -1136,8 +1136,8 @@ fn a_rescan_drops_the_pools_kept_between_renders() {
     let made: Arc<std::sync::Mutex<Vec<Arc<Passthrough>>>> = Arc::default();
     let kept = made.clone();
     levels.plugins = Some(vv_plugin::Instances::with_maker(
-        fake_known(),
-        Box::new(move |_, _| {
+        fake_known().into(),
+        Box::new(move |_, _, _| {
             let instance = Arc::new(Passthrough);
             kept.lock().unwrap().push(instance.clone());
             Some(instance)

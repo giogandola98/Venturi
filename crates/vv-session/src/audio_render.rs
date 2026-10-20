@@ -697,6 +697,13 @@ struct StreamingAudio<'c> {
 }
 
 impl<'c> StreamingAudio<'c> {
+    /// Made on first use, from the list the cache knows.
+    fn plugins(&mut self) -> &mut Instances {
+        let known = self.cache.known.clone().unwrap_or_else(|| Arc::from([]));
+        self.plugins
+            .get_or_insert_with(|| Instances::offline(known))
+    }
+
     fn new(cache: &'c mut LevelCache) -> Self {
         Self {
             readers: Vec::new(),
@@ -885,19 +892,11 @@ impl AudioSource for Provider<'_, '_> {
     }
 
     fn plugin(&mut self, request: PluginRequest<'_>) -> Option<PluginHandle> {
-        let known = known_plugins(self.audio.cache);
-        self.audio
-            .plugins
-            .get_or_insert_with(|| Instances::offline(known))
-            .get(request)
+        self.audio.plugins().get(request)
     }
 
     fn plugin_available(&mut self, effect: &vv_core::Vst3Effect) -> bool {
-        let known = known_plugins(self.audio.cache);
-        self.audio
-            .plugins
-            .get_or_insert_with(|| Instances::offline(known))
-            .knows(effect)
+        self.audio.plugins().knows(effect)
     }
 
     fn level(&mut self, analysis: LevelAnalysis) -> LevelReading {
@@ -1122,10 +1121,6 @@ fn decode_into(path: &Path, streams: &[usize], from: u64, tx: &SyncSender<Decode
         },
     );
     let _ = tx.send(Decoded::End(result.map(drop).map_err(|e| e.to_string())));
-}
-
-fn known_plugins(cache: &LevelCache) -> Vec<vv_plugin::PluginInfo> {
-    cache.known.as_deref().unwrap_or_default().to_vec()
 }
 
 #[cfg(test)]

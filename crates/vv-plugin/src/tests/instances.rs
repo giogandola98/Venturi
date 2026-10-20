@@ -71,8 +71,8 @@ fn info(class_id: &str) -> PluginInfo {
 fn pool(counts: &Arc<Counts>) -> Instances {
     let counts = counts.clone();
     Instances::with_maker(
-        vec![info(CLASS)],
-        Box::new(move |effect, _| {
+        vec![info(CLASS)].into(),
+        Box::new(move |_, effect, _| {
             counts.made.fetch_add(1, Ordering::SeqCst);
             Some(Arc::new(Fake {
                 hash: AtomicU64::new(effect.content_hash()),
@@ -282,7 +282,7 @@ fn fixture_instance_reused_across_passes() {
     let infos = scan(&[fixture_bundle().parent().unwrap().to_path_buf()]);
     let class_id = infos.first().expect("fixture is scanned").class_id.clone();
     let e = effect(&class_id, &0.25f32.to_le_bytes());
-    let mut pool = Instances::realtime(infos);
+    let mut pool = Instances::realtime(infos.into());
     let mut handles = Vec::new();
     for _ in 0..2 {
         pool.begin_pass();
@@ -295,8 +295,8 @@ fn fixture_instance_reused_across_passes() {
 fn failing_pool(counts: &Arc<Counts>) -> Instances {
     let counts = counts.clone();
     Instances::with_maker(
-        vec![info(CLASS)],
-        Box::new(move |_, _| {
+        vec![info(CLASS)].into(),
+        Box::new(move |_, _, _| {
             counts.made.fetch_add(1, Ordering::SeqCst);
             None
         }),
@@ -432,8 +432,8 @@ fn a_restart_request_is_serviced_by_the_pool_without_an_editor() {
         .expect("latency fixture instance");
     let shared = instance.clone();
     let mut pool = Instances::with_maker(
-        vec![info(class_id)],
-        Box::new(move |_, _| Some(shared.clone() as Arc<dyn HostedPlugin>)),
+        vec![info(class_id)].into(),
+        Box::new(move |_, _, _| Some(shared.clone() as Arc<dyn HostedPlugin>)),
     );
     pool.begin_pass();
     pool.get(request(1, &e)).expect("instance");
@@ -486,4 +486,23 @@ fn clearing_failures_retries_the_same_state() {
     assert!(!pool.failed(7));
     assert!(pool.get(request(7, &e)).is_none());
     assert_eq!(counts.made.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn make_gets_the_path_the_class_was_scanned_from() {
+    let made = Arc::new(std::sync::Mutex::new(Vec::<PathBuf>::new()));
+    let seen = made.clone();
+    let mut pool = Instances::with_maker(
+        vec![info(CLASS)].into(),
+        Box::new(move |path, _, _| {
+            seen.lock().unwrap().push(path.to_path_buf());
+            None
+        }),
+    );
+    let e = effect(CLASS, &[]);
+    pool.begin_pass();
+    assert!(pool.get(request(1, &e)).is_none());
+    let unknown = effect("UNKNOWN", &[]);
+    assert!(pool.get(request(2, &unknown)).is_none());
+    assert_eq!(*made.lock().unwrap(), vec![PathBuf::from("/fake.vst3")]);
 }
