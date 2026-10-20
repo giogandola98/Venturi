@@ -156,11 +156,17 @@ fn binary_path(bundle: &Path, cf_bundle: &BundleRef) -> Result<PathBuf, String> 
 
 #[cfg(not(target_os = "macos"))]
 fn binary_path(bundle: &Path) -> Result<PathBuf, String> {
-    let stem = stem(bundle)?.to_string_lossy();
     Ok(bundle
         .join("Contents")
         .join(format!("{}-linux", std::env::consts::ARCH))
-        .join(format!("{stem}.so")))
+        .join(so_file_name(stem(bundle)?)))
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+fn so_file_name(stem: &std::ffi::OsStr) -> std::ffi::OsString {
+    let mut name = stem.to_os_string();
+    name.push(".so");
+    name
 }
 
 /// The file `load` opens for this bundle, for callers that watch it change.

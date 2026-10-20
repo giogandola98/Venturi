@@ -1,4 +1,4 @@
-use super::{LoadError, Registry, c_str, cached};
+use super::{LoadError, Registry, c_str, cached, so_file_name};
 use std::ffi::c_char;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -196,4 +196,14 @@ mod macos {
         println!("RX 11 plugins listed: {rx} of {} total", found.len());
         assert!(rx > 0);
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn the_so_name_keeps_the_stem_bytes() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    let raw = OsStr::from_bytes(b"Caf\xe9");
+    assert_eq!(so_file_name(raw).into_vec(), b"Caf\xe9.so");
+    assert_eq!(so_file_name(OsStr::new("Gain")), OsStr::new("Gain.so"));
 }
