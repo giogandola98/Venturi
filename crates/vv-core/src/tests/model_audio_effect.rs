@@ -101,3 +101,14 @@ fn uses_plugins_sees_a_vst3_on_any_strip_of_any_timeline() {
     project.timelines[id] = timeline;
     assert!(project.uses_plugins());
 }
+
+#[test]
+fn plugin_state_and_effect_hashes_do_not_change() {
+    let bytes: Vec<u8> = (0..1000).map(|i| (i * 31 % 251) as u8).collect();
+    assert_eq!(
+        PluginState::new(bytes.clone()).hash(),
+        11_373_983_830_107_658_837
+    );
+    assert_eq!(PluginState::new(Vec::new()).hash(), 0xcbf2_9ce4_8422_2325);
+    assert_eq!(vst3(bytes).content_hash(), 5_725_312_826_510_906_759);
+}

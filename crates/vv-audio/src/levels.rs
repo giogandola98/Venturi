@@ -22,29 +22,8 @@ use crate::mixer::{
 /// start.
 const STATE_PREROLL_FRAMES: u64 = 2 * crate::mixer::PROJECT_SAMPLE_RATE as u64;
 
-/// FNV-1a: the same hash in every build, for the keys kept on disk.
-#[derive(Default)]
-pub struct StableHasher(Option<u64>);
-
-impl Hasher for StableHasher {
-    fn write(&mut self, bytes: &[u8]) {
-        let mut hash = self.0.unwrap_or(0xcbf2_9ce4_8422_2325);
-        for byte in bytes {
-            hash = (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
-        }
-        self.0 = Some(hash);
-    }
-
-    fn finish(&self) -> u64 {
-        self.0.unwrap_or(0xcbf2_9ce4_8422_2325)
-    }
-}
-
-pub(crate) fn stable_hash(value: impl Hash) -> u64 {
-    let mut h = StableHasher::default();
-    value.hash(&mut h);
-    h.finish()
-}
+pub use vv_core::StableHasher;
+pub(crate) use vv_core::stable_hash;
 
 /// What a normalization measures: its strip before it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

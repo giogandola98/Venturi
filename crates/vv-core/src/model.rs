@@ -5,10 +5,12 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
+use std::hash::Hasher;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::grade::{GradePreset, GradeTracks, GradeValue};
+use crate::stable_hash::StableHasher;
 
 pub use crate::id_map::{FolderId, Id, IdMap, MediaId, TimelineId};
 
@@ -2325,13 +2327,13 @@ pub struct Vst3Effect {
 impl Vst3Effect {
     /// FNV-1a over the ids and the cached state hashes.
     pub fn content_hash(&self) -> u64 {
-        let mut hash = FNV_OFFSET_BASIS;
-        hash = fnv1a(hash, self.class_id.as_bytes());
-        hash = fnv1a(hash, self.version.as_bytes());
+        let mut hasher = StableHasher::default();
+        hasher.write(self.class_id.as_bytes());
+        hasher.write(self.version.as_bytes());
         for state in [&self.component_state, &self.controller_state] {
-            hash = fnv1a(hash, &state.hash().to_le_bytes());
+            hasher.write(&state.hash().to_le_bytes());
         }
-        hash
+        hasher.finish()
     }
 }
 
@@ -2347,16 +2349,6 @@ impl std::fmt::Debug for Vst3Effect {
     }
 }
 
-const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-
-fn fnv1a(mut hash: u64, bytes: &[u8]) -> u64 {
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
-    }
-    hash
-}
-
 /// Opaque plugin state. Stored as base64 and printed as its length and hash.
 /// Shared bytes and a hash computed once: copies and comparisons stay cheap.
 #[derive(Clone)]
@@ -2367,7 +2359,9 @@ pub struct PluginState {
 
 impl PluginState {
     pub fn new(bytes: Vec<u8>) -> Self {
-        let hash = fnv1a(FNV_OFFSET_BASIS, &bytes);
+        let mut hasher = StableHasher::default();
+        hasher.write(&bytes);
+        let hash = hasher.finish();
         Self {
             bytes: bytes.into(),
             hash,
