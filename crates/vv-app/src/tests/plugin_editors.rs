@@ -32,7 +32,7 @@ fn setup() -> (Project, TimelineId, Key) {
         off,
     ];
     let id = project.timelines.insert(timeline);
-    (project, id, (id, MixerChannel::Master, EffectId(7), 0))
+    (project, id, (id, Group::Master, EffectId(7), 0))
 }
 
 fn state_of(project: &Project, id: TimelineId, index: usize) -> Vec<u8> {
@@ -90,7 +90,7 @@ fn a_gesture_that_changed_nothing_leaves_no_undo_step() {
 fn a_gesture_of_a_removed_effect_is_dropped() {
     let (mut project, id, _) = setup();
     let mut history = History::default();
-    let gone = (id, MixerChannel::Master, EffectId(99), 0);
+    let gone = (id, Group::Master, EffectId(99), 0);
     let state = PluginState::new(vec![5]);
     assert_eq!(
         record_edit(
@@ -161,7 +161,7 @@ fn an_editor_instance_is_held_under_the_key_the_mix_asks() {
     let again = held_instances(&project, [(key, instance)].into_iter());
     assert_eq!(again[0].0, held[0].0);
 
-    let gone = (id, MixerChannel::Master, EffectId(99), 0);
+    let gone = (id, Group::Master, EffectId(99), 0);
     assert!(
         held_instances(
             &project,
@@ -189,7 +189,7 @@ fn a_gesture_pending_at_close_is_recorded_once() {
 fn the_gesture_of_a_removed_effect_is_consumed_not_recorded() {
     let (mut project, id, _) = setup();
     let mut history = History::default();
-    let gone = (id, MixerChannel::Master, EffectId(99), 0);
+    let gone = (id, Group::Master, EffectId(99), 0);
     let fake = Fake::with_gesture(vec![9]);
     record_gesture(&mut project, &mut history, gone, &fake, false);
     assert_eq!(history.labels().count(), 0);
@@ -306,17 +306,16 @@ fn duplicate_strip() -> (Project, TimelineId) {
 #[test]
 fn duplicate_ids_on_a_strip_get_distinct_editor_keys() {
     let (project, id) = duplicate_strip();
-    let strip = channel_strip(&project.timelines[id], MixerChannel::Master).unwrap();
-    let key = |index| key_at(id, MixerChannel::Master, strip, index);
-    assert_eq!(key(0), Some((id, MixerChannel::Master, EffectId(7), 0)));
-    assert_eq!(key(1), Some((id, MixerChannel::Master, EffectId(7), 1)));
+    let key = |index| key_at(&project.timelines[id], id, MixerChannel::Master, index);
+    assert_eq!(key(0), Some((id, Group::Master, EffectId(7), 0)));
+    assert_eq!(key(1), Some((id, Group::Master, EffectId(7), 1)));
 }
 
 #[test]
 fn a_gesture_is_recorded_into_the_duplicate_whose_editor_is_open() {
     let (mut project, id) = duplicate_strip();
     let mut history = History::default();
-    let second = (id, MixerChannel::Master, EffectId(7), 1);
+    let second = (id, Group::Master, EffectId(7), 1);
     record_edit(
         &mut project,
         &mut history,
@@ -326,7 +325,7 @@ fn a_gesture_is_recorded_into_the_duplicate_whose_editor_is_open() {
     );
     assert_eq!(state_of(&project, id, 0), [10]);
     assert_eq!(state_of(&project, id, 1), [9]);
-    let first = (id, MixerChannel::Master, EffectId(7), 0);
+    let first = (id, Group::Master, EffectId(7), 0);
     record_edit(
         &mut project,
         &mut history,
@@ -343,9 +342,102 @@ fn each_duplicate_editor_is_held_under_its_own_mix_key() {
     let (project, id) = duplicate_strip();
     let instance: Arc<dyn HostedPlugin> = Arc::new(Fake::default());
     for index in 0..2 {
-        let key = (id, MixerChannel::Master, EffectId(7), index as u32);
+        let key = (id, Group::Master, EffectId(7), index as u32);
         let held = held_instances(&project, [(key, instance.clone())].into_iter());
         let expected = plugin_key_of(&project.timelines[id], MixerChannel::Master, index);
         assert_eq!(held[0].0, expected);
     }
+}
+
+/// Tracks `[V1, A1, A2(X)]`; the plugin sits on the last one.
+fn tracks_with_plugin() -> (Project, TimelineId) {
+    let (mut project, id, _) = setup();
+    let t = &mut project.timelines[id];
+    t.tracks = vec![
+        Track::new(TrackKind::Video),
+        Track::new(TrackKind::Audio),
+        Track::new(TrackKind::Audio),
+    ];
+    t.tracks[2].mix.effects = vec![AudioEffect::new(AudioEffectKind::Vst3(plugin_effect(&[1])))];
+    (project, id)
+}
+
+fn editor_key(project: &Project, id: TimelineId, track: usize) -> Key {
+    let channel = MixerChannel::Track(track);
+    key_at(&project.timelines[id], id, channel, 0).unwrap()
+}
+
+#[test]
+fn an_editor_key_survives_the_removal_of_an_earlier_track() {
+    let (mut project, id) = tracks_with_plugin();
+    let key = editor_key(&project, id, 2);
+    let mut history = History::default();
+
+    project.timelines[id].tracks.remove(0);
+    let (channel, index, _) = find(&project, key).expect("the effect still exists");
+    assert_eq!((channel, index), (MixerChannel::Track(1), 0));
+
+    let fake = Fake::with_gesture(vec![9]);
+    assert!(record_gesture(
+        &mut project,
+        &mut history,
+        key,
+        &fake,
+        false
+    ));
+    assert_eq!(history.labels().count(), 1);
+    let AudioEffectKind::Vst3(v) = &project.timelines[id].tracks[1].mix.effects[0].kind else {
+        panic!("not a plugin");
+    };
+    assert_eq!(v.component_state.bytes(), [9]);
+}
+
+#[test]
+fn an_editor_key_still_finds_its_effect_when_a_track_comes_back() {
+    let (mut project, id) = tracks_with_plugin();
+    let key = editor_key(&project, id, 2);
+    let removed = project.timelines[id].tracks.remove(1);
+    assert!(find(&project, key).is_some());
+    project.timelines[id].tracks.insert(0, removed);
+    let (channel, _, _) = find(&project, key).expect("found at its new place");
+    assert_eq!(channel, MixerChannel::Track(2));
+}
+
+#[test]
+fn a_held_editor_follows_the_mix_key_after_a_track_removal() {
+    let (mut project, id) = tracks_with_plugin();
+    let key = editor_key(&project, id, 2);
+    let instance: Arc<dyn HostedPlugin> = Arc::new(Fake::default());
+    let before = held_instances(&project, [(key, instance.clone())].into_iter());
+    project.timelines[id].tracks.remove(0);
+    let after = held_instances(&project, [(key, instance)].into_iter());
+    assert_eq!(after.len(), 1);
+    assert_eq!(
+        after[0].0, before[0].0,
+        "the mixer's key omits the track index"
+    );
+}
+
+#[test]
+fn the_same_plugin_on_two_tracks_gets_distinct_editor_keys() {
+    let (mut project, id) = tracks_with_plugin();
+    project.timelines[id].tracks[1].mix.effects =
+        vec![AudioEffect::new(AudioEffectKind::Vst3(plugin_effect(&[5])))];
+    let first = editor_key(&project, id, 1);
+    let second = editor_key(&project, id, 2);
+    assert_ne!(first, second);
+    assert_eq!(find(&project, first).unwrap().0, MixerChannel::Track(1));
+    assert_eq!(find(&project, second).unwrap().0, MixerChannel::Track(2));
+}
+
+#[test]
+fn a_removed_track_with_the_effect_drops_its_gesture() {
+    let (mut project, id) = tracks_with_plugin();
+    let key = editor_key(&project, id, 2);
+    let mut history = History::default();
+    project.timelines[id].tracks.truncate(2);
+    let fake = Fake::with_gesture(vec![9]);
+    record_gesture(&mut project, &mut history, key, &fake, false);
+    assert_eq!(history.labels().count(), 0);
+    assert!(fake.take_gesture().is_none());
 }
