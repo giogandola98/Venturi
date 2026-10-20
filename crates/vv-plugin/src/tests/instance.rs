@@ -165,7 +165,7 @@ fn fixture_state_round_trips() {
     let bytes = 0.25f32.to_le_bytes().to_vec();
     let instance = fixture(Vec::new());
     instance.set_state(&effect(bytes.clone()));
-    let (component, _) = instance.get_state();
+    let (component, _) = instance.get_state().expect("state");
     assert_eq!(component.bytes(), bytes);
     let input = ramp(64, 2);
     assert_scaled(&run(&instance, &input), &input, 0.5);
@@ -218,7 +218,7 @@ fn get_state_flushes_pending_edits_to_a_split_processor() {
         instance.handler.endEdit(0);
     }
     assert!(instance.take_dirty());
-    let (component, _) = instance.get_state();
+    let (component, _) = instance.get_state().expect("state");
     assert_eq!(component.bytes(), 0.25f32.to_le_bytes());
     let input = ramp(64, 2);
     assert_scaled(&run(&instance, &input), &input, 0.5);
@@ -332,13 +332,13 @@ mod real_plugins {
     fn state_round_trips() {
         let (path, e) = installed("TDR Nova").expect("TDR Nova installed");
         let a = Vst3Instance::new(&path, &e, 48_000, ProcessMode::Realtime).unwrap();
-        let (c1, k1) = a.get_state();
+        let (c1, k1) = a.get_state().expect("state");
         assert!(!c1.bytes().is_empty());
         let mut saved = e.clone();
         saved.component_state = c1.clone();
         saved.controller_state = k1.clone();
         let b = Vst3Instance::new(&path, &saved, 48_000, ProcessMode::Realtime).unwrap();
-        let (c2, k2) = b.get_state();
+        let (c2, k2) = b.get_state().expect("state");
         assert_eq!(
             mask_instance(c1.bytes().to_vec()),
             mask_instance(c2.bytes().to_vec())
@@ -373,19 +373,22 @@ mod real_plugins {
 #[test]
 fn set_state_with_an_empty_effect_restores_the_defaults() {
     let instance = fixture(Vec::new());
-    let (defaults, _) = instance.get_state();
+    let (defaults, _) = instance.get_state().expect("state");
     instance.set_state(&effect(0.25f32.to_le_bytes().to_vec()));
     let input = ramp(64, 2);
     assert_scaled(&run(&instance, &input), &input, 0.5);
     instance.set_state(&effect(Vec::new()));
     assert_scaled(&run(&instance, &input), &input, 1.0);
-    assert_eq!(instance.get_state().0.bytes(), defaults.bytes());
+    assert_eq!(
+        instance.get_state().expect("state").0.bytes(),
+        defaults.bytes()
+    );
 }
 
 #[test]
 fn set_state_with_an_empty_effect_restores_the_defaults_of_a_split_plugin() {
     let instance = split_fixture();
-    let (defaults, _) = instance.get_state();
+    let (defaults, _) = instance.get_state().expect("state");
     instance.set_state(&effect_of(
         "56565445535447414E00000000000002",
         0.25f32.to_le_bytes().to_vec(),
@@ -393,7 +396,10 @@ fn set_state_with_an_empty_effect_restores_the_defaults_of_a_split_plugin() {
     instance.set_state(&effect_of("56565445535447414E00000000000002", Vec::new()));
     let input = ramp(64, 2);
     assert_scaled(&run(&instance, &input), &input, 1.0);
-    assert_eq!(instance.get_state().0.bytes(), defaults.bytes());
+    assert_eq!(
+        instance.get_state().expect("state").0.bytes(),
+        defaults.bytes()
+    );
 }
 
 const COUNTING_CLASS: &str = "56565445535447414E00000000000006";
@@ -410,7 +416,7 @@ fn edit_ids(instance: &Vst3Instance, ids: std::ops::Range<u32>) {
 }
 
 fn received(instance: &Vst3Instance) -> u32 {
-    let (component, _) = instance.get_state();
+    let (component, _) = instance.get_state().expect("state");
     u32::from_le_bytes(component.bytes()[4..8].try_into().unwrap())
 }
 
@@ -576,7 +582,7 @@ fn a_reload_restart_keeps_the_state_and_keeps_processing() {
         RestartFlags_::kReloadComponent | RestartFlags_::kIoChanged,
     );
     instance.service_restart();
-    let (component, _) = instance.get_state();
+    let (component, _) = instance.get_state().expect("state");
     assert_eq!(component.bytes(), 0.25f32.to_le_bytes());
     assert_eq!(instance.latency(), 64);
     let input = ramp(256, 2);
@@ -789,4 +795,74 @@ fn a_plugin_raising_a_restart_on_every_activation_is_not_reactivated_in_a_loop()
     let before = log.calls().len();
     instance.service_restart();
     assert_eq!(log.calls().len(), before);
+}
+
+const STATE_FAIL_CLASS: &str = "56565445535447414E0000000000000D";
+
+/// While alive, the `STATE_FAIL_CLASS` fixture's getState fails; the file is
+/// the one the fixture checks (same process, same temp dir).
+struct StateFailure(std::path::PathBuf);
+
+impl StateFailure {
+    fn start() -> Self {
+        let mut path = lifecycle_log_path(13).into_os_string();
+        path.push(".fail");
+        let path = std::path::PathBuf::from(path);
+        std::fs::write(&path, b"").expect("marker");
+        Self(path)
+    }
+}
+
+impl Drop for StateFailure {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn state_fail_fixture(state: Vec<u8>) -> Arc<Vst3Instance> {
+    fixture_instance(&effect_of(STATE_FAIL_CLASS, state))
+}
+
+#[test]
+fn a_reload_restart_with_a_failing_get_state_keeps_the_live_state() {
+    let instance = state_fail_fixture(0.25f32.to_le_bytes().to_vec());
+    let failure = StateFailure::start();
+    request_restart(&instance, RestartFlags_::kReloadComponent);
+    instance.service_restart();
+    drop(failure);
+    let (component, _) = instance.get_state().expect("state");
+    assert_eq!(component.bytes(), 0.25f32.to_le_bytes());
+}
+
+#[test]
+fn get_state_reports_a_failing_plugin_and_recovers() {
+    let instance = state_fail_fixture(0.25f32.to_le_bytes().to_vec());
+    {
+        let _failure = StateFailure::start();
+        assert!(instance.get_state().is_none());
+    }
+    assert!(instance.get_state().is_some());
+}
+
+#[test]
+fn a_gesture_is_not_recorded_while_get_state_fails() {
+    let failing = state_fail_fixture(Vec::new());
+    // SAFETY: as above.
+    unsafe {
+        failing.handler.beginEdit(0);
+        failing.handler.performEdit(0, 0.25);
+        failing.handler.endEdit(0);
+    }
+    {
+        let _failure = StateFailure::start();
+        assert!(failing.take_gesture().is_none());
+    }
+    assert!(failing.take_gesture().is_none(), "the gesture was consumed");
+}
+
+#[test]
+fn a_valid_empty_controller_state_is_a_state() {
+    let instance = fixture(Vec::new());
+    let (_, controller) = instance.get_state().expect("state");
+    assert!(controller.bytes().is_empty());
 }

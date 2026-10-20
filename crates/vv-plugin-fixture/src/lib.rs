@@ -57,6 +57,10 @@ const LOGGED_CID: TUID = [
 const RESTART_CID: TUID = [
     0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 12,
 ];
+// Its component getState fails while `state_fail_marker()` exists.
+const STATE_FAIL_CID: TUID = [
+    0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 13,
+];
 const REACTIVATED_LATENCY: u32 = 64;
 const DEFAULT_NORMALIZED: f64 = 0.5;
 
@@ -66,6 +70,12 @@ fn lifecycle_log_path(tag: u8) -> std::path::PathBuf {
         "venturi-fixture-lifecycle-{}-{tag}.log",
         std::process::id()
     ))
+}
+
+fn state_fail_marker() -> std::path::PathBuf {
+    let mut name = lifecycle_log_path(13).into_os_string();
+    name.push(".fail");
+    name.into()
 }
 
 fn copy_cstring(src: &str, dst: &mut [c_char]) {
@@ -108,6 +118,7 @@ struct Gain {
     mono_only: bool,
     rejects_setup: bool,
     restarts_on_activation: bool,
+    fails_state: bool,
     handler: Mutex<Option<ComPtr<IComponentHandler>>>,
     activations: AtomicU32,
     // Output parameter 1 as the controller last received it.
@@ -128,6 +139,7 @@ impl Gain {
             mono_only: false,
             rejects_setup: false,
             restarts_on_activation: false,
+            fails_state: false,
             handler: Mutex::new(None),
             activations: AtomicU32::new(0),
             meter: AtomicU64::new(0),
@@ -287,6 +299,9 @@ impl IComponentTrait for Gain {
     }
 
     unsafe fn getState(&self, state: *mut IBStream) -> tresult {
+        if self.fails_state && state_fail_marker().exists() {
+            return kInternalError;
+        }
         let Some(stream) = (unsafe { ComRef::from_raw(state) }) else {
             return kInvalidArgument;
         };
@@ -608,6 +623,10 @@ impl IPluginFactoryTrait for Factory {
             RESTART_CID => Gain {
                 log_tag: Some(12),
                 restarts_on_activation: true,
+                ..Gain::new(None)
+            },
+            STATE_FAIL_CID => Gain {
+                fails_state: true,
                 ..Gain::new(None)
             },
             SPLIT_CID => Gain::new(Some(SPLIT_CONTROLLER_CID)),
