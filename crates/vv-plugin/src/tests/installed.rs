@@ -27,3 +27,49 @@ fn the_scan_flag_is_set_and_cleared() {
     set_scanning(false);
     assert!(!scanning());
 }
+
+fn info(class: &str, path: &str, version: &str) -> PluginInfo {
+    PluginInfo {
+        class_id: class.into(),
+        name: "N".into(),
+        vendor: "V".into(),
+        version: version.into(),
+        path: PathBuf::from(path),
+    }
+}
+
+#[test]
+fn the_same_plugins_in_any_order_are_the_same_list() {
+    let a = info("A", "/a.vst3", "1");
+    let b = info("B", "/b.vst3", "1");
+    assert!(same_plugins(
+        &[a.clone(), b.clone()],
+        &[b.clone(), a.clone()]
+    ));
+    let renamed = PluginInfo {
+        name: "Other".into(),
+        ..a.clone()
+    };
+    assert!(same_plugins(std::slice::from_ref(&a), &[renamed]));
+    assert!(same_plugins(&[], &[]));
+}
+
+#[test]
+fn a_changed_list_is_not_the_same() {
+    let a = info("A", "/a.vst3", "1");
+    let b = info("B", "/b.vst3", "1");
+    assert!(!same_plugins(
+        std::slice::from_ref(&a),
+        &[a.clone(), b.clone()]
+    ));
+    assert!(!same_plugins(std::slice::from_ref(&a), &[]));
+    assert!(!same_plugins(
+        std::slice::from_ref(&a),
+        &[info("A", "/a.vst3", "2")]
+    ));
+    assert!(!same_plugins(
+        std::slice::from_ref(&a),
+        &[info("A", "/x.vst3", "1")]
+    ));
+    assert!(!same_plugins(&[a], &[b]));
+}

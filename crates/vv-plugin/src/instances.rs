@@ -201,6 +201,11 @@ impl Instances {
         self.failed.retain(|_, f| f.used_this_pass);
     }
 
+    /// Forgets every failure so the next `get` tries again.
+    pub fn clear_failures(&mut self) {
+        self.failed.clear();
+    }
+
     pub fn instance(&self, key: u64) -> Option<Arc<dyn HostedPlugin>> {
         self.entries.get(&key).map(|e| e.instance.clone())
     }

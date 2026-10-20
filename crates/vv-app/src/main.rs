@@ -2482,15 +2482,22 @@ impl VenturiApp {
             }
         };
         self.plugin_scan_rx = None;
-        vv_plugin::set_installed(list.clone());
+        let unchanged = vv_plugin::same_plugins(&list, &self.settings.vst3_plugins);
+        if !unchanged {
+            vv_plugin::set_installed(list.clone());
+        }
         vv_plugin::set_scanning(false);
         self.settings.vst3_plugins = list;
         self.settings.vst3_scanned = true;
         self.settings.vst3_blocklist.extend(newly_blocked);
         if let Some(audio) = &mut self.timeline_audio {
-            audio.plugins_rescanned();
-            self.plugin_editors
-                .close_all(&mut self.session.project, &mut self.session.history);
+            if unchanged {
+                audio.plugins_rescan_unchanged();
+            } else {
+                audio.plugins_rescanned();
+                self.plugin_editors
+                    .close_all(&mut self.session.project, &mut self.session.history);
+            }
         }
         self.persist_settings();
     }

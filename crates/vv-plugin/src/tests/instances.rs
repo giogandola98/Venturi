@@ -473,3 +473,16 @@ fn a_failing_class_is_reported_once_per_process() {
     assert!(!first_failure("test-class-a"));
     assert!(first_failure("test-class-b"));
 }
+
+#[test]
+fn clearing_failures_retries_the_same_state() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = failing_pool(&counts);
+    let e = effect(CLASS, &[1]);
+    pool.begin_pass();
+    assert!(pool.get(request(7, &e)).is_none());
+    pool.clear_failures();
+    assert!(!pool.failed(7));
+    assert!(pool.get(request(7, &e)).is_none());
+    assert_eq!(counts.made.load(Ordering::SeqCst), 2);
+}
