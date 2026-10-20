@@ -109,6 +109,7 @@ fn a_gesture_of_a_removed_effect_is_dropped() {
 struct Fake {
     gesture: std::sync::Mutex<Option<(PluginState, PluginState)>>,
     hash: std::sync::atomic::AtomicU64,
+    serviced: std::sync::atomic::AtomicUsize,
 }
 
 impl Fake {
@@ -135,6 +136,10 @@ impl HostedPlugin for Fake {
     }
     fn set_state_hash(&self, hash: u64) {
         self.hash.store(hash, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn service_restart(&self) {
+        self.serviced
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     fn take_gesture(&self) -> Option<(PluginState, PluginState)> {
         self.gesture.lock().unwrap().take()
@@ -276,4 +281,14 @@ fn a_closed_or_missing_editor_is_not_raised() {
         |_| raised.set(1)
     ));
     assert_eq!(raised.get(), 0);
+}
+
+#[test]
+fn an_open_editor_instance_is_serviced_for_restarts_even_in_an_undo_group() {
+    let (mut project, _, key) = setup();
+    let mut history = History::default();
+    let fake = Fake::default();
+    record_gesture(&mut project, &mut history, key, &fake, false);
+    record_gesture(&mut project, &mut history, key, &fake, true);
+    assert_eq!(fake.serviced.load(std::sync::atomic::Ordering::Relaxed), 2);
 }
