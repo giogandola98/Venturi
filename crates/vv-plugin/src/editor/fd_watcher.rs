@@ -19,6 +19,8 @@ struct Shared {
     state: Mutex<State>,
     wake_rx: OwnedFd,
     wake_tx: OwnedFd,
+    #[cfg(test)]
+    seen: std::sync::atomic::AtomicU64,
 }
 
 fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
@@ -72,6 +74,8 @@ impl FdWatcher {
             }),
             wake_rx,
             wake_tx,
+            #[cfg(test)]
+            seen: Default::default(),
         });
         let worker = shared.clone();
         let thread = std::thread::Builder::new()
@@ -94,6 +98,23 @@ impl FdWatcher {
     #[cfg(test)]
     fn fds(&self) -> Vec<RawFd> {
         lock(&self.shared.state).fds.clone()
+    }
+
+    /// Returns once the watcher has snapshotted every `set_fds` made so far.
+    #[cfg(test)]
+    fn barrier(&self) {
+        use std::sync::atomic::Ordering;
+        let generation = {
+            let mut state = lock(&self.shared.state);
+            state.generation += 1;
+            state.generation
+        };
+        self.shared.poke();
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while self.shared.seen.load(Ordering::SeqCst) < generation {
+            assert!(std::time::Instant::now() < end, "watcher never caught up");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 
     /// The UI thread pumped the handlers: wake again on the next readable fd.
@@ -124,6 +145,10 @@ fn run(shared: &Shared, waker: &Waker) {
             if state.stop {
                 return;
             }
+            #[cfg(test)]
+            shared
+                .seen
+                .store(state.generation, std::sync::atomic::Ordering::SeqCst);
             (state.fds.clone(), state.armed, state.generation)
         };
         let mut polls = vec![libc::pollfd {
@@ -156,9 +181,11 @@ fn run(shared: &Shared, waker: &Waker) {
             .collect();
         let ready = polls[1..].iter().any(|p| p.revents & READY != 0);
         let mut state = lock(&shared.state);
-        if state.generation == generation {
-            state.fds.retain(|fd| !dead.contains(fd));
+        if state.generation != generation {
+            // Stale snapshot: poll again; still-watched ready fds report again.
+            continue;
         }
+        state.fds.retain(|fd| !dead.contains(fd));
         if ready && !state.stop {
             state.armed = false;
             drop(state);
