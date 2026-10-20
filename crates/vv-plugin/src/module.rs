@@ -13,9 +13,10 @@ use vst3::{ComPtr, Interface};
 use crate::scan::{AUDIO_CLASS, PluginInfo, is_effect};
 
 pub(crate) struct Module {
+    factory: ComPtr<IPluginFactory>,
+    // Last: fields drop in declaration order, and `factory`'s release runs plugin code.
     // Never unloaded: unloading plugin code is unsafe in practice.
     _library: ManuallyDrop<libloading::Library>,
-    factory: ComPtr<IPluginFactory>,
 }
 
 // SAFETY: VST3 factories are required to be callable from any thread.
@@ -156,8 +157,8 @@ fn load(bundle: &Path) -> Result<Module, LoadError> {
     });
     match factory {
         Ok(factory) => Ok(Module {
-            _library: library,
             factory,
+            _library: library,
         }),
         Err(e) => {
             exit(&library);

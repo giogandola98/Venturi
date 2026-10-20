@@ -56,8 +56,6 @@ struct Rt {
 }
 
 pub struct Vst3Instance {
-    // Declared first: the plugin's code must outlive everything below.
-    _module: Arc<Module>,
     component: ComPtr<IComponent>,
     processor: ComPtr<IAudioProcessor>,
     controller: Option<ComPtr<IEditController>>,
@@ -77,6 +75,9 @@ pub struct Vst3Instance {
     latency: AtomicU32,
     // Read before any state is loaded: what an empty saved state means.
     defaults: (Vec<u8>, Vec<u8>),
+    // Last: fields drop in declaration order, and the plugin objects above
+    // must be released while the module's code is still loaded.
+    _module: Arc<Module>,
 }
 
 // SAFETY: `rt` is only used by whoever holds `busy`; the COM pointers are to
