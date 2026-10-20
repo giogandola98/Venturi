@@ -476,6 +476,13 @@ impl MixBufferCache {
         self.plugins = None;
     }
 
+    /// Lets plugins that failed be tried again, keeping the live ones.
+    pub fn clear_plugin_failures(&mut self) {
+        if let Some(plugins) = &mut self.plugins {
+            plugins.clear_failures();
+        }
+    }
+
     /// The instance playing under `live`, else one made for `aside` that no
     /// mix uses: the pool's sweep drops its own copy at the next pass.
     pub fn plugin_instance(

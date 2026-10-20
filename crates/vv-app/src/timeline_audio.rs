@@ -620,6 +620,14 @@ impl TimelineAudio {
         self.synced_media = None;
     }
 
+    /// After a rescan that found the same plugins: the pool stays, failed
+    /// ones are retried.
+    pub fn plugins_rescan_unchanged(&mut self) {
+        self.buffers.clear_plugin_failures();
+        self.synced = None;
+        self.synced_media = None;
+    }
+
     /// Per-track and master peaks of what is playing.
     pub fn meters(&self) -> &MixMeters {
         &self.mix.meters
