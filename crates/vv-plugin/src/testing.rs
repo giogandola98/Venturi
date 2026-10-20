@@ -121,6 +121,9 @@ fn build_bundle() -> PathBuf {
         )
     });
 
+    // Cargo re-uplifts target/<profile>/ on every build, briefly removing the file a concurrent copy reads.
+    let cdylib = deps_artifact(&cdylib);
+
     // One bundle per target dir (removed by `cargo clean`). Every process writes the same
     // bytes to its own temp file and renames it over the binary, so readers never see a
     // partial file and a dylib already loaded keeps its old inode.
@@ -142,6 +145,20 @@ fn build_bundle() -> PathBuf {
     std::fs::copy(&cdylib, &tmp).expect("copy fixture binary");
     std::fs::rename(&tmp, bin_dir.join(file)).expect("install fixture binary");
     bundle
+}
+
+/// The copy of `uplifted` that cargo keeps in `deps/`, or `uplifted` if that is missing.
+fn deps_artifact(uplifted: &Path) -> PathBuf {
+    let deps = uplifted
+        .parent()
+        .expect("artifact has a parent")
+        .join("deps")
+        .join(uplifted.file_name().expect("artifact has a name"));
+    if deps.exists() {
+        deps
+    } else {
+        uplifted.to_path_buf()
+    }
 }
 
 fn cdylib_path(cargo_json: &str) -> Option<PathBuf> {
