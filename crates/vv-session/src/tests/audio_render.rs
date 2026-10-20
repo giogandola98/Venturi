@@ -1017,7 +1017,7 @@ fn echo_measures(project: &Project, tl: &Timeline, cache: &mut LevelCache) -> Ve
 
 fn echo_cache() -> LevelCache {
     let mut cache = fixed_list_cache();
-    cache.plugins = Some(echo_plugins(Default::default()));
+    cache.plugins = vec![echo_plugins(Default::default())];
     cache
 }
 
@@ -1143,7 +1143,7 @@ fn consecutive_renders_through_a_cache_reuse_its_plugins() {
     let range = samples(0..180);
     let mut levels = fixed_list_cache();
     let (plugins, made) = counting_pool(|| Some(Arc::new(Echo::new(Default::default()))));
-    levels.plugins = Some(plugins);
+    levels.plugins = vec![plugins];
     let first = render_to_vec(&project, &tl, range.clone(), &mut levels);
     assert!(first.iter().any(|s| *s != 0.0));
     for _ in 0..3 {
@@ -1156,6 +1156,104 @@ fn consecutive_renders_through_a_cache_reuse_its_plugins() {
 }
 
 #[test]
+fn renders_of_different_strips_keep_each_others_instances() {
+    let mut project = Project::default();
+    let id = media(&mut project, chirp("strips.wav", 48_000, 2), 48_000, 1);
+    let strip = |clip_id| {
+        let mut track = audio_track(vec![clip(clip_id, id, 0, 25, 0)]);
+        let mut plugin = plugin_effect(FIXTURE_CLASS, &[]);
+        if let AudioEffectKind::Vst3(vst3) = &mut plugin.kind {
+            vst3.id = vv_core::EffectId(clip_id);
+        }
+        track.mix.effects.push(plugin);
+        timeline(vec![track])
+    };
+    let (a, b) = (strip(1), strip(2));
+    let mut levels = fixed_list_cache();
+    let (plugins, made) = counting_pool(|| Some(Arc::new(Passthrough)));
+    levels.plugins = vec![plugins];
+    for _ in 0..3 {
+        render_to_vec(&project, &a, samples(0..50), &mut levels);
+        render_to_vec(&project, &b, samples(0..50), &mut levels);
+    }
+    assert_eq!(made.load(Ordering::SeqCst), 2);
+}
+
+type Count = Arc<std::sync::atomic::AtomicUsize>;
+type NewPool = Arc<dyn Fn(Arc<[vv_plugin::PluginInfo]>) -> Instances + Send + Sync>;
+
+/// Pools whose pass-through instances are counted together.
+fn counting_pools() -> (NewPool, Count, Count) {
+    let (made, pools) = (Count::default(), Count::default());
+    let (counter, pool_counter) = (made.clone(), pools.clone());
+    let new_pool: NewPool = Arc::new(move |known| {
+        pool_counter.fetch_add(1, Ordering::SeqCst);
+        let counter = counter.clone();
+        Instances::with_maker(
+            known,
+            Box::new(move |_, _, _| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Some(Arc::new(Passthrough))
+            }),
+        )
+    });
+    (new_pool, made, pools)
+}
+
+#[test]
+fn a_parallel_measure_keeps_the_pool_of_every_thread() {
+    let mut project = Project::default();
+    let mut tl = edited_timeline(&mut project, "thread_pools.wav");
+    let with_state = |state: &[u8]| {
+        vec![
+            plugin_effect(FIXTURE_CLASS, state),
+            normalize(NormalizeMode::Loudness),
+        ]
+    };
+    let (new_pool, made, pools) = counting_pools();
+    let mut cache = fixed_list_cache();
+    cache.threads = 4;
+    cache.new_pool = new_pool;
+    tl.master.effects = with_state(&[1]);
+    both_measures(&project, &tl, &mut cache);
+    let created = pools.load(Ordering::SeqCst);
+    assert_eq!(cache.plugins.len(), created, "a thread's pool was dropped");
+    // Every segment key changes: the measure goes parallel again.
+    tl.master.effects = with_state(&[2]);
+    let rendered = cache.rendered;
+    both_measures(&project, &tl, &mut cache);
+    assert!(cache.rendered > rendered);
+    assert!(pools.load(Ordering::SeqCst) <= cache.threads);
+    assert!(made.load(Ordering::SeqCst) <= cache.threads);
+}
+
+#[test]
+fn a_nested_render_and_its_outer_one_keep_their_pools() {
+    let (project, mut tl, mut levels, _) = pool_race(true, "both_pools.wav");
+    let list: Arc<[vv_plugin::PluginInfo]> = Arc::from(fake_known());
+    levels.installed = Arc::new(move || list.clone());
+    let (new_pool, made, pools) = counting_pools();
+    levels.plugins.clear();
+    levels.new_pool = new_pool;
+    let mut render = |state: u8, levels: &mut LevelCache| {
+        let AudioEffectKind::Vst3(plugin) = &mut tl.tracks[0].mix.effects[0].kind else {
+            unreachable!()
+        };
+        plugin.component_state = vv_core::PluginState::new(vec![state]);
+        render_to_vec(&project, &tl, samples(0..50), levels);
+    };
+    render(1, &mut levels);
+    assert_eq!(pools.load(Ordering::SeqCst), 2, "the measure did not nest");
+    let first = made.load(Ordering::SeqCst);
+    // A new state is measured again, in a render nested in the outer one.
+    for state in 2..5 {
+        render(state, &mut levels);
+    }
+    assert_eq!(pools.load(Ordering::SeqCst), 2);
+    assert_eq!(made.load(Ordering::SeqCst), first);
+}
+
+#[test]
 fn a_failing_plugin_is_attempted_once_across_renders() {
     let mut project = Project::default();
     let id = media(&mut project, chirp("fail.wav", 48_000, 2), 48_000, 1);
@@ -1164,7 +1262,7 @@ fn a_failing_plugin_is_attempted_once_across_renders() {
     let tl = timeline(vec![track]);
     let mut levels = fixed_list_cache();
     let (plugins, tried) = counting_pool(|| None);
-    levels.plugins = Some(plugins);
+    levels.plugins = vec![plugins];
     for _ in 0..3 {
         render_to_vec(&project, &tl, samples(0..50), &mut levels);
     }
@@ -1190,7 +1288,7 @@ fn a_rescan_drops_the_pools_kept_between_renders() {
         kept.lock().unwrap().push(instance.clone());
         Some(instance)
     });
-    levels.plugins = Some(plugins);
+    levels.plugins = vec![plugins];
     render_to_vec(&project, &tl, samples(0..50), &mut levels);
     render_to_vec(&project, &tl, samples(0..50), &mut levels);
     assert_eq!(made.lock().unwrap().len(), 1);
@@ -1237,7 +1335,7 @@ fn pool_race(plugin_first: bool, name: &str) -> (Project, Timeline, LevelCache, 
         kept.lock().unwrap().push(instance.clone());
         Some(instance)
     });
-    levels.plugins = Some(pool);
+    levels.plugins = vec![pool];
     (project, tl, levels, made)
 }
 
@@ -1248,7 +1346,7 @@ fn a_pool_from_a_list_a_nested_render_replaced_is_dropped() {
     let made = made.lock().unwrap();
     assert_eq!(made.len(), 1);
     assert_eq!(Arc::strong_count(&made[0]), 1, "the stale pool was kept");
-    assert!(levels.plugins.is_none());
+    assert!(levels.plugins.is_empty());
 }
 
 #[test]
@@ -1272,7 +1370,7 @@ fn disk_cache(name: &str, plugins: Instances) -> (LevelCache, PathBuf) {
     let _ = std::fs::remove_dir_all(&dir);
     let mut levels = fixed_list_cache();
     levels.dir = Some(dir.clone());
-    levels.plugins = Some(plugins);
+    levels.plugins = vec![plugins];
     (levels, dir)
 }
 
@@ -1310,7 +1408,7 @@ fn a_level_measured_while_a_plugin_failed_is_not_kept_for_a_working_render() {
         assert!(rendered > 0);
 
         let (working, _) = counting_pool(|| Some(Arc::new(Passthrough)));
-        levels.plugins = Some(working);
+        levels.plugins = vec![working];
         levels.degraded = false;
         both_measures_through(&project, &tl, &mut levels, true);
         assert!(
@@ -1446,7 +1544,7 @@ fn a_level_after_a_compound_with_a_plugin_reads_its_tail_in_the_gaps() {
     ]);
     tl.master.effects = vec![normalize(NormalizeMode::Loudness)];
     let mut cache = echo_cache();
-    cache.plugins = Some(echo_plugins(Default::default()));
+    cache.plugins = vec![echo_plugins(Default::default())];
     let levels = echo_measures(&project, &tl, &mut cache);
     let [(by_segment, whole)] = levels[..] else {
         panic!("{levels:?}");

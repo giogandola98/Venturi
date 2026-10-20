@@ -52,6 +52,8 @@ pub(crate) fn first_failure(class_id: &str) -> bool {
 
 struct Slot {
     used_this_pass: bool,
+    /// The `pass` it was last seen used at, set by `sweep_idle`.
+    last_pass: u64,
     state: SlotState,
 }
 
@@ -78,6 +80,7 @@ pub struct Instances {
     make: MakeInstance,
     /// Instances an editor window drives, by the key they stand for.
     held: HashMap<u64, Arc<dyn HostedPlugin>>,
+    pass: u64,
 }
 
 impl Instances {
@@ -117,6 +120,7 @@ impl Instances {
                 .collect(),
             make,
             held: HashMap::new(),
+            pass: 0,
         }
     }
 
@@ -137,6 +141,7 @@ impl Instances {
             state: SlotState::Ready {
                 instance, stale, ..
             },
+            ..
         }) = self.slots.get_mut(&request.key)
         {
             if *used_this_pass {
@@ -176,6 +181,7 @@ impl Instances {
                 request.key,
                 Slot {
                     used_this_pass: true,
+                    last_pass: 0,
                     state: SlotState::Failed { hash },
                 },
             );
@@ -190,6 +196,7 @@ impl Instances {
             request.key,
             Slot {
                 used_this_pass: true,
+                last_pass: 0,
                 state: SlotState::Ready {
                     instance,
                     origin: (request.effect.class_id.clone(), path),
@@ -249,6 +256,7 @@ impl Instances {
     }
 
     pub fn begin_pass(&mut self) {
+        self.pass += 1;
         for slot in self.slots.values_mut() {
             slot.used_this_pass = false;
         }
@@ -256,6 +264,31 @@ impl Instances {
 
     pub fn sweep(&mut self) {
         self.slots.retain(|_, slot| slot.used_this_pass);
+    }
+
+    /// `sweep` for an offline pool shared by renders: the slots the pass did
+    /// not use are kept, the `keep` most recently used of them, so a render
+    /// that comes back to a placement does not make it again. Kept ones are
+    /// reactivated by their next `get` (their tails are old).
+    pub fn sweep_idle(&mut self, keep: usize) {
+        let pass = self.pass;
+        let mut idle = Vec::new();
+        for (key, slot) in &mut self.slots {
+            if slot.used_this_pass {
+                slot.last_pass = pass;
+            } else {
+                if let SlotState::Ready { stale, .. } = &mut slot.state {
+                    *stale = true;
+                }
+                idle.push((slot.last_pass, *key));
+            }
+        }
+        if idle.len() > keep {
+            idle.sort_unstable_by_key(|&(pass, _)| std::cmp::Reverse(pass));
+            for (_, key) in &idle[keep..] {
+                self.slots.remove(key);
+            }
+        }
     }
 
     /// Adopts a new scan: instances of plugins still listed from the same

@@ -169,6 +169,30 @@ fn sweep_drops_unused() {
 }
 
 #[test]
+fn sweep_idle_keeps_the_most_recent_unused_and_reactivates_them() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = pool(&counts);
+    let e = effect(CLASS, &[]);
+    for key in 1..=3 {
+        pool.begin_pass();
+        pool.get(request(key, &e)).unwrap();
+        pool.sweep_idle(1);
+    }
+    pool.begin_pass();
+    pool.get(request(4, &e)).unwrap();
+    pool.sweep_idle(1);
+    assert!(pool.instance(4).is_some());
+    assert!(pool.instance(3).is_some(), "the latest idle one is kept");
+    assert!(pool.instance(1).is_none() && pool.instance(2).is_none());
+    assert_eq!(counts.dropped.load(Ordering::SeqCst), 2);
+    let reactivated = counts.reactivated.load(Ordering::SeqCst);
+    pool.begin_pass();
+    pool.get(request(3, &e)).unwrap();
+    assert_eq!(counts.reactivated.load(Ordering::SeqCst), reactivated + 1);
+    assert_eq!(counts.made.load(Ordering::SeqCst), 4);
+}
+
+#[test]
 fn same_key_twice_in_one_pass_gets_two_instances() {
     // Keys are unique per placement, so two keys for one effect are two instances.
     let counts = Arc::new(Counts::default());
