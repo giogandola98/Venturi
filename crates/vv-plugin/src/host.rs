@@ -88,6 +88,26 @@ pub fn set_restart_waker(waker: Waker) {
     let _ = RESTART_WAKER.set(waker);
 }
 
+thread_local! {
+    static IN_AUDIO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Marks the thread as inside a realtime plugin call: the waker (a lock and a
+/// syscall) must not run there.
+pub(crate) struct AudioScope(bool);
+
+impl AudioScope {
+    pub fn enter() -> Self {
+        Self(IN_AUDIO.replace(true))
+    }
+}
+
+impl Drop for AudioScope {
+    fn drop(&mut self) {
+        IN_AUDIO.set(self.0);
+    }
+}
+
 /// What the plugin's controller reports back, shared with the instance.
 pub(crate) struct Shared {
     /// Latest value per parameter, coalesced by id. The UI thread may grow it; the
@@ -126,6 +146,9 @@ impl Shared {
     }
 
     fn wake(&self) {
+        if IN_AUDIO.get() {
+            return;
+        }
         let waker = self.waker.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(waker) = waker {
             waker();
@@ -164,7 +187,10 @@ impl IComponentHandlerTrait for ComponentHandler {
         let wanted = flags & RESTART_FLAGS;
         if wanted != 0 {
             self.0.restart.fetch_or(wanted, Ordering::AcqRel);
-            if let Some(waker) = RESTART_WAKER.get() {
+            // On the audio thread the per-frame service picks the flag up.
+            if !IN_AUDIO.get()
+                && let Some(waker) = RESTART_WAKER.get()
+            {
                 waker();
             }
         }

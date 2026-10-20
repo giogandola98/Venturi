@@ -74,6 +74,10 @@ const AUX_CID: TUID = [
 const LEGACY_CID: TUID = [
     0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 16,
 ];
+// Raises restartComponent(kLatencyChanged) from inside process.
+const PROCESS_RESTART_CID: TUID = [
+    0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 17,
+];
 const MANY_METERS: u32 = 100;
 const REACTIVATED_LATENCY: u32 = 64;
 const DEFAULT_NORMALIZED: f64 = 0.5;
@@ -133,6 +137,7 @@ struct Gain {
     mono_only: bool,
     rejects_setup: bool,
     restarts_on_activation: bool,
+    restarts_in_process: bool,
     fails_state: bool,
     aux: bool,
     legacy: bool,
@@ -158,6 +163,7 @@ impl Gain {
             mono_only: false,
             rejects_setup: false,
             restarts_on_activation: false,
+            restarts_in_process: false,
             fails_state: false,
             aux: false,
             legacy: false,
@@ -533,6 +539,11 @@ impl IAudioProcessorTrait for Gain {
             return kResultOk;
         }
         let g = gain(self.get());
+        if self.restarts_in_process
+            && let Some(handler) = self.handler.lock().ok().and_then(|h| h.clone())
+        {
+            unsafe { handler.restartComponent(RestartFlags_::kLatencyChanged) };
+        }
         if self.writes_meter {
             unsafe { self.write_meter(data) };
         }
@@ -743,6 +754,11 @@ impl IPluginFactoryTrait for Factory {
             LEGACY_CID => Gain {
                 aux: true,
                 legacy: true,
+                ..Gain::new(None)
+            },
+            PROCESS_RESTART_CID => Gain {
+                restarts_in_process: true,
+                latency_on_reactivation: true,
                 ..Gain::new(None)
             },
             STATE_FAIL_CID => Gain {

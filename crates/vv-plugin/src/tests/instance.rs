@@ -589,6 +589,7 @@ fn no_allocation_with_outputs(instance: &Vst3Instance) {
     assert_eq!(ALLOCS.with(|c| c.get()) - before, 0);
 }
 
+const PROCESS_RESTART_CLASS: &str = "56565445535447414E00000000000011";
 const LATENCY_CLASS: &str = "56565445535447414E00000000000008";
 
 fn latency_fixture(state: Vec<u8>) -> Arc<Vst3Instance> {
@@ -961,15 +962,22 @@ fn a_plugin_that_only_accepts_its_main_buses_still_loads() {
     assert_eq!(run(&instance, &ramp(64, 2))[0], 122.0);
 }
 
+// The only test that installs the process-wide waker (a OnceLock); it counts
+// per thread so parallel tests cannot disturb it.
 #[test]
-fn a_restart_with_no_editor_wakes_the_process_waker() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static WOKEN: AtomicUsize = AtomicUsize::new(0);
-    crate::set_restart_waker(Arc::new(|| {
-        WOKEN.fetch_add(1, Ordering::SeqCst);
-    }));
+fn a_restart_wakes_the_process_waker_except_from_the_audio_thread() {
+    use std::cell::Cell;
+    thread_local!(static WOKEN: Cell<usize> = const { Cell::new(0) });
+    crate::set_restart_waker(Arc::new(|| WOKEN.set(WOKEN.get() + 1)));
     let instance = latency_fixture(Vec::new());
-    let before = WOKEN.load(Ordering::SeqCst);
     request_restart(&instance, RestartFlags_::kLatencyChanged);
-    assert!(WOKEN.load(Ordering::SeqCst) > before);
+    assert_eq!(WOKEN.get(), 1);
+
+    let instance = fixture_instance(&effect_of(PROCESS_RESTART_CLASS, Vec::new()));
+    let mut samples = [0.0f32; 128];
+    instance.process(&mut samples, 2);
+    assert_eq!(WOKEN.get(), 1, "the audio thread must not call the waker");
+    assert_eq!(instance.latency(), 0);
+    instance.service_restart();
+    assert_eq!(instance.latency(), 64);
 }

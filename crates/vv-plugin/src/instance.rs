@@ -634,6 +634,7 @@ impl Vst3Instance {
             processContext: &mut rt.context,
         };
         rt.outputs.clear();
+        let _scope = crate::host::AudioScope::enter();
         // SAFETY: buffers hold `frames` samples each; `data` lives for the call.
         let res = unsafe { self.processor.process(&mut data) };
         self.publish_outputs(&rt.outputs);
@@ -777,6 +778,7 @@ impl PluginProcessor for Vst3Instance {
         let Some(_audio) = self.try_lock_audio() else {
             return;
         };
+        let _scope = crate::host::AudioScope::enter();
         // SAFETY: restarting processing is allowed from the audio thread.
         unsafe {
             self.processor.setProcessing(0);
