@@ -342,8 +342,9 @@ impl Vst3Instance {
         }
     }
 
-    /// A restart raised by the plugin while activating is already honoured by the
-    /// latency read here; keeping it pending would reactivate a running instance.
+    /// Every restart flag raised while activating is dropped on purpose: the
+    /// instance was just (re)activated with its current state, and keeping one
+    /// pending would reactivate a running instance (or loop, if raised each time).
     fn refresh_latency_after_activation(&self) {
         self.shared.restart.store(0, Ordering::Release);
         self.refresh_latency();
