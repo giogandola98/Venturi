@@ -4461,6 +4461,11 @@ impl VenturiApp {
                             .as_ref()
                             .and_then(|audio| audio.plugin_latency_ms(key))
                     },
+                    failed: &|key| {
+                        self.timeline_audio
+                            .as_ref()
+                            .is_some_and(|audio| audio.plugin_failed(key))
+                    },
                 },
             ));
             if std::mem::take(&mut self.mixer_panel.rescan_requested) {

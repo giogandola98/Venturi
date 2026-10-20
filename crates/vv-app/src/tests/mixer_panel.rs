@@ -108,3 +108,11 @@ fn add_plugin_effect_has_fresh_id() {
     assert_eq!((a.class_id.as_str(), a.name.as_str()), ("ab", "Comp"));
     assert_eq!(a.component_state, vv_core::PluginState::default());
 }
+
+#[test]
+fn a_vst3_row_is_badged_when_missing_or_failed_to_load() {
+    assert_eq!(vst3_badge(false, false), None);
+    assert_eq!(vst3_badge(true, false), Some(Vst3Badge::Missing));
+    assert_eq!(vst3_badge(false, true), Some(Vst3Badge::Failed));
+    assert_eq!(vst3_badge(true, true), Some(Vst3Badge::Missing));
+}

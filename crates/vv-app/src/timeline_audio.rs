@@ -593,6 +593,11 @@ impl TimelineAudio {
         Some(samples as f32 * 1000.0 / self.mix.sample_rate as f32)
     }
 
+    /// Whether the plugin placed under `key` failed to load.
+    pub fn plugin_failed(&self, key: u64) -> bool {
+        self.buffers.plugin_failed(key)
+    }
+
     /// For an editor window; see `MixBufferCache::plugin_instance`.
     pub fn plugin_instance(
         &mut self,
