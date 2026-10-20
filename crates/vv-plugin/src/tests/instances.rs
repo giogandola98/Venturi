@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use vv_audio::{PluginProcessor, PluginRequest};
+use vv_audio::{AudioSource, ClipAudio, MixSnapshot, PluginHandle, PluginProcessor, PluginRequest};
 use vv_core::{EffectId, PluginState, Vst3Effect};
 
 use super::*;
@@ -17,6 +17,7 @@ struct Counts {
     loads: AtomicUsize,
     dropped: AtomicUsize,
     reactivated: AtomicUsize,
+    processed: AtomicUsize,
 }
 
 struct Fake {
@@ -31,7 +32,10 @@ impl Drop for Fake {
 }
 
 impl PluginProcessor for Fake {
-    fn process(&self, _: &mut [f32], _: usize) {}
+    fn process(&self, samples: &mut [f32], _: usize) {
+        self.counts.processed.fetch_add(1, Ordering::SeqCst);
+        samples.iter_mut().for_each(|s| *s *= 0.5);
+    }
     fn reset(&self) {}
     fn latency(&self) -> u32 {
         0
@@ -173,14 +177,103 @@ fn same_key_twice_in_one_pass_gets_two_instances() {
 }
 
 #[test]
-fn second_get_of_a_key_in_one_pass_is_none() {
+fn second_get_of_a_key_in_one_pass_is_the_same_instance() {
     let counts = Arc::new(Counts::default());
     let mut pool = pool(&counts);
-    let e = effect(CLASS, &[]);
+    let e = effect(CLASS, &[1]);
     pool.begin_pass();
-    assert!(pool.get(request(1, &e)).is_some());
-    assert!(pool.get(request(1, &e)).is_none());
+    let first = pool.get(request(1, &e)).unwrap();
+    let again = pool.get(request(1, &e)).unwrap();
+    assert!(Arc::ptr_eq(&first, &again));
     assert_eq!(counts.made.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.loads.load(Ordering::SeqCst), 0);
+    assert_eq!(counts.reactivated.load(Ordering::SeqCst), 0);
+    pool.sweep();
+    assert!(pool.instance(1).is_some());
+}
+
+/// A source over the pool that keeps the default `level`, which measures
+/// through `self` before the live chain asks for the same keys.
+struct PoolSource(Instances);
+
+impl AudioSource for PoolSource {
+    fn file(&mut self, _: &std::path::Path, _: usize) -> ClipAudio {
+        ClipAudio::Ready(vv_audio::SampleBlocks::contiguous(
+            Arc::new(vec![0.5; 10_000]),
+            0,
+            1,
+        ))
+    }
+
+    fn plugin(&mut self, request: PluginRequest<'_>) -> Option<PluginHandle> {
+        self.0.get(request)
+    }
+}
+
+#[test]
+fn default_level_does_not_leave_the_live_chain_dry() {
+    use vv_core::*;
+    let mut project = Project::default();
+    let media = project.media_pool.insert(MediaItem {
+        path: PathBuf::from("a.wav"),
+        meta: MediaMeta {
+            duration_frames: 1000,
+            fps: Rational::new(10, 1),
+            width: 0,
+            height: 0,
+            has_video: false,
+            has_audio: true,
+            sample_rate: 100,
+            channels: 1,
+            audio_streams: 1,
+            file: Default::default(),
+        },
+        content_hash: 7,
+        compound: None,
+        folder: None,
+    });
+    let clip = Clip::from_source_range(
+        ClipId(1),
+        ClipSource::Media(media),
+        0,
+        5,
+        0,
+        Rational::one(),
+    );
+    let mut track = Track {
+        clips: vec![clip],
+        ..Track::new(TrackKind::Audio)
+    };
+    let plugin = effect(CLASS, &[]);
+    track.mix.effects = vec![
+        AudioEffect::new(AudioEffectKind::Vst3(plugin)),
+        AudioEffect::new(AudioEffectKind::Normalize {
+            target_db: 0.0,
+            mode: NormalizeMode::SamplePeak,
+            set_level: SetLevel::Relative,
+        }),
+    ];
+    let timeline = Timeline {
+        name: "t".into(),
+        fps: Rational::new(10, 1),
+        resolution: (4, 2),
+        tracks: vec![track],
+        markers: Vec::new(),
+        master: Default::default(),
+    };
+    let counts = Arc::new(Counts::default());
+    let mut source = PoolSource(pool(&counts));
+    source.0.begin_pass();
+    let snapshot = MixSnapshot::from_timeline(&project, &timeline, 100, 1, &mut source);
+    counts.processed.store(0, Ordering::SeqCst);
+    let mut out = vec![0.0; 40];
+    vv_audio::mixer::mix_range(&snapshot, 0, &mut out);
+    assert!(
+        counts.processed.load(Ordering::SeqCst) > 0,
+        "the live chain played dry"
+    );
+    // The gain is measured after the plugin: 0.5 * 0.5 normalized to 1.0.
+    assert!(out.iter().all(|s| (s - 1.0).abs() < 1e-4), "{out:?}");
 }
 
 #[test]

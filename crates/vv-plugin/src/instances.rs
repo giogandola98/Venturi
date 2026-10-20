@@ -108,7 +108,9 @@ impl Instances {
         let hash = request.effect.content_hash();
         if let Some(entry) = self.entries.get_mut(&request.key) {
             if entry.used_this_pass {
-                return None;
+                // An analysis shares the pass with the live chain; they run
+                // one after the other, never at once.
+                return Some(entry.instance.clone());
             }
             entry.used_this_pass = true;
             entry.instance.service_restart();

@@ -891,7 +891,9 @@ pub trait AudioSource {
     }
 
     /// The processor of a plugin placement, `None` to play it as a
-    /// pass-through. The same `key` asked again gets the same instance.
+    /// pass-through. The same `key` asked again, in a later pass or in the
+    /// same one (a level analysis through `self`), gets the same instance:
+    /// the callers use it one after the other, never at once.
     fn plugin(&mut self, _: PluginRequest<'_>) -> Option<PluginHandle> {
         None
     }
