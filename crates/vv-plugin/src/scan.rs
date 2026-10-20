@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -26,10 +27,7 @@ pub fn default_dirs() -> Vec<PathBuf> {
 
 /// Effects only (category "Audio Module Class", subcategories without "Instrument").
 pub fn scan(dirs: &[PathBuf]) -> Vec<PluginInfo> {
-    bundles_in(dirs)
-        .iter()
-        .flat_map(|b| scan_bundle(b, None))
-        .collect()
+    unique_classes(bundles_in(dirs).iter().flat_map(|b| scan_bundle(b, None)))
 }
 
 /// Like `scan`, but a bundle that has to be loaded is first named in `marker`,
@@ -46,11 +44,12 @@ pub fn scan_with_guard(
         .collect();
     let blocked =
         |b: &Path| blocklist.contains(&b.to_path_buf()) || newly_blocked.iter().any(|n| n == b);
-    let infos = bundles_in(dirs)
-        .iter()
-        .filter(|b| !blocked(b))
-        .flat_map(|b| scan_bundle(b, Some(marker)))
-        .collect();
+    let infos = unique_classes(
+        bundles_in(dirs)
+            .iter()
+            .filter(|b| !blocked(b))
+            .flat_map(|b| scan_bundle(b, Some(marker))),
+    );
     let _ = std::fs::remove_file(marker);
     (infos, newly_blocked)
 }
@@ -89,14 +88,28 @@ fn path_from_bytes(bytes: Vec<u8>) -> PathBuf {
 
 fn bundles_in(dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut bundles = Vec::new();
+    let mut seen = HashSet::new();
     for dir in dirs {
-        collect_bundles(dir, &mut bundles);
+        collect_bundles(dir, 0, &mut seen, &mut bundles);
     }
     bundles
 }
 
-// Vendor sub-folders are common; bundles are never descended into.
-fn collect_bundles(dir: &Path, out: &mut Vec<PathBuf>) {
+const MAX_DEPTH: usize = 8;
+
+// Vendor sub-folders are common; bundles are never descended into. `seen`
+// holds canonical paths of directories and bundles, so aliased roots and
+// symlink loops are walked once; the first-seen path is the one reported.
+fn collect_bundles(dir: &Path, depth: usize, seen: &mut HashSet<PathBuf>, out: &mut Vec<PathBuf>) {
+    if depth > MAX_DEPTH {
+        return;
+    }
+    let Ok(canonical) = dir.canonicalize() else {
+        return;
+    };
+    if !seen.insert(canonical) {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -104,11 +117,19 @@ fn collect_bundles(dir: &Path, out: &mut Vec<PathBuf>) {
     paths.sort();
     for path in paths {
         if path.extension().is_some_and(|e| e == "vst3") {
-            out.push(path);
+            if path.canonicalize().is_ok_and(|c| seen.insert(c)) {
+                out.push(path);
+            }
         } else if path.is_dir() {
-            collect_bundles(&path, out);
+            collect_bundles(&path, depth + 1, seen, out);
         }
     }
+}
+
+/// The class id is the plugin's identity: keep the first of each.
+fn unique_classes(infos: impl Iterator<Item = PluginInfo>) -> Vec<PluginInfo> {
+    let mut seen = HashSet::new();
+    infos.filter(|i| seen.insert(i.class_id.clone())).collect()
 }
 
 fn scan_bundle(bundle: &Path, marker: Option<&Path>) -> Vec<PluginInfo> {
