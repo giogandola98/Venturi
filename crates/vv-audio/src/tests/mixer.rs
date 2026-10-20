@@ -1972,7 +1972,7 @@ fn plugin_insert_equality_sees_whether_it_processes() {
 #[derive(Default)]
 struct KeyedSource {
     plugins: PluginSource,
-    available: bool,
+    build: Option<u64>,
     levels: Vec<u64>,
     stretches: Vec<u64>,
 }
@@ -1986,8 +1986,8 @@ impl AudioSource for KeyedSource {
         self.plugins.plugin(request)
     }
 
-    fn plugin_available(&mut self, _: &vv_core::Vst3Effect) -> bool {
-        self.available
+    fn plugin_build(&mut self, _: &vv_core::Vst3Effect) -> Option<u64> {
+        self.build
     }
 
     fn stretched(&mut self, request: StretchRequest) -> ClipAudio {
@@ -2050,16 +2050,38 @@ fn a_stretch_of_a_compound_sees_whether_its_plugins_are_available() {
     let mut clip = sped_up_clip(compound, Rational::new(2, 1), 2);
     clip.pitch_correction = true;
     let tl = timeline(vec![audio_track(vec![clip])]);
-    let keys = |available| {
+    let keys = |build| {
         let mut source = KeyedSource {
-            available,
+            build,
             ..Default::default()
         };
         MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
         source.stretches
     };
-    assert_ne!(keys(false), keys(true));
-    assert_eq!(keys(true), keys(true));
+    assert_ne!(keys(None), keys(Some(1)));
+    assert_eq!(keys(Some(1)), keys(Some(1)));
+    assert_ne!(keys(Some(1)), keys(Some(2)));
+    assert_eq!(keys(None), keys(None));
+}
+
+#[test]
+fn an_installed_plugin_update_changes_the_level_key() {
+    let keys = |build| {
+        let (project, tl) = plugin_timeline(vec![vst3(1, b""), normalize(0.0)]);
+        let mut source = KeyedSource {
+            plugins: PluginSource {
+                plugin: Some(FakePlugin::new(4.0)),
+                ..Default::default()
+            },
+            build,
+            ..Default::default()
+        };
+        MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+        source.levels
+    };
+    assert_ne!(keys(Some(1)), keys(Some(2)));
+    assert_eq!(keys(Some(1)), keys(Some(1)));
+    assert_eq!(keys(None), keys(None));
 }
 
 #[test]

@@ -612,3 +612,37 @@ fn make_gets_the_path_the_class_was_scanned_from() {
     assert!(pool.get(request(2, &unknown)).is_none());
     assert_eq!(*made.lock().unwrap(), vec![PathBuf::from("/fake.vst3")]);
 }
+
+fn module_file(dir: &std::path::Path, body: &[u8]) -> PathBuf {
+    let path = dir.join("Fake.vst3");
+    std::fs::write(&path, body).unwrap();
+    path
+}
+
+fn build_in(path: &std::path::Path, version: &str, class_id: &str) -> Option<u64> {
+    let info = PluginInfo {
+        path: path.to_path_buf(),
+        version: version.into(),
+        ..info(CLASS)
+    };
+    let mut pool = Instances::with_maker(vec![info].into(), Box::new(|_, _, _| None));
+    pool.build(&effect(class_id, &[]))
+}
+
+#[test]
+fn the_build_follows_the_installed_module_and_version() {
+    let dir = std::env::temp_dir().join(format!("vv-build-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = module_file(&dir, b"one");
+    let first = build_in(&path, "1.0", CLASS);
+    assert!(first.is_some());
+    assert_eq!(first, build_in(&path, "1.0", CLASS));
+    assert_ne!(first, build_in(&path, "2.0", CLASS));
+    module_file(&dir, b"longer module");
+    assert_ne!(first, build_in(&path, "1.0", CLASS));
+    assert_eq!(
+        None,
+        build_in(&path, "1.0", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}

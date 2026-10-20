@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use vv_audio::{PluginHandle, PluginRequest};
@@ -57,10 +57,26 @@ enum SlotState {
 /// the drop run on the owner's thread (the UI thread for live). An offline
 /// pool may move between a worker's threads, one at a time, and is dropped
 /// on whichever holds it.
+/// Of the module binary, or of the bundle itself when that is a file.
+fn fingerprint(info: &PluginInfo) -> u64 {
+    let file = crate::bundle_binary(&info.path)
+        .filter(|binary| binary.is_file())
+        .unwrap_or_else(|| info.path.clone());
+    let stamp = std::fs::metadata(file).ok().map(|meta| {
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+        (meta.len(), modified)
+    });
+    vv_core::stable_hash((&info.version, stamp))
+}
+
 pub struct Instances {
     slots: HashMap<u64, Slot>,
     /// Scanned plugins: the path each class is made from.
-    known: HashMap<String, PathBuf>,
+    known: HashMap<String, PluginInfo>,
+    builds: HashMap<String, u64>,
     make: MakeInstance,
     /// Instances an editor window drives, by the key they stand for.
     held: HashMap<u64, Arc<dyn HostedPlugin>>,
@@ -99,8 +115,9 @@ impl Instances {
             slots: HashMap::new(),
             known: known
                 .iter()
-                .map(|i| (i.class_id.clone(), i.path.clone()))
+                .map(|i| (i.class_id.clone(), i.clone()))
                 .collect(),
+            builds: HashMap::new(),
             make,
             held: HashMap::new(),
         }
@@ -138,7 +155,7 @@ impl Instances {
             }
             return Some(instance.clone());
         }
-        let path = self.known.get(&request.effect.class_id)?;
+        let path = &self.known.get(&request.effect.class_id)?.path;
         if let Some(slot) = self.slots.get_mut(&request.key) {
             slot.used_this_pass = true;
             if matches!(slot.state, SlotState::Failed { hash: failed } if failed == hash) {
@@ -185,6 +202,18 @@ impl Instances {
     /// Whether `effect` is a scanned plugin: what `get` needs to try it.
     pub fn knows(&self, effect: &Vst3Effect) -> bool {
         self.known.contains_key(&effect.class_id)
+    }
+
+    /// Fingerprint of the installed module of `effect`'s class (scanned
+    /// version, size and mtime of the binary): `None` if not installed.
+    /// Read once per class.
+    pub fn build(&mut self, effect: &Vst3Effect) -> Option<u64> {
+        let info = self.known.get(&effect.class_id)?;
+        let build = *self
+            .builds
+            .entry(effect.class_id.clone())
+            .or_insert_with(|| fingerprint(info));
+        Some(build)
     }
 
     /// Whether the last attempt to make the instance under `key` failed.
