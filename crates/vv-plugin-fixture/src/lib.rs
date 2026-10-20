@@ -2,11 +2,12 @@
 //! the trait impls are unsafe by nature; nothing here may panic across it.
 use std::ffi::{CString, c_char, c_void};
 use std::ptr;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use vst3::Steinberg::Vst::*;
 use vst3::Steinberg::*;
-use vst3::{Class, ComRef, ComWrapper};
+use vst3::{Class, ComPtr, ComRef, ComWrapper};
 
 const PLUGIN_NAME: &str = "Venturi Test Gain";
 const VENDOR: &str = "Venturi";
@@ -51,6 +52,10 @@ const SETUP_FAIL_CID: TUID = [
 ];
 const LOGGED_CID: TUID = [
     0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 11,
+];
+// Logged, and raises restartComponent(kLatencyChanged) from inside setActive(1).
+const RESTART_CID: TUID = [
+    0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 12,
 ];
 const REACTIVATED_LATENCY: u32 = 64;
 const DEFAULT_NORMALIZED: f64 = 0.5;
@@ -102,6 +107,8 @@ struct Gain {
     log_tag: Option<u8>,
     mono_only: bool,
     rejects_setup: bool,
+    restarts_on_activation: bool,
+    handler: Mutex<Option<ComPtr<IComponentHandler>>>,
     activations: AtomicU32,
     // Output parameter 1 as the controller last received it.
     meter: AtomicU64,
@@ -120,6 +127,8 @@ impl Gain {
             log_tag: None,
             mono_only: false,
             rejects_setup: false,
+            restarts_on_activation: false,
+            handler: Mutex::new(None),
             activations: AtomicU32::new(0),
             meter: AtomicU64::new(0),
             seen: [AtomicU64::new(0), AtomicU64::new(0)],
@@ -264,6 +273,11 @@ impl IComponentTrait for Gain {
         self.log(&format!("setActive({state})"));
         if state != 0 {
             self.activations.fetch_add(1, Ordering::Relaxed);
+            if self.restarts_on_activation
+                && let Some(handler) = self.handler.lock().ok().and_then(|h| h.clone())
+            {
+                unsafe { handler.restartComponent(RestartFlags_::kLatencyChanged) };
+            }
         }
         kResultOk
     }
@@ -499,7 +513,10 @@ impl IEditControllerTrait for Gain {
         kResultOk
     }
 
-    unsafe fn setComponentHandler(&self, _handler: *mut IComponentHandler) -> tresult {
+    unsafe fn setComponentHandler(&self, handler: *mut IComponentHandler) -> tresult {
+        if let Ok(mut slot) = self.handler.lock() {
+            *slot = unsafe { ComRef::from_raw(handler) }.map(|h| h.to_com_ptr());
+        }
         kResultOk
     }
 
@@ -586,6 +603,11 @@ impl IPluginFactoryTrait for Factory {
             },
             LOGGED_CID => Gain {
                 log_tag: Some(11),
+                ..Gain::new(None)
+            },
+            RESTART_CID => Gain {
+                log_tag: Some(12),
+                restarts_on_activation: true,
                 ..Gain::new(None)
             },
             SPLIT_CID => Gain::new(Some(SPLIT_CONTROLLER_CID)),
