@@ -343,3 +343,56 @@ fn a_manual_rescan_clears_the_blocklist_but_startup_keeps_it() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(settings.vst3_blocklist.is_empty());
 }
+
+fn plugin(name: &str, path: PathBuf) -> vv_plugin::PluginInfo {
+    vv_plugin::PluginInfo {
+        class_id: name.repeat(2).to_uppercase(),
+        name: name.into(),
+        vendor: "v".into(),
+        version: "1".into(),
+        path,
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_plugin_path_does_not_fail_the_save() {
+    use std::os::unix::ffi::OsStringExt;
+    let bad = PathBuf::from(std::ffi::OsString::from_vec(b"/p/b\xff.vst3".to_vec()));
+    let mut settings = Settings::default();
+    settings.kinetic_scroll = false;
+    settings.vst3_plugins = vec![
+        plugin("a", PathBuf::from("/p/a.vst3")),
+        plugin("b", bad.clone()),
+    ];
+    settings.vst3_blocklist = vec![bad, PathBuf::from("/x/Bad.vst3")];
+
+    let path = std::env::temp_dir()
+        .join(format!("vv-settings-nonutf8-{}", std::process::id()))
+        .join("settings.json");
+    settings.save(&path).unwrap();
+    let loaded = Settings::load(&path);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    assert!(!loaded.kinetic_scroll);
+    assert_eq!(
+        loaded.vst3_plugins,
+        vec![plugin("a", PathBuf::from("/p/a.vst3"))]
+    );
+    assert_eq!(loaded.vst3_blocklist, vec![PathBuf::from("/x/Bad.vst3")]);
+}
+
+#[test]
+fn one_malformed_plugin_entry_does_not_reset_the_settings() {
+    let good = r#"{"class_id":"AA","name":"a","vendor":"v","version":"1","path":"/p/a.vst3"}"#;
+    let json = format!(
+        r#"{{"kinetic_scroll":false,"vst3_plugins":[{{"name":1}},{good}],"vst3_blocklist":[5,"/x/Bad.vst3"]}}"#
+    );
+    let loaded = load_json("bad-entry", &json);
+    assert!(!loaded.kinetic_scroll);
+    assert_eq!(
+        loaded.vst3_plugins,
+        vec![plugin("a", PathBuf::from("/p/a.vst3"))]
+    );
+    assert_eq!(loaded.vst3_blocklist, vec![PathBuf::from("/x/Bad.vst3")]);
+    assert!(!loaded.needs_plugin_scan());
+}
