@@ -213,6 +213,9 @@ fn measure_run(
     let degraded = levels.degraded;
     levels.degraded |= outer_degraded;
     rendered?;
+    if levels.cancelled() {
+        return Err(ExportError::Cancelled);
+    }
     let sources = stamps(&read);
     for m in meters {
         let part = m.meter.into_parts(&m.after);
@@ -403,6 +406,10 @@ fn render_chunks(
             return Ok(());
         }
         at = chunk.end;
+    }
+    // A nested measure stopped in this chunk left it incomplete.
+    if audio.cache.cancelled() {
+        return Err(ExportError::Cancelled);
     }
     Ok(())
 }
@@ -965,11 +972,16 @@ impl AudioSource for Provider<'_, '_> {
         if let Some(level) = self.audio.levels.get(&key) {
             return LevelReading::Ready(*level);
         }
-        // Unity gain rather than a failed render.
-        let level = measure_level(&analysis, self.audio.cache).unwrap_or_else(|e| {
-            eprintln!("[levels] {e}");
-            0.0
-        });
+        // Unity gain rather than a failed render, but a stop is not a level:
+        // the render it is in stops too (`render_chunks`).
+        let level = match measure_level(&analysis, self.audio.cache) {
+            Err(ExportError::Cancelled) => return LevelReading::Pending(None),
+            Err(e) => {
+                eprintln!("[levels] {e}");
+                0.0
+            }
+            Ok(level) => level,
+        };
         self.audio.levels.insert(key, level);
         LevelReading::Ready(level)
     }

@@ -817,3 +817,51 @@ fn a_degraded_result_from_before_a_rescan_is_asked_again() {
     assert!(matches!(cache.stretched[&4], Stretch::Ready(_)));
     assert_eq!(cache.degraded, HashSet::from([2, 4]));
 }
+
+fn queued(slot: AnalysisSlot, key: u64) -> OwnedAnalysis {
+    OwnedAnalysis {
+        key,
+        slot: Some(slot),
+        timeline: queued_timeline(),
+        measured: Measured {
+            channel: vv_core::MixerChannel::Master,
+            insert: 0,
+            clip: None,
+        },
+        mode: NormalizeMode::SamplePeak,
+        format: (48_000, 1),
+        segments: Vec::new(),
+        dry: Vec::new(),
+        scope: 0,
+    }
+}
+
+#[test]
+fn only_an_outdated_level_in_flight_is_stopped_by_a_newer_one_of_its_slot() {
+    let mut project = Project::default();
+    let id = project.timelines.insert(queued_timeline());
+    let slot = (id, vv_core::MixerChannel::Master, 0, 0);
+    let other = (id, vv_core::MixerChannel::Master, 1, 0);
+    let aborts = |inflight: (AnalysisSlot, u64), wanted: &[u64], queue: OwnedAnalysis| {
+        let mut cache = MixBufferCache::spawn(48_000, 1);
+        *cache.level_inflight.lock().unwrap() = Some(inflight);
+        cache.levels.extend(wanted.iter().map(|&k| (k, None)));
+        cache.queued_levels.push(queue);
+        cache.abort_outdated_level();
+        cache.level_abort.load(Ordering::SeqCst)
+    };
+    assert!(aborts((slot, 1), &[2], queued(slot, 2)), "outdated");
+    assert!(!aborts((slot, 1), &[1, 2], queued(slot, 2)), "still wanted");
+    assert!(!aborts((slot, 1), &[2], queued(other, 2)), "another slot");
+}
+
+fn queued_timeline() -> vv_core::Timeline {
+    vv_core::Timeline {
+        name: String::new(),
+        fps: vv_core::Rational::new(25, 1),
+        resolution: (1, 1),
+        tracks: Vec::new(),
+        markers: Vec::new(),
+        master: Default::default(),
+    }
+}

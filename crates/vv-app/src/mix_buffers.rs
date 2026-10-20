@@ -251,9 +251,9 @@ pub struct MixBufferCache {
     retry: Arc<AtomicU64>,
     /// Stops the level worker's measures when the cache drops.
     closing: Arc<AtomicBool>,
-    /// The slot the level worker measures, and the flag that stops it: set
-    /// when a newer analysis of that slot is queued.
-    level_inflight: Arc<std::sync::Mutex<Option<AnalysisSlot>>>,
+    /// What the level worker measures, and the flag that stops it: set by
+    /// `abort_outdated_level` under the lock.
+    level_inflight: Arc<std::sync::Mutex<Option<(AnalysisSlot, u64)>>>,
     level_abort: Arc<AtomicBool>,
     /// Created on the first plugin asked for, so projects without plugins
     /// never touch the host.
@@ -358,8 +358,14 @@ impl MixBufferCache {
                     if worker_closing.load(Ordering::Relaxed) {
                         return;
                     }
-                    worker_abort.store(false, Ordering::Relaxed);
-                    *worker_inflight.lock().unwrap() = analysis.slot;
+                    {
+                        let mut inflight = worker_inflight.lock().unwrap();
+                        *inflight = analysis.slot.map(|slot| (slot, analysis.key));
+                        worker_abort.store(worker_closing.load(Ordering::SeqCst), Ordering::SeqCst);
+                    }
+                    if worker_closing.load(Ordering::SeqCst) {
+                        return;
+                    }
                     let measured = measure_level(&analysis.analysis(&project), &mut cache);
                     *worker_inflight.lock().unwrap() = None;
                     worker_level_busy.fetch_sub(1, Ordering::Relaxed);
@@ -885,6 +891,7 @@ impl MixBufferCache {
     /// are idle, with a copy of `project` to render them from. Every frame:
     /// a worker becoming idle takes the jobs waiting.
     pub fn send_jobs(&mut self, project: &Project) {
+        self.abort_outdated_level();
         let idle = |busy: &AtomicUsize| busy.load(Ordering::Relaxed) == 0;
         let levels = !self.queued_levels.is_empty() && idle(&self.level_busy);
         let stretches = !self.queued_stretches.is_empty() && idle(&self.stretch_busy);
@@ -911,6 +918,19 @@ impl MixBufferCache {
                     stretch,
                 });
             }
+        }
+    }
+
+    /// Stops the measure in flight when nothing asks for its key any more
+    /// and a newer analysis of its slot waits: a wanted measure is never
+    /// stopped.
+    fn abort_outdated_level(&self) {
+        let inflight = self.level_inflight.lock().unwrap();
+        if let Some((slot, key)) = *inflight
+            && !self.levels.contains_key(&key)
+            && self.queued_levels.iter().any(|a| a.slot == Some(slot))
+        {
+            self.level_abort.store(true, Ordering::SeqCst);
         }
     }
 
@@ -954,8 +974,8 @@ impl Drop for MixBufferCache {
                 cancelled.store(true, Ordering::Relaxed);
             }
         }
-        self.closing.store(true, Ordering::Relaxed);
-        self.level_abort.store(true, Ordering::Relaxed);
+        self.closing.store(true, Ordering::SeqCst);
+        self.level_abort.store(true, Ordering::SeqCst);
     }
 }
 
@@ -1024,10 +1044,6 @@ impl AudioSource for MixBufferCache {
             Some(Some(level)) => LevelReading::Ready(*level),
             Some(None) => LevelReading::Pending(last),
             None => {
-                if analysis.slot.is_some() && *self.level_inflight.lock().unwrap() == analysis.slot
-                {
-                    self.level_abort.store(true, Ordering::Relaxed);
-                }
                 self.queued_levels.push(OwnedAnalysis {
                     key,
                     slot: analysis.slot,

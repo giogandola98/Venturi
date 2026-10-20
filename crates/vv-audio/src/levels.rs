@@ -190,6 +190,9 @@ fn input_clips_at(
     clips
 }
 
+/// Whether `timeline` holds an enabled installed plugin, in itself or in
+/// the compounds it plays. Conservative: it also counts muted tracks and
+/// disabled clips.
 fn holds_available_plugin(
     project: &Project,
     timeline: &Timeline,

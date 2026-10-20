@@ -398,6 +398,10 @@ impl AudioSource for BothMeasures<'_> {
         })
     }
 
+    fn plugin_build(&mut self, _: &vv_core::Vst3Effect) -> Option<u64> {
+        self.live_plugins.then_some(1)
+    }
+
     fn level(&mut self, analysis: LevelAnalysis) -> LevelReading {
         let by_segment = measure_level(&analysis, self.cache).unwrap();
         let whole = analysis.measure_with(&mut Whole {
@@ -1435,7 +1439,11 @@ fn a_level_after_a_compound_with_a_plugin_reads_its_tail_in_the_gaps() {
         compound: Some(inner_id),
         ..project.media_pool[file].clone()
     });
-    let mut tl = timeline(vec![audio_track(vec![clip(9, compound, 0, 275, 0)])]);
+    // Starts inside the compound, over 2 s after the source of its tap.
+    let mut tl = timeline(vec![
+        audio_track(vec![clip(9, compound, 0, 450, 0)]),
+        audio_track(vec![clip(10, file, 0, 25, 425)]),
+    ]);
     tl.master.effects = vec![normalize(NormalizeMode::Loudness)];
     let mut cache = echo_cache();
     cache.plugins = Some(echo_plugins(Default::default()));
@@ -1447,4 +1455,140 @@ fn a_level_after_a_compound_with_a_plugin_reads_its_tail_in_the_gaps() {
         db(by_segment, whole).abs() < 0.01,
         "{by_segment} vs {whole}"
     );
+}
+
+/// Stops the cache it renders for the first time it processes.
+struct Stopper(Arc<AtomicBool>);
+
+impl vv_audio::PluginProcessor for Stopper {
+    fn process(&self, _: &mut [f32], _: usize) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+    fn reset(&self) {}
+    fn latency(&self) -> u32 {
+        0
+    }
+}
+
+impl vv_plugin::HostedPlugin for Stopper {
+    fn set_state(&self, _: &vv_core::Vst3Effect) {}
+    fn state_hash(&self) -> u64 {
+        0
+    }
+    fn mark_state(&self, _: u64) {}
+}
+
+/// Measures the first level asked for through the cache, keeping the result.
+struct Outer<'c> {
+    cache: &'c mut LevelCache,
+    result: Option<Result<f32, ExportError>>,
+}
+
+impl AudioSource for Outer<'_> {
+    fn file(&mut self, path: &Path, stream: usize) -> ClipAudio {
+        decoded_whole(path, stream).map_or(ClipAudio::Missing, ClipAudio::Ready)
+    }
+
+    fn plugin(&mut self, _: vv_audio::PluginRequest<'_>) -> Option<vv_audio::PluginHandle> {
+        Some(Arc::new(Passthrough))
+    }
+
+    fn level(&mut self, analysis: LevelAnalysis) -> LevelReading {
+        if self.result.is_none() {
+            self.result = Some(measure_level(&analysis, self.cache));
+        }
+        LevelReading::Ready(1.0)
+    }
+}
+
+/// A measure stopped inside another one is neither stored nor taken for a level.
+#[test]
+fn a_nested_measure_that_is_stopped_stores_nothing() {
+    let mut project = Project::default();
+    let file = media(&mut project, chirp("stopped.wav", 48_000, 4), 48_000, 1);
+    let mut inner = timeline(vec![audio_track(vec![clip(1, file, 0, 100, 0)])]);
+    inner.tracks[0]
+        .mix
+        .effects
+        .push(plugin_effect(FIXTURE_CLASS, &[]));
+    inner.master.effects = vec![normalize(NormalizeMode::SamplePeak)];
+    let inner = project.timelines.insert(inner);
+    let compound = project.media_pool.insert(MediaItem {
+        compound: Some(inner),
+        ..project.media_pool[file].clone()
+    });
+    let mut tl = timeline(vec![audio_track(vec![clip(2, compound, 0, 100, 0)])]);
+    tl.master.effects = vec![normalize(NormalizeMode::SamplePeak)];
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let (plugins, _) = counting_pool(move || Some(Arc::new(Stopper(flag.clone()))));
+    let (mut cache, dir) = disk_cache("stopped", plugins);
+    cache.cancel = Some(stop);
+    let mut source = Outer {
+        cache: &mut cache,
+        result: None,
+    };
+    MixSnapshot::from_timeline(
+        &project,
+        &tl,
+        PROJECT_SAMPLE_RATE,
+        PROJECT_CHANNELS,
+        &mut source,
+    );
+    let result = source.result.expect("a level was asked for");
+    assert!(matches!(result, Err(ExportError::Cancelled)), "{result:?}");
+    assert_eq!(cache.rendered, 0);
+    assert_eq!(level_files(&dir), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Records where the segments of each level end.
+struct SegmentEnds<'c> {
+    cache: &'c mut LevelCache,
+    ends: Vec<u64>,
+}
+
+impl AudioSource for SegmentEnds<'_> {
+    fn file(&mut self, path: &Path, stream: usize) -> ClipAudio {
+        decoded_whole(path, stream).map_or(ClipAudio::Missing, ClipAudio::Ready)
+    }
+
+    fn plugin(&mut self, _: vv_audio::PluginRequest<'_>) -> Option<vv_audio::PluginHandle> {
+        Some(Arc::new(Echo::new(Default::default())))
+    }
+
+    fn level(&mut self, analysis: LevelAnalysis) -> LevelReading {
+        measure_level(&analysis, self.cache).unwrap();
+        self.ends
+            .extend(analysis.segments.last().map(|s| s.frames.end));
+        LevelReading::Ready(1.0)
+    }
+}
+
+/// A track measured after its plugin rings until the mix ends, not until
+/// its own last clip does.
+#[test]
+fn a_track_level_after_a_plugin_runs_to_the_end_of_the_mix() {
+    let mut project = Project::default();
+    let mut tl = echoed_gap(&mut project, "track-tail.wav", true);
+    tl.master.effects.clear();
+    tl.tracks[0]
+        .mix
+        .effects
+        .push(normalize(NormalizeMode::Loudness));
+    let mut source = SegmentEnds {
+        cache: &mut echo_cache(),
+        ends: Vec::new(),
+    };
+    MixSnapshot::from_timeline(
+        &project,
+        &tl,
+        PROJECT_SAMPLE_RATE,
+        PROJECT_CHANNELS,
+        &mut source,
+    );
+    let end = timeline_frame_to_sample(525, 25.0, PROJECT_SAMPLE_RATE);
+    assert!(!source.ends.is_empty());
+    assert!(source.ends.iter().all(|&e| e == end), "{:?}", source.ends);
 }
