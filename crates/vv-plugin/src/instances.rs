@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use vv_audio::{PluginHandle, PluginRequest};
@@ -7,7 +7,8 @@ use vv_core::{PluginState, Vst3Effect};
 
 use crate::{PluginInfo, ProcessMode, Vst3Instance};
 
-pub type MakeInstance = Box<dyn FnMut(&Vst3Effect, u32) -> Option<Arc<dyn HostedPlugin>> + Send>;
+pub type MakeInstance =
+    Box<dyn FnMut(&Path, &Vst3Effect, u32) -> Option<Arc<dyn HostedPlugin>> + Send>;
 
 /// What the pool needs beyond processing (Vst3Instance implements it).
 pub trait HostedPlugin: vv_audio::PluginProcessor {
@@ -58,32 +59,29 @@ enum SlotState {
 /// on whichever holds it.
 pub struct Instances {
     slots: HashMap<u64, Slot>,
-    known: HashSet<String>,
+    /// Scanned plugins: the path each class is made from.
+    known: HashMap<String, PathBuf>,
     make: MakeInstance,
     /// Instances an editor window drives, by the key they stand for.
     held: HashMap<u64, Arc<dyn HostedPlugin>>,
 }
 
 impl Instances {
-    pub fn realtime(known: Vec<PluginInfo>) -> Self {
+    pub fn realtime(known: Arc<[PluginInfo]>) -> Self {
         Self::new(known, ProcessMode::Realtime)
     }
 
     /// Offline pools are used and dropped on worker threads (export, level
     /// and stretch), not the UI thread VST3 names for the lifecycle calls: a
     /// plugin that needs the main thread may fail and then plays dry.
-    pub fn offline(known: Vec<PluginInfo>) -> Self {
+    pub fn offline(known: Arc<[PluginInfo]>) -> Self {
         Self::new(known, ProcessMode::Offline)
     }
 
-    fn new(known: Vec<PluginInfo>, mode: ProcessMode) -> Self {
-        let paths: HashMap<String, PathBuf> = known
-            .iter()
-            .map(|i| (i.class_id.clone(), i.path.clone()))
-            .collect();
-        let make = Box::new(move |effect: &Vst3Effect, sample_rate| {
-            let path = paths.get(&effect.class_id)?;
-            match Vst3Instance::new(path, effect, sample_rate, mode) {
+    fn new(known: Arc<[PluginInfo]>, mode: ProcessMode) -> Self {
+        let make = Box::new(move |path: &Path, effect: &Vst3Effect, sample_rate| {
+            let made = Vst3Instance::new(path, effect, sample_rate, mode);
+            match made {
                 Ok(instance) => Some(instance as Arc<dyn HostedPlugin>),
                 Err(err) => {
                     if first_failure(&effect.class_id) {
@@ -96,10 +94,13 @@ impl Instances {
         Self::with_maker(known, make)
     }
 
-    pub fn with_maker(known: Vec<PluginInfo>, make: MakeInstance) -> Self {
+    pub fn with_maker(known: Arc<[PluginInfo]>, make: MakeInstance) -> Self {
         Self {
             slots: HashMap::new(),
-            known: known.into_iter().map(|i| i.class_id).collect(),
+            known: known
+                .iter()
+                .map(|i| (i.class_id.clone(), i.path.clone()))
+                .collect(),
             make,
             held: HashMap::new(),
         }
@@ -127,9 +128,7 @@ impl Instances {
             }
             return Some(instance.clone());
         }
-        if !self.known.contains(&request.effect.class_id) {
-            return None;
-        }
+        let path = self.known.get(&request.effect.class_id)?;
         if let Some(slot) = self.slots.get_mut(&request.key) {
             slot.used_this_pass = true;
             if matches!(slot.state, SlotState::Failed { hash: failed } if failed == hash) {
@@ -137,7 +136,8 @@ impl Instances {
             }
         }
         let held = self.held.get(&request.key).cloned();
-        let Some(instance) = held.or_else(|| (self.make)(request.effect, request.sample_rate))
+        let Some(instance) =
+            held.or_else(|| (self.make)(path, request.effect, request.sample_rate))
         else {
             self.slots.insert(
                 request.key,
@@ -174,7 +174,7 @@ impl Instances {
 
     /// Whether `effect` is a scanned plugin: what `get` needs to try it.
     pub fn knows(&self, effect: &Vst3Effect) -> bool {
-        self.known.contains(&effect.class_id)
+        self.known.contains_key(&effect.class_id)
     }
 
     /// Whether the last attempt to make the instance under `key` failed.

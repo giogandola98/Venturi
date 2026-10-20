@@ -483,6 +483,12 @@ impl MixBufferCache {
         }
     }
 
+    /// Made on first use, from the list installed at that time.
+    fn plugins(&mut self) -> &mut vv_plugin::Instances {
+        self.plugins
+            .get_or_insert_with(|| vv_plugin::Instances::realtime(vv_plugin::installed()))
+    }
+
     /// The instance playing under `live`, else one made for `aside` that no
     /// mix uses: the pool's sweep drops its own copy at the next pass.
     pub fn plugin_instance(
@@ -492,9 +498,7 @@ impl MixBufferCache {
         effect: &vv_core::Vst3Effect,
         sample_rate: u32,
     ) -> Option<Arc<dyn vv_plugin::HostedPlugin>> {
-        let plugins = self
-            .plugins
-            .get_or_insert_with(|| vv_plugin::Instances::realtime(vv_plugin::installed().to_vec()));
+        let plugins = self.plugins();
         if let Some(instance) = live.and_then(|key| plugins.instance(key)) {
             return Some(instance);
         }
@@ -856,15 +860,11 @@ impl Drop for MixBufferCache {
 /// Every buffer is at the `sample_rate`/`channels` given to `spawn`.
 impl AudioSource for MixBufferCache {
     fn plugin(&mut self, request: PluginRequest<'_>) -> Option<PluginHandle> {
-        self.plugins
-            .get_or_insert_with(|| vv_plugin::Instances::realtime(vv_plugin::installed().to_vec()))
-            .get(request)
+        self.plugins().get(request)
     }
 
     fn plugin_available(&mut self, effect: &vv_core::Vst3Effect) -> bool {
-        self.plugins
-            .get_or_insert_with(|| vv_plugin::Instances::realtime(vv_plugin::installed().to_vec()))
-            .knows(effect)
+        self.plugins().knows(effect)
     }
 
     /// The mixer always asks for frames: a whole file is never held.
