@@ -96,7 +96,7 @@ fn host_creates_messages_with_round_tripping_attributes() {
         let key = |s: &str| CString::new(s).unwrap();
         attrs.setInt(key("i").as_ptr(), -7);
         attrs.setFloat(key("f").as_ptr(), 2.5);
-        let text: Vec<u16> = "ciao\0".encode_utf16().collect();
+        let text: Vec<u16> = "word\0".encode_utf16().collect();
         attrs.setString(key("s").as_ptr(), text.as_ptr());
         attrs.setBinary(key("b").as_ptr(), [9u8, 8, 7].as_ptr().cast(), 3);
 
