@@ -53,6 +53,11 @@ fn held_instances(
         .collect()
 }
 
+fn is_dropped<T: ?Sized>(dropped: &[Arc<dyn HostedPlugin>], instance: &Arc<T>) -> bool {
+    let at = Arc::as_ptr(instance) as *const ();
+    dropped.iter().any(|d| Arc::as_ptr(d) as *const () == at)
+}
+
 /// Brings an already open window to the front; false when there is none to raise.
 fn raise_open<E>(
     editors: &mut HashMap<Key, E>,
@@ -334,6 +339,18 @@ impl PluginEditors {
     #[cfg(test)]
     pub fn defer_gesture(&mut self, key: Key, instance: Arc<dyn HostedPlugin>) {
         self.pending.push((key, instance));
+    }
+
+    /// Closes the editors driving one of `dropped`, keeping the others open.
+    pub fn close_instances(
+        &mut self,
+        project: &mut Project,
+        history: &mut History,
+        dropped: &[Arc<dyn HostedPlugin>],
+    ) {
+        self.close_where(project, history, false, |_, _, editor| {
+            !is_dropped(dropped, editor.instance())
+        });
     }
 
     pub fn close_all(&mut self, project: &mut Project, history: &mut History) {

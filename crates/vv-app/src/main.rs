@@ -2502,9 +2502,12 @@ impl VenturiApp {
             if unchanged {
                 audio.plugins_rescan_unchanged();
             } else {
-                audio.plugins_rescanned();
-                self.plugin_editors
-                    .close_all(&mut self.session.project, &mut self.session.history);
+                let dropped = audio.plugins_rescanned();
+                self.plugin_editors.close_instances(
+                    &mut self.session.project,
+                    &mut self.session.history,
+                    &dropped,
+                );
             }
         }
         self.persist_settings();

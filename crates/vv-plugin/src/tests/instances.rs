@@ -613,6 +613,103 @@ fn make_gets_the_path_the_class_was_scanned_from() {
     assert_eq!(*made.lock().unwrap(), vec![PathBuf::from("/fake.vst3")]);
 }
 
+fn at(class_id: &str, path: &str) -> PluginInfo {
+    PluginInfo {
+        path: PathBuf::from(path),
+        ..info(class_id)
+    }
+}
+
+#[test]
+fn a_refresh_keeps_the_instances_of_plugins_still_listed_from_the_same_bundle() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = pool(&counts);
+    let e = effect(CLASS, &[1]);
+    pool.begin_pass();
+    let first = pool.get(request(7, &e)).unwrap();
+    let other = at("OTHER", "/other.vst3");
+    let updated = PluginInfo {
+        version: "2".into(),
+        ..info(CLASS)
+    };
+    let dropped = pool.refresh(vec![updated, other].into());
+    assert!(dropped.is_empty());
+    pool.begin_pass();
+    let again = pool.get(request(7, &e)).unwrap();
+    assert!(same(&first, &again));
+    assert_eq!(counts.made.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.dropped.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_refresh_drops_only_the_instances_whose_plugin_vanished_or_moved() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = Instances::with_maker(
+        vec![
+            info(CLASS),
+            at("GONE", "/gone.vst3"),
+            at("MOVED", "/a.vst3"),
+        ]
+        .into(),
+        {
+            let counts = counts.clone();
+            Box::new(move |_, effect, _| {
+                counts.made.fetch_add(1, Ordering::SeqCst);
+                Some(Arc::new(Fake {
+                    hash: AtomicU64::new(effect.content_hash()),
+                    counts: counts.clone(),
+                }))
+            })
+        },
+    );
+    let (kept, gone, moved) = (
+        effect(CLASS, &[]),
+        effect("GONE", &[]),
+        effect("MOVED", &[]),
+    );
+    pool.begin_pass();
+    let kept_instance = pool.get(request(1, &kept)).unwrap();
+    let gone_instance = pool.get(request(2, &gone)).unwrap();
+    let moved_instance = pool.get(request(3, &moved)).unwrap();
+    let dropped = pool.refresh(vec![info(CLASS), at("MOVED", "/b.vst3")].into());
+    assert_eq!(dropped.len(), 2);
+    assert!(dropped.iter().any(|d| same(d, &gone_instance)));
+    assert!(dropped.iter().any(|d| same(d, &moved_instance)));
+    assert!(pool.instance(1).is_some_and(|i| same(&i, &kept_instance)));
+    assert!(pool.instance(2).is_none() && pool.instance(3).is_none());
+    pool.begin_pass();
+    pool.get(request(3, &moved)).unwrap();
+    assert_eq!(counts.made.load(Ordering::SeqCst), 4);
+}
+
+#[test]
+fn a_refresh_lets_a_failed_plugin_be_made_once_it_is_listed_again() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = failing_pool(&counts);
+    let e = effect(CLASS, &[1]);
+    pool.begin_pass();
+    assert!(pool.get(request(7, &e)).is_none());
+    assert!(pool.failed(7));
+    pool.refresh(vec![info(CLASS)].into());
+    assert!(!pool.failed(7));
+    pool.begin_pass();
+    assert!(pool.get(request(7, &e)).is_none());
+    assert_eq!(counts.made.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_refresh_lets_a_class_installed_since_be_made() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = pool(&counts);
+    let late = effect("LATE", &[]);
+    pool.begin_pass();
+    assert!(pool.get(request(1, &late)).is_none());
+    pool.refresh(vec![info(CLASS), at("LATE", "/late.vst3")].into());
+    assert!(pool.knows(&late));
+    pool.begin_pass();
+    assert!(pool.get(request(1, &late)).is_some());
+}
+
 fn module_file(dir: &std::path::Path, body: &[u8]) -> PathBuf {
     let path = dir.join("Fake.vst3");
     std::fs::write(&path, body).unwrap();

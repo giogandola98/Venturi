@@ -147,6 +147,15 @@ impl HostedPlugin for Fake {
 }
 
 #[test]
+fn only_the_editors_of_dropped_instances_close_on_a_rescan() {
+    let (kept, gone) = (Arc::new(Fake::default()), Arc::new(Fake::default()));
+    let dropped: Vec<Arc<dyn HostedPlugin>> = vec![gone.clone()];
+    assert!(is_dropped(&dropped, &gone));
+    assert!(!is_dropped(&dropped, &kept));
+    assert!(!is_dropped(&[], &gone));
+}
+
+#[test]
 fn an_editor_instance_is_held_under_the_key_the_mix_asks() {
     let (mut project, id, key) = setup();
     let instance: Arc<dyn HostedPlugin> = Arc::new(Fake::default());

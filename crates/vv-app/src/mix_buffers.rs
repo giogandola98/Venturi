@@ -538,12 +538,20 @@ impl MixBufferCache {
             .retain(|analysis| levels.contains_key(&analysis.key));
     }
 
-    /// Forgets the instances so the next pass rebuilds the pool from the
-    /// current installed list.
-    pub fn reset_plugins(&mut self) {
-        self.plugins = None;
+    /// Adopts the installed list in the live pool: see `Instances::refresh`.
+    /// Returns the instances dropped.
+    pub fn refresh_plugins(
+        &mut self,
+        known: Arc<[vv_plugin::PluginInfo]>,
+    ) -> Vec<Arc<dyn vv_plugin::HostedPlugin>> {
+        let dropped = self
+            .plugins
+            .as_mut()
+            .map(|plugins| plugins.refresh(known))
+            .unwrap_or_default();
         self.retry.fetch_add(1, Ordering::Relaxed);
         self.remeasure_degraded();
+        dropped
     }
 
     /// Lets plugins that failed be tried again, keeping the live ones.
