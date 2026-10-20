@@ -3,7 +3,7 @@
 use std::ffi::{CString, c_char, c_void};
 use std::ptr;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use vst3::Steinberg::Vst::*;
 use vst3::Steinberg::*;
@@ -70,6 +70,10 @@ const MANY_METERS_CID: TUID = [
 const AUX_CID: TUID = [
     0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 15,
 ];
+// Declares an aux pair but only accepts the main buses, whose default is mono.
+const LEGACY_CID: TUID = [
+    0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 16,
+];
 const MANY_METERS: u32 = 100;
 const REACTIVATED_LATENCY: u32 = 64;
 const DEFAULT_NORMALIZED: f64 = 0.5;
@@ -131,6 +135,8 @@ struct Gain {
     restarts_on_activation: bool,
     fails_state: bool,
     aux: bool,
+    legacy: bool,
+    stereo_set: AtomicBool,
     handler: Mutex<Option<ComPtr<IComponentHandler>>>,
     activations: AtomicU32,
     // Output parameter 1 as the controller last received it.
@@ -154,6 +160,8 @@ impl Gain {
             restarts_on_activation: false,
             fails_state: false,
             aux: false,
+            legacy: false,
+            stereo_set: AtomicBool::new(false),
             handler: Mutex::new(None),
             activations: AtomicU32::new(0),
             meter: AtomicU64::new(0),
@@ -411,6 +419,14 @@ impl IAudioProcessorTrait for Gain {
         outputs: *mut SpeakerArrangement,
         num_outs: i32,
     ) -> tresult {
+        if self.legacy {
+            let ok = num_ins == 1 && num_outs == 1 && !inputs.is_null() && !outputs.is_null();
+            if !ok || unsafe { *inputs != SpeakerArr::kStereo || *outputs != SpeakerArr::kStereo } {
+                return kResultFalse;
+            }
+            self.stereo_set.store(true, Ordering::Relaxed);
+            return kResultTrue;
+        }
         if num_ins != self.buses()
             || num_outs != self.buses()
             || inputs.is_null()
@@ -435,7 +451,7 @@ impl IAudioProcessorTrait for Gain {
             return kInvalidArgument;
         }
         unsafe {
-            *arr = if self.mono_only {
+            *arr = if self.mono_only || (self.legacy && !self.stereo_set.load(Ordering::Relaxed)) {
                 SpeakerArr::kMono
             } else {
                 SpeakerArr::kStereo
@@ -722,6 +738,11 @@ impl IPluginFactoryTrait for Factory {
             },
             AUX_CID => Gain {
                 aux: true,
+                ..Gain::new(None)
+            },
+            LEGACY_CID => Gain {
+                aux: true,
+                legacy: true,
                 ..Gain::new(None)
             },
             STATE_FAIL_CID => Gain {
