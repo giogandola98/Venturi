@@ -82,9 +82,9 @@ pub(crate) struct Shared {
     /// Latest value per parameter, coalesced by id. The UI thread may grow it; the
     /// audio thread takes at most `MAX_PARAMS` per block and leaves the rest queued.
     pub params: Mutex<Vec<(ParamID, ParamValue)>>,
-    /// Latest output parameter value per id, from the audio thread to the UI.
-    pub outputs: Mutex<Vec<(ParamID, ParamValue)>>,
-    pub has_outputs: AtomicBool,
+    /// Latest output parameter value per id and whether the UI has not seen it yet.
+    pub outputs: Mutex<Vec<(ParamID, ParamValue, bool)>>,
+    pub outputs_fresh: AtomicBool,
     pub dirty: AtomicBool,
     pub latency_changed: AtomicBool,
     waker: Mutex<Option<Waker>>,
@@ -95,7 +95,7 @@ impl Shared {
         Self {
             params: Mutex::new(Vec::with_capacity(MAX_PARAMS)),
             outputs: Mutex::new(Vec::with_capacity(MAX_PARAMS)),
-            has_outputs: AtomicBool::new(false),
+            outputs_fresh: AtomicBool::new(false),
             dirty: AtomicBool::new(false),
             latency_changed: AtomicBool::new(false),
             waker: Mutex::new(None),

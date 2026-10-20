@@ -420,37 +420,55 @@ impl Vst3Instance {
         let Ok(mut latest) = self.shared.outputs.try_lock() else {
             return;
         };
+        let mut fresh = false;
         outputs.for_each_value(|id, value| {
             if let Some(slot) = latest.iter_mut().find(|p| p.0 == id) {
-                slot.1 = value;
+                if slot.1 != value {
+                    *slot = (id, value, true);
+                    fresh = true;
+                }
             } else if latest.len() < MAX_PARAMS {
-                latest.push((id, value));
+                latest.push((id, value, true));
+                fresh = true;
             }
-            self.shared.has_outputs.store(true, Ordering::Relaxed);
         });
+        if fresh {
+            self.shared.outputs_fresh.store(true, Ordering::Release);
+        }
     }
 
-    /// Hands the plugin's output parameters to its controller; UI thread only.
+    /// Hands the plugin's changed output parameters to its controller; UI thread only.
     pub(crate) fn forward_outputs(&self) {
         let Some(controller) = &self.controller else {
             return;
         };
-        let latest: Vec<_> = self
-            .shared
-            .outputs
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .drain(..)
-            .collect();
-        for (id, value) in latest {
+        if !self.shared.outputs_fresh.load(Ordering::Acquire) {
+            return;
+        }
+        let mut changed = [(0, 0.0); MAX_PARAMS];
+        let mut n = 0;
+        {
+            let mut latest = self
+                .shared
+                .outputs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            self.shared.outputs_fresh.store(false, Ordering::Release);
+            for slot in latest.iter_mut().filter(|p| p.2) {
+                slot.2 = false;
+                changed[n] = (slot.0, slot.1);
+                n += 1;
+            }
+        }
+        for &(id, value) in &changed[..n] {
             // SAFETY: a live controller, called from the UI thread.
             unsafe { controller.setParamNormalized(id, value) };
         }
     }
 
-    /// The plugin has written output parameters, so an open editor needs polling.
-    pub(crate) fn has_outputs(&self) -> bool {
-        self.shared.has_outputs.load(Ordering::Relaxed)
+    /// Output parameters changed since `forward_outputs` last ran.
+    pub(crate) fn outputs_fresh(&self) -> bool {
+        self.shared.outputs_fresh.load(Ordering::Acquire)
     }
 
     fn run_slice(&self, rt: &mut Rt, frames: usize) {

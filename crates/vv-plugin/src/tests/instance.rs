@@ -569,7 +569,7 @@ fn process_publishes_the_latest_output_parameter_value() {
     audio = meter_input(0.25);
     instance.process(&mut audio, 1);
     let outputs = instance.shared.outputs.lock().unwrap().clone();
-    assert_eq!(outputs, vec![(1, 0.25)]);
+    assert_eq!(outputs, vec![(1, 0.25, true)]);
 }
 
 #[test]
@@ -581,7 +581,26 @@ fn output_parameters_reach_the_controller() {
     assert_eq!(controller_value(&instance, 1), 0.0);
     instance.forward_outputs();
     assert_eq!(controller_value(&instance, 1), 0.5);
-    assert!(instance.shared.outputs.lock().unwrap().is_empty());
+    assert!(!instance.outputs_fresh());
+}
+
+#[test]
+fn an_unchanged_output_value_is_not_fresh_again() {
+    let instance = meter_fixture();
+    let mut audio = meter_input(0.5);
+    instance.process(&mut audio, 1);
+    assert!(instance.outputs_fresh());
+    instance.forward_outputs();
+    assert!(!instance.outputs_fresh());
+    audio = meter_input(0.5);
+    instance.process(&mut audio, 1);
+    assert!(!instance.outputs_fresh());
+    audio = meter_input(0.75);
+    instance.process(&mut audio, 1);
+    assert!(instance.outputs_fresh());
+    instance.forward_outputs();
+    assert_eq!(controller_value(&instance, 1), 0.75);
+    assert!(!instance.outputs_fresh());
 }
 
 #[test]
