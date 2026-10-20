@@ -2448,11 +2448,7 @@ impl VenturiApp {
         }
         let (tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
-        let marker = self
-            .settings_path
-            .as_ref()
-            .map(|p| p.with_file_name("vst3-scan.marker"))
-            .unwrap_or_else(|| std::env::temp_dir().join("venturi-vst3-scan.marker"));
+        let marker = self.plugin_scan_marker();
         self.settings.prepare_plugin_scan(manual, &marker);
         self.persist_settings();
         let blocklist = self.settings.blocked_paths();
@@ -2466,6 +2462,13 @@ impl VenturiApp {
         });
         self.plugin_scan_rx = Some(rx);
         vv_plugin::set_scanning(true);
+    }
+
+    fn plugin_scan_marker(&self) -> PathBuf {
+        self.settings_path
+            .as_ref()
+            .map(|p| p.with_file_name("vst3-scan.marker"))
+            .unwrap_or_else(|| std::env::temp_dir().join("venturi-vst3-scan.marker"))
     }
 
     fn poll_plugin_scan(&mut self) {
@@ -4030,6 +4033,12 @@ impl eframe::App for VenturiApp {
     /// in `ui()` thus ends up on disk without writing it on every resize.
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
         self.persist_settings();
+    }
+
+    // Quitting mid-scan is not a crash: keep the next launch from blaming the
+    // bundle that is still loading.
+    fn on_exit(&mut self) {
+        vv_plugin::abandon_scan(&self.plugin_scan_marker());
     }
 }
 

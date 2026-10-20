@@ -156,6 +156,43 @@ fn a_path_with_surrounding_spaces_is_not_trimmed() {
     assert_eq!(crashed, Some(odd));
 }
 
+#[test]
+fn abandoning_the_scan_removes_the_marker_of_a_bundle_mid_load() {
+    let (root, _plugins, marker) = guard_dirs("abandon");
+    std::fs::write(&marker, b"/p/Slow.vst3").unwrap();
+    abandon_scan(&marker);
+    let marker_left = marker.exists();
+    let crashed = take_crashed(&marker);
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(!marker_left);
+    assert_eq!(crashed, None);
+}
+
+#[test]
+fn a_scan_abandoned_at_quit_neither_loads_bundles_nor_rewrites_the_marker() {
+    let (root, plugins, marker) = guard_dirs("abandoned-scan");
+    let bundle = crate::testing::fixture_bundle();
+    copy_dir(&bundle, &plugins.join(bundle.file_name().unwrap()));
+    abandon_scan(&marker);
+    let (infos, blocked) = scan_with_guard(&[plugins], &marker, &[]);
+    let marker_left = marker.exists();
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(infos.is_empty(), "{infos:?}");
+    assert!(blocked.is_empty());
+    assert!(!marker_left);
+}
+
+#[test]
+fn abandoning_one_marker_leaves_other_scans_running() {
+    let (root, plugins, marker) = guard_dirs("abandon-other");
+    abandon_scan(&root.join("other.marker"));
+    let bundle = crate::testing::fixture_bundle();
+    copy_dir(&bundle, &plugins.join(bundle.file_name().unwrap()));
+    let (infos, _) = scan_with_guard(&[plugins], &marker, &[]);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(infos.len(), 1, "{infos:?}");
+}
+
 fn info_json(cid: &str) -> String {
     format!(
         r#"{{"Classes": [{{"CID": "{cid}", "Category": "Audio Module Class",
