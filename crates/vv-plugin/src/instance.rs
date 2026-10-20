@@ -365,13 +365,17 @@ impl Vst3Instance {
         let _audio = self.lock_audio();
         // SAFETY: `busy` gives this thread exclusive use of `rt`.
         let rt = unsafe { &mut *self.rt.get() };
+        // Bounded so a plugin that keeps queueing edits from inside `process` cannot spin us.
+        let mut slices = None;
         loop {
             rt.changes.clear();
             {
                 let mut params = self.shared.params.lock().unwrap_or_else(|e| e.into_inner());
-                if params.is_empty() {
+                let left = slices.get_or_insert(params.len().div_ceil(MAX_PARAMS) + 1);
+                if params.is_empty() || *left == 0 {
                     break;
                 }
+                *left -= 1;
                 let n = params.len().min(MAX_PARAMS);
                 for (id, value) in params.drain(..n) {
                     rt.changes.push(id, value);
