@@ -59,7 +59,10 @@ All `unsafe` and all COM code live here.
   path to a marker file; if the process dies, the next launch blocks that
   bundle until it changes on disk (a manual rescan retries a bundle whose
   binary's modification time differs from the one recorded when it was
-  blocked). A hang is not caught. The result is cached in the settings and
+  blocked). A hang is not caught. Quitting while a scan runs
+  removes the marker (an orderly quit is not a crash), unless the current
+  bundle has been loading for 30 s or more: that is a hang, and stays blamed.
+  A quit with no scan running leaves the marker alone. The result is cached in the settings and
   not rescanned at launch.
   Default folders: `/Library/Audio/Plug-Ins/VST3` and the user one on
   macOS; `~/.vst3`, `/usr/lib/vst3`, `/usr/lib64/vst3`,
