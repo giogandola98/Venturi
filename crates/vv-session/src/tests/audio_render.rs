@@ -975,7 +975,8 @@ fn a_tail_rings_through_a_gap_spanning_chunks_and_no_ghost_follows() {
     assert!(echoes > 0);
 }
 
-/// Two short clips 9 s apart, the 7 s tap of the first one falling in the gap.
+/// Two short clips 9 s apart, the 7 s tap of the first one falling in the gap,
+/// and a clip of another track ending after the tap of the second.
 fn echoed_gap(project: &mut Project, name: &str, on_track: bool) -> Timeline {
     let file = media(project, chirp(name, 48_000, 5), 48_000, 1);
     let mut track = audio_track(vec![clip(1, file, 0, 25, 0), clip(2, file, 25, 25, 250)]);
@@ -986,6 +987,9 @@ fn echoed_gap(project: &mut Project, name: &str, on_track: bool) -> Timeline {
         tl.master.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
     }
     tl.tracks.push(track);
+    // Ends after the last tap of the first track.
+    tl.tracks
+        .push(audio_track(vec![clip(3, file, 75, 25, 500)]));
     tl.master.effects.push(normalize(NormalizeMode::Loudness));
     tl
 }
@@ -1413,4 +1417,34 @@ fn a_measure_inside_a_compound_plays_unmade_plugins_as_its_key_says() {
     assert_eq!(measured, expected);
     let _ = std::fs::remove_dir_all(dry_dir);
     let _ = std::fs::remove_dir_all(wet_dir);
+}
+
+/// An echo inside a compound clip remembers beyond the preroll as well.
+#[test]
+fn a_level_after_a_compound_with_a_plugin_reads_its_tail_in_the_gaps() {
+    let mut project = Project::default();
+    let inner = echoed_gap(&mut project, "compound-tail.wav", true);
+    let mut inner = inner;
+    inner.master.effects.clear();
+    let file = inner.tracks[0].clips[0].source.clone();
+    let ClipSource::Media(file) = file else {
+        panic!("a media clip");
+    };
+    let inner_id = project.timelines.insert(inner);
+    let compound = project.media_pool.insert(MediaItem {
+        compound: Some(inner_id),
+        ..project.media_pool[file].clone()
+    });
+    let mut tl = timeline(vec![audio_track(vec![clip(9, compound, 0, 275, 0)])]);
+    tl.master.effects = vec![normalize(NormalizeMode::Loudness)];
+    let mut cache = echo_cache();
+    cache.plugins = Some(echo_plugins(Default::default()));
+    let levels = echo_measures(&project, &tl, &mut cache);
+    let [(by_segment, whole)] = levels[..] else {
+        panic!("{levels:?}");
+    };
+    assert!(
+        db(by_segment, whole).abs() < 0.01,
+        "{by_segment} vs {whole}"
+    );
 }

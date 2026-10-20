@@ -126,6 +126,8 @@ pub(crate) struct InputClip {
     /// Everything about it but where it starts.
     body: u64,
     compound: bool,
+    /// A compound clip whose timeline holds an installed plugin.
+    pub plugin: bool,
 }
 
 /// The clips of the audible tracks of `timeline`, whether their audio is
@@ -180,10 +182,48 @@ fn input_clips_at(
                 len: span.len,
                 body,
                 compound: nested.is_some(),
+                plugin: nested
+                    .is_some_and(|n| holds_available_plugin(project, n, depth + 1, available)),
             });
         }
     }
     clips
+}
+
+fn holds_available_plugin(
+    project: &Project,
+    timeline: &Timeline,
+    depth: u32,
+    available: &mut dyn FnMut(&Vst3Effect) -> Option<u64>,
+) -> bool {
+    if depth >= vv_core::MAX_COMPOUND_DEPTH {
+        return false;
+    }
+    let strips = timeline
+        .tracks
+        .iter()
+        .map(|track| &track.mix)
+        .chain([&timeline.master]);
+    for strip in strips {
+        for effect in &strip.effects {
+            if let AudioEffectKind::Vst3(plugin) = &effect.kind
+                && effect.enabled
+                && available(plugin).is_some()
+            {
+                return true;
+            }
+        }
+    }
+    timeline
+        .tracks
+        .iter()
+        .flat_map(|track| &track.clips)
+        .filter_map(|clip| match &clip.source {
+            ClipSource::Media(id) => project.media_pool.get(*id)?.compound,
+            _ => None,
+        })
+        .filter_map(|id| project.timelines.get(id))
+        .any(|nested| holds_available_plugin(project, nested, depth + 1, available))
 }
 
 /// The content of a compound clip's timeline, in its own time.
@@ -277,15 +317,16 @@ pub(crate) fn has_processing_plugin(inserts: &[Insert]) -> bool {
 /// the measure keeps a state across the edit points, so each segment is
 /// rendered with a preroll and keyed with the one before it; or it keeps
 /// all of it, and there is one segment from the start through the gaps,
-/// keyed by every input.
+/// keyed by every input. `mix_end`: where the last clip of the timeline ends.
 pub(crate) fn level_segments(
     inputs: &[&InputClip],
     base: u64,
     track_key: impl Fn(usize) -> u64,
     memory: Memory,
+    mix_end: u64,
 ) -> Vec<LevelSegment> {
     let stateful = match memory {
-        Memory::Unbounded => return continuous_segment(inputs, base, track_key),
+        Memory::Unbounded => return continuous_segment(inputs, base, track_key, mix_end),
         Memory::Bounded(stateful) => stateful,
     };
     let mut edges: Vec<u64> = inputs
@@ -332,16 +373,19 @@ pub(crate) fn level_segments(
     segments
 }
 
-/// Rendered whole from frame 0, as the export does: any edit anywhere is a
+/// Rendered whole from frame 0 to the end of the mix (`mix_end`: the tail
+/// of a strip rings until then), as the export does: any edit anywhere is a
 /// new key.
 fn continuous_segment(
     inputs: &[&InputClip],
     base: u64,
     track_key: impl Fn(usize) -> u64,
+    mix_end: u64,
 ) -> Vec<LevelSegment> {
-    let Some(end) = inputs.iter().map(|clip| clip.start + clip.len).max() else {
+    if inputs.is_empty() {
         return Vec::new();
-    };
+    }
+    let end = mix_end;
     let mut sorted = inputs.to_vec();
     sorted.sort_by_key(|clip| (clip.track, clip.start, clip.id));
     let mut h = StableHasher::default();

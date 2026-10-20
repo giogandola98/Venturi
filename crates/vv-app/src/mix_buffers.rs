@@ -251,6 +251,10 @@ pub struct MixBufferCache {
     retry: Arc<AtomicU64>,
     /// Stops the level worker's measures when the cache drops.
     closing: Arc<AtomicBool>,
+    /// The slot the level worker measures, and the flag that stops it: set
+    /// when a newer analysis of that slot is queued.
+    level_inflight: Arc<std::sync::Mutex<Option<AnalysisSlot>>>,
+    level_abort: Arc<AtomicBool>,
     /// Created on the first plugin asked for, so projects without plugins
     /// never touch the host.
     plugins: Option<vv_plugin::Instances>,
@@ -314,12 +318,16 @@ impl MixBufferCache {
         let worker_level_busy = level_busy.clone();
         let closing = Arc::new(AtomicBool::new(false));
         let worker_closing = closing.clone();
+        let level_inflight = Arc::new(std::sync::Mutex::new(None));
+        let worker_inflight = level_inflight.clone();
+        let level_abort = Arc::new(AtomicBool::new(false));
+        let worker_abort = level_abort.clone();
         let level_retry = retry.clone();
         let level_worker = Worker::spawn(move |jobs: mpsc::Receiver<LevelJob>| {
             // Half the cores: the playback's decodes need the rest.
             let mut cache = worker_levels();
             cache.threads = cache.threads.div_ceil(2);
-            cache.cancel = Some(worker_closing.clone());
+            cache.cancel = Some(worker_abort.clone());
             let mut retried = 0;
             while let Ok(first) = jobs.recv() {
                 retry_failures(&mut cache, &level_retry, &mut retried);
@@ -339,12 +347,34 @@ impl MixBufferCache {
                         batch.push(job);
                     }
                 }
+                // Short measures first: a continuous one (plugins) can take long.
+                batch.sort_by_key(|job| {
+                    (job.analysis.segments.iter())
+                        .map(|s| s.frames.end - s.frames.start)
+                        .sum::<u64>()
+                });
                 for LevelJob { project, analysis } in batch {
                     cache.degraded = false;
+                    if worker_closing.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    worker_abort.store(false, Ordering::Relaxed);
+                    *worker_inflight.lock().unwrap() = analysis.slot;
                     let measured = measure_level(&analysis.analysis(&project), &mut cache);
+                    *worker_inflight.lock().unwrap() = None;
                     worker_level_busy.fetch_sub(1, Ordering::Relaxed);
                     if worker_closing.load(Ordering::Relaxed) {
                         return;
+                    }
+                    // Superseded: asked again if still wanted.
+                    if matches!(measured, Err(ExportError::Cancelled)) {
+                        if level_tx
+                            .send((analysis.key, analysis.slot, None, None))
+                            .is_err()
+                        {
+                            return;
+                        }
+                        continue;
                     }
                     // Unity gain rather than a failed measure.
                     let level = measured.unwrap_or_else(|e| {
@@ -397,6 +427,8 @@ impl MixBufferCache {
             degraded: HashSet::new(),
             retry,
             closing,
+            level_inflight,
+            level_abort,
             plugins: None,
         }
     }
@@ -923,6 +955,7 @@ impl Drop for MixBufferCache {
             }
         }
         self.closing.store(true, Ordering::Relaxed);
+        self.level_abort.store(true, Ordering::Relaxed);
     }
 }
 
@@ -991,6 +1024,10 @@ impl AudioSource for MixBufferCache {
             Some(Some(level)) => LevelReading::Ready(*level),
             Some(None) => LevelReading::Pending(last),
             None => {
+                if analysis.slot.is_some() && *self.level_inflight.lock().unwrap() == analysis.slot
+                {
+                    self.level_abort.store(true, Ordering::Relaxed);
+                }
                 self.queued_levels.push(OwnedAnalysis {
                     key,
                     slot: analysis.slot,
