@@ -27,6 +27,30 @@ type Slot<T> = Arc<Mutex<Option<Result<T, String>>>>;
 type Registry<T> = Mutex<Option<HashMap<PathBuf, Slot<T>>>>;
 
 static MODULES: Registry<Arc<Module>> = Mutex::new(None);
+static BUILDS: Mutex<Option<HashMap<PathBuf, u64>>> = Mutex::new(None);
+
+/// Of the module binary (or the bundle itself when that is a file) at its
+/// first use and never refreshed: modules are never unloaded, so it describes
+/// the code this process runs, and every pool agrees.
+pub(crate) fn build(bundle: &Path, version: &str) -> u64 {
+    let mut guard = BUILDS.lock().unwrap_or_else(|e| e.into_inner());
+    *guard
+        .get_or_insert_with(HashMap::new)
+        .entry(bundle.to_path_buf())
+        .or_insert_with(|| {
+            let file = bundle_binary(bundle)
+                .filter(|binary| binary.is_file())
+                .unwrap_or_else(|| bundle.to_path_buf());
+            let stamp = std::fs::metadata(file).ok().map(|meta| {
+                let modified = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+                (meta.len(), modified)
+            });
+            vv_core::stable_hash((version, stamp))
+        })
+}
 
 pub(crate) struct LoadError {
     msg: String,

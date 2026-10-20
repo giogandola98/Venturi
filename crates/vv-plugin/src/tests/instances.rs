@@ -625,21 +625,22 @@ fn build_in(path: &std::path::Path, version: &str, class_id: &str) -> Option<u64
         version: version.into(),
         ..info(CLASS)
     };
-    let mut pool = Instances::with_maker(vec![info].into(), Box::new(|_, _, _| None));
+    let pool = Instances::with_maker(vec![info].into(), Box::new(|_, _, _| None));
     pool.build(&effect(class_id, &[]))
 }
 
 #[test]
-fn the_build_follows_the_installed_module_and_version() {
+fn the_build_is_the_one_of_the_code_this_process_runs() {
     let dir = std::env::temp_dir().join(format!("vv-build-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = module_file(&dir, b"one");
     let first = build_in(&path, "1.0", CLASS);
     assert!(first.is_some());
+    module_file(&dir, b"a longer, updated module");
     assert_eq!(first, build_in(&path, "1.0", CLASS));
-    assert_ne!(first, build_in(&path, "2.0", CLASS));
-    module_file(&dir, b"longer module");
-    assert_ne!(first, build_in(&path, "1.0", CLASS));
+    assert_eq!(first, build_in(&path, "2.0", CLASS));
+    let other = std::fs::create_dir_all(dir.join("b")).map(|_| module_file(&dir.join("b"), b"x"));
+    assert_ne!(first, build_in(&other.unwrap(), "1.0", CLASS));
     assert_eq!(
         None,
         build_in(&path, "1.0", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")

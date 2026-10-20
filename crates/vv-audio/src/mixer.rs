@@ -1477,7 +1477,9 @@ fn request_plugins(
                 });
                 effect.enabled.then(|| PluginInsert {
                     key,
-                    content: stable_hash((plugin.content_hash(), build)),
+                    content: build.map_or(plugin.content_hash(), |b| {
+                        stable_hash((plugin.content_hash(), b))
+                    }),
                     handle,
                 })
             }
