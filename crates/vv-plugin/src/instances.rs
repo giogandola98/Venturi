@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use vv_audio::{PluginHandle, PluginRequest};
 use vv_core::{PluginState, Vst3Effect};
@@ -26,6 +26,14 @@ pub trait HostedPlugin: vv_audio::PluginProcessor {
     fn take_gesture(&self) -> Option<(PluginState, PluginState)> {
         None
     }
+}
+
+/// Whether `class_id` has not failed yet in this process: pools are per
+/// worker, so the same plugin would otherwise log once per pool.
+fn first_failure(class_id: &str) -> bool {
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let mut seen = SEEN.get_or_init(Default::default).lock().unwrap();
+    seen.insert(class_id.to_owned())
 }
 
 struct Entry {
@@ -59,6 +67,9 @@ impl Instances {
         Self::new(known, ProcessMode::Realtime)
     }
 
+    /// Offline pools are used and dropped on worker threads (export, level
+    /// and stretch), not the UI thread VST3 names for the lifecycle calls: a
+    /// plugin that needs the main thread may fail and then plays dry.
     pub fn offline(known: Vec<PluginInfo>) -> Self {
         Self::new(known, ProcessMode::Offline)
     }
@@ -73,7 +84,9 @@ impl Instances {
             match Vst3Instance::new(path, effect, sample_rate, mode) {
                 Ok(instance) => Some(instance as Arc<dyn HostedPlugin>),
                 Err(err) => {
-                    eprintln!("vv-plugin: {}: {err}", effect.name);
+                    if first_failure(&effect.class_id) {
+                        eprintln!("vv-plugin: {}: {err}", effect.name);
+                    }
                     None
                 }
             }
