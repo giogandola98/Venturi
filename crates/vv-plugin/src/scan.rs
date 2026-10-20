@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
@@ -49,10 +50,34 @@ pub fn scan_with_guard(
         bundles_in(dirs)
             .iter()
             .filter(|b| !blocked(b))
+            .take_while(|_| !is_abandoned(marker))
             .flat_map(|b| scan_bundle(b, Some(marker))),
     );
-    let _ = std::fs::remove_file(marker);
+    if !is_abandoned(marker) {
+        let _ = std::fs::remove_file(marker);
+    }
     (infos, newly_blocked)
+}
+
+/// Markers of scans cut short by an orderly quit. The lock makes "write the
+/// marker" and "abandon" atomic, so a quitting app cannot be left with a marker
+/// written after it was removed.
+static ABANDONED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+fn lock_abandoned() -> std::sync::MutexGuard<'static, Vec<PathBuf>> {
+    ABANDONED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn is_abandoned(marker: &Path) -> bool {
+    lock_abandoned().iter().any(|m| m == marker)
+}
+
+/// For an orderly quit: the process is not crashing, so a bundle still loading
+/// must not be blamed by the next launch. A real crash never gets here.
+pub fn abandon_scan(marker: &Path) {
+    let mut abandoned = lock_abandoned();
+    abandoned.push(marker.to_path_buf());
+    let _ = std::fs::remove_file(marker);
 }
 
 /// The bundle a previous scan died in, if any; consumes the marker. The app
@@ -141,17 +166,23 @@ fn scan_bundle(bundle: &Path, marker: Option<&Path>) -> Vec<PluginInfo> {
     {
         return infos;
     }
-    if let Some(marker) = marker
-        && let Err(e) = std::fs::write(marker, path_to_bytes(bundle))
-    {
-        static WARNED: std::sync::Once = std::sync::Once::new();
-        WARNED.call_once(|| eprintln!("VST3 scan crash marker not writable ({e}): unguarded"));
+    if let Some(marker) = marker {
+        let abandoned = lock_abandoned();
+        if abandoned.iter().any(|m| m == marker) {
+            return Vec::new();
+        }
+        if let Err(e) = std::fs::write(marker, path_to_bytes(bundle)) {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| eprintln!("VST3 scan crash marker not writable ({e}): unguarded"));
+        }
     }
     // A broken plugin must not hide the others.
     let infos = crate::module::module(bundle)
         .map(|m| m.effect_classes(bundle))
         .unwrap_or_default();
-    if let Some(marker) = marker {
+    if let Some(marker) = marker
+        && !is_abandoned(marker)
+    {
         let _ = std::fs::remove_file(marker);
     }
     infos
