@@ -271,8 +271,14 @@ fn hash_strip(
         format!("{strip:?}").hash(h);
         return;
     }
-    (strip.gain_db.to_bits(), strip.pan.to_bits()).hash(h);
-    for effect in &strip.effects {
+    // Destructured so a new strip field cannot be left out of the key.
+    let ChannelStrip {
+        gain_db,
+        pan,
+        effects,
+    } = strip;
+    (gain_db.to_bits(), pan.to_bits()).hash(h);
+    for effect in effects {
         effect.enabled.hash(h);
         let AudioEffectKind::Vst3(plugin) = &effect.kind else {
             format!("{:?}", effect.kind).hash(h);
