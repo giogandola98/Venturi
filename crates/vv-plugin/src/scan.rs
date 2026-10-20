@@ -26,11 +26,45 @@ pub fn default_dirs() -> Vec<PathBuf> {
 
 /// Effects only (category "Audio Module Class", subcategories without "Instrument").
 pub fn scan(dirs: &[PathBuf]) -> Vec<PluginInfo> {
+    bundles_in(dirs)
+        .iter()
+        .flat_map(|b| scan_bundle(b, None))
+        .collect()
+}
+
+/// Like `scan`, but a bundle that has to be loaded is first named in `marker`,
+/// so a crash inside it is blamed on the next run: that bundle is returned in
+/// the second list, to be persisted by the caller and passed back as `blocklist`.
+pub fn scan_with_guard(
+    dirs: &[PathBuf],
+    marker: &Path,
+    blocklist: &[PathBuf],
+) -> (Vec<PluginInfo>, Vec<PathBuf>) {
+    let mut newly_blocked = Vec::new();
+    if let Ok(crashed) = std::fs::read_to_string(marker) {
+        let crashed = PathBuf::from(crashed.trim());
+        eprintln!("VST3 scan crashed in {}, skipping it", crashed.display());
+        if !blocklist.contains(&crashed) {
+            newly_blocked.push(crashed);
+        }
+    }
+    let blocked =
+        |b: &Path| blocklist.contains(&b.to_path_buf()) || newly_blocked.iter().any(|n| n == b);
+    let infos = bundles_in(dirs)
+        .iter()
+        .filter(|b| !blocked(b))
+        .flat_map(|b| scan_bundle(b, Some(marker)))
+        .collect();
+    let _ = std::fs::remove_file(marker);
+    (infos, newly_blocked)
+}
+
+fn bundles_in(dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut bundles = Vec::new();
     for dir in dirs {
         collect_bundles(dir, &mut bundles);
     }
-    bundles.iter().flat_map(|b| scan_bundle(b)).collect()
+    bundles
 }
 
 // Vendor sub-folders are common; bundles are never descended into.
@@ -49,7 +83,7 @@ fn collect_bundles(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn scan_bundle(bundle: &Path) -> Vec<PluginInfo> {
+fn scan_bundle(bundle: &Path, marker: Option<&Path>) -> Vec<PluginInfo> {
     let info_path = bundle.join("Contents/Resources/moduleinfo.json");
     if let Some(infos) = std::fs::read_to_string(info_path)
         .ok()
@@ -57,10 +91,17 @@ fn scan_bundle(bundle: &Path) -> Vec<PluginInfo> {
     {
         return infos;
     }
+    if let Some(marker) = marker {
+        let _ = std::fs::write(marker, bundle.to_string_lossy().as_bytes());
+    }
     // A broken plugin must not hide the others.
-    crate::module::module(bundle)
+    let infos = crate::module::module(bundle)
         .map(|m| m.effect_classes(bundle))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if let Some(marker) = marker {
+        let _ = std::fs::remove_file(marker);
+    }
+    infos
 }
 
 #[derive(Deserialize)]
