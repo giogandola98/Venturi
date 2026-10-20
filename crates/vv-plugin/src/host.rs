@@ -623,3 +623,7 @@ impl IMessageTrait for Message {
             .map_or(std::ptr::null_mut(), |r| r.as_ptr())
     }
 }
+
+#[cfg(test)]
+#[path = "tests/host.rs"]
+mod tests;
