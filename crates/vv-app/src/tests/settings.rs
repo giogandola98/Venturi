@@ -306,7 +306,13 @@ fn a_scan_that_found_nothing_is_not_scanned_again_at_startup() {
         .join(format!("vv-settings-scanned-{}", std::process::id()))
         .join("settings.json");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    settings.vst3_blocklist = vec![legacy("/x/Bad.vst3")];
+    settings.vst3_blocklist = vec![
+        legacy("/x/Bad.vst3"),
+        Blocked {
+            path: "/x/New.vst3".into(),
+            modified: Some(42),
+        },
+    ];
     settings.save(&path).unwrap();
     let loaded = Settings::load(&path);
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -354,7 +360,15 @@ fn legacy(path: impl Into<PathBuf>) -> Blocked {
 fn a_blocked_bundle_is_retried_only_once_it_changed_on_disk() {
     let dir = std::env::temp_dir().join(format!("vv-settings-retry-{}", std::process::id()));
     let bundle = dir.join("Crash.vst3");
-    std::fs::create_dir_all(&bundle).unwrap();
+    #[cfg(target_os = "macos")]
+    let binary = bundle.join("Contents/MacOS/Crash");
+    #[cfg(not(target_os = "macos"))]
+    let binary = bundle.join(format!(
+        "Contents/{}-linux/Crash.so",
+        std::env::consts::ARCH
+    ));
+    std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+    std::fs::write(&binary, b"").unwrap();
     let marker = dir.join("scan.marker");
     let mut settings = Settings::default();
     settings.vst3_blocklist = vec![Blocked::new(bundle.clone()), legacy("/x/Old.vst3")];
@@ -366,7 +380,7 @@ fn a_blocked_bundle_is_retried_only_once_it_changed_on_disk() {
 
     let later = std::time::SystemTime::UNIX_EPOCH
         + std::time::Duration::from_secs(recorded.unwrap() + 1000);
-    std::fs::File::open(&bundle)
+    std::fs::File::open(&binary)
         .unwrap()
         .set_modified(later)
         .unwrap();

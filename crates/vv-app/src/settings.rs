@@ -865,8 +865,13 @@ impl Blocked {
     }
 }
 
+/// Of the module binary (what crashed): replacing a bundle in place leaves the
+/// directory's own time alone. Single-file bundles use their own.
 fn bundle_mtime(path: &Path) -> Option<u64> {
-    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let file = vv_plugin::bundle_binary(path)
+        .filter(|binary| binary.is_file())
+        .unwrap_or_else(|| path.to_path_buf());
+    let modified = std::fs::metadata(file).ok()?.modified().ok()?;
     Some(
         modified
             .duration_since(std::time::UNIX_EPOCH)

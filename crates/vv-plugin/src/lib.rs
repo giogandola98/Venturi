@@ -4,6 +4,7 @@ mod scan;
 #[doc(hidden)]
 pub mod testing;
 
+pub use module::bundle_binary;
 pub use scan::{PluginInfo, default_dirs, scan, scan_with_guard, take_crashed};
 mod editor;
 mod host;

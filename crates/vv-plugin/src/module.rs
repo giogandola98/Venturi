@@ -130,6 +130,14 @@ fn binary_path(bundle: &Path) -> Result<PathBuf, String> {
         .join(format!("{stem}.so")))
 }
 
+/// The file `load` opens for this bundle, for callers that watch it change.
+pub fn bundle_binary(bundle: &Path) -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    return binary_path(bundle, &bundle_ref(bundle).ok()?).ok();
+    #[cfg(not(target_os = "macos"))]
+    binary_path(bundle).ok()
+}
+
 fn load(bundle: &Path) -> Result<Module, LoadError> {
     #[cfg(target_os = "macos")]
     let cf_bundle = bundle_ref(bundle)?;
