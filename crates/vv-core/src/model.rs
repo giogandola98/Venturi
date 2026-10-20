@@ -2871,14 +2871,24 @@ pub struct Timeline {
 }
 
 impl Timeline {
-    /// A copy of a timeline must not share plugin instance ids with its source.
-    pub(crate) fn refresh_effect_ids(&mut self) {
-        let strips = self
-            .tracks
+    /// Every channel strip: the tracks' mixes in order, then the master.
+    pub fn strips(&self) -> impl Iterator<Item = &ChannelStrip> {
+        self.tracks
+            .iter()
+            .map(|track| &track.mix)
+            .chain([&self.master])
+    }
+
+    pub fn strips_mut(&mut self) -> impl Iterator<Item = &mut ChannelStrip> {
+        self.tracks
             .iter_mut()
             .map(|track| &mut track.mix)
-            .chain(std::iter::once(&mut self.master));
-        for strip in strips {
+            .chain([&mut self.master])
+    }
+
+    /// A copy of a timeline must not share plugin instance ids with its source.
+    pub(crate) fn refresh_effect_ids(&mut self) {
+        for strip in self.strips_mut() {
             for effect in &mut strip.effects {
                 *effect = effect.clone().with_fresh_ids();
             }
@@ -2962,10 +2972,7 @@ impl Timeline {
 
     /// Whether an enabled VST3 effect sits on one of its own strips.
     fn has_enabled_plugin(&self) -> bool {
-        self.tracks
-            .iter()
-            .map(|track| &track.mix)
-            .chain([&self.master])
+        self.strips()
             .flat_map(|strip| &strip.effects)
             .any(|effect| effect.enabled && matches!(effect.kind, AudioEffectKind::Vst3(_)))
     }

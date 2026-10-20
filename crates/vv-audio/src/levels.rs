@@ -203,12 +203,7 @@ fn holds_available_plugin(
     if depth >= vv_core::MAX_COMPOUND_DEPTH {
         return false;
     }
-    let strips = timeline
-        .tracks
-        .iter()
-        .map(|track| &track.mix)
-        .chain([&timeline.master]);
-    for strip in strips {
+    for strip in timeline.strips() {
         for effect in &strip.effects {
             if let AudioEffectKind::Vst3(plugin) = &effect.kind
                 && effect.enabled
@@ -245,12 +240,7 @@ pub(crate) fn timeline_key(
     for clip in input_clips_at(project, timeline, sample_rate, depth, available) {
         (clip.track, clip.start, clip.body).hash(&mut h);
     }
-    let strips = timeline
-        .tracks
-        .iter()
-        .map(|track| &track.mix)
-        .chain([&timeline.master]);
-    for strip in strips {
+    for strip in timeline.strips() {
         hash_strip(strip, available, &mut h);
     }
     h.finish()
