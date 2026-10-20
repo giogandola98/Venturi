@@ -16,8 +16,9 @@ pub fn default_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     let home = std::env::var_os("HOME").map(PathBuf::from);
     if cfg!(target_os = "macos") {
-        dirs.push(PathBuf::from("/Library/Audio/Plug-Ins/VST3"));
+        // User dirs first: the first copy of a class id wins the scan dedupe.
         dirs.extend(home.map(|h| h.join("Library/Audio/Plug-Ins/VST3")));
+        dirs.push(PathBuf::from("/Library/Audio/Plug-Ins/VST3"));
     } else {
         dirs.extend(home.map(|h| h.join(".vst3")));
         dirs.extend(["/usr/lib/vst3", "/usr/lib64/vst3", "/usr/local/lib/vst3"].map(PathBuf::from));
