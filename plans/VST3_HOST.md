@@ -51,6 +51,11 @@ All `unsafe` and all COM code live here.
 - **Scan:** `moduleinfo.json` inside the bundle first, so the module is not
   loaded; otherwise the module is loaded and its factory read. Vendor
   sub-folders are searched; a broken bundle does not hide the others.
+  A bundle without a parseable `moduleinfo.json` (VST3 SDK before 3.7.5)
+  is loaded by the scan, instruments included, and stays resident for the
+  session: loaded modules are never unloaded (static init and threads make
+  `dlclose` unsafe). Bundles with `moduleinfo.json` are never loaded by the
+  scan. The result is cached in the settings and not rescanned at launch.
   Default folders: `/Library/Audio/Plug-Ins/VST3` and the user one on
   macOS; `~/.vst3`, `/usr/lib/vst3`, `/usr/lib64/vst3`,
   `/usr/local/lib/vst3` on Linux.
