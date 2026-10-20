@@ -65,6 +65,11 @@ const STATE_FAIL_CID: TUID = [
 const MANY_METERS_CID: TUID = [
     0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 14,
 ];
+// Declares a sidechain input and an aux output next to the main buses; the first
+// output sample reports what process received (see `report_buses`).
+const AUX_CID: TUID = [
+    0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 15,
+];
 const MANY_METERS: u32 = 100;
 const REACTIVATED_LATENCY: u32 = 64;
 const DEFAULT_NORMALIZED: f64 = 0.5;
@@ -125,6 +130,7 @@ struct Gain {
     rejects_setup: bool,
     restarts_on_activation: bool,
     fails_state: bool,
+    aux: bool,
     handler: Mutex<Option<ComPtr<IComponentHandler>>>,
     activations: AtomicU32,
     // Output parameter 1 as the controller last received it.
@@ -147,11 +153,16 @@ impl Gain {
             rejects_setup: false,
             restarts_on_activation: false,
             fails_state: false,
+            aux: false,
             handler: Mutex::new(None),
             activations: AtomicU32::new(0),
             meter: AtomicU64::new(0),
             seen: [AtomicU64::new(0), AtomicU64::new(0)],
         }
+    }
+
+    fn buses(&self) -> i32 {
+        1 + i32::from(self.aux)
     }
 
     fn meters(&self) -> u32 {
@@ -195,6 +206,42 @@ impl Gain {
         }
         self.set(f64::from(f32::from_le_bytes(buf)));
         kResultOk
+    }
+}
+
+/// Touches the extra buses the way a sidechain plugin does, then overwrites the first
+/// output sample with `numInputs + 10 * numOutputs + 100 * (all extra pointers usable)`.
+unsafe fn report_buses(data: &ProcessData) {
+    let mut usable = data.numInputs >= 2 && data.numOutputs >= 2;
+    if usable {
+        let (side, aux) = unsafe { (&*data.inputs.add(1), &*data.outputs.add(1)) };
+        usable = side.numChannels == 2 && aux.numChannels == 2;
+        for c in 0..2 {
+            let (src, dst) = unsafe {
+                (
+                    side.__field0.channelBuffers32,
+                    aux.__field0.channelBuffers32,
+                )
+            };
+            if src.is_null() || dst.is_null() {
+                usable = false;
+                break;
+            }
+            let (src, dst) = unsafe { (*src.add(c), *dst.add(c)) };
+            if src.is_null() || dst.is_null() {
+                usable = false;
+                break;
+            }
+            for n in 0..data.numSamples.max(0) as usize {
+                unsafe { *dst.add(n) = *src.add(n) + 0.25 };
+            }
+        }
+    }
+    let report = data.numInputs + 10 * data.numOutputs + 100 * i32::from(usable);
+    let out = unsafe { &*data.outputs };
+    let first = unsafe { *out.__field0.channelBuffers32 };
+    if data.numSamples > 0 && !first.is_null() {
+        unsafe { *first = report as f32 };
     }
 }
 
@@ -260,7 +307,11 @@ impl IComponentTrait for Gain {
     }
 
     unsafe fn getBusCount(&self, media_type: MediaType, _dir: BusDirection) -> i32 {
-        i32::from(media_type == MediaTypes_::kAudio as MediaType)
+        if media_type == MediaTypes_::kAudio as MediaType {
+            self.buses()
+        } else {
+            0
+        }
     }
 
     unsafe fn getBusInfo(
@@ -270,7 +321,10 @@ impl IComponentTrait for Gain {
         index: i32,
         bus: *mut BusInfo,
     ) -> tresult {
-        if media_type != MediaTypes_::kAudio as MediaType || index != 0 || bus.is_null() {
+        if media_type != MediaTypes_::kAudio as MediaType
+            || !(0..self.buses()).contains(&index)
+            || bus.is_null()
+        {
             return kInvalidArgument;
         }
         let bus = unsafe { &mut *bus };
@@ -285,10 +339,15 @@ impl IComponentTrait for Gain {
             },
             &mut bus.name,
         );
-        bus.busType = BusTypes_::kMain as BusType;
         #[allow(clippy::unnecessary_cast)] // enum constant width differs per target
-        let flags = BusInfo_::BusFlags_::kDefaultActive as u32;
-        bus.flags = flags;
+        let default_active = BusInfo_::BusFlags_::kDefaultActive as u32;
+        if index == 0 {
+            bus.busType = BusTypes_::kMain as BusType;
+            bus.flags = default_active;
+        } else {
+            bus.busType = BusTypes_::kAux as BusType;
+            bus.flags = 0;
+        }
         kResultOk
     }
 
@@ -352,7 +411,11 @@ impl IAudioProcessorTrait for Gain {
         outputs: *mut SpeakerArrangement,
         num_outs: i32,
     ) -> tresult {
-        if num_ins != 1 || num_outs != 1 || inputs.is_null() || outputs.is_null() {
+        if num_ins != self.buses()
+            || num_outs != self.buses()
+            || inputs.is_null()
+            || outputs.is_null()
+        {
             return kResultFalse;
         }
         if self.mono_only {
@@ -368,7 +431,7 @@ impl IAudioProcessorTrait for Gain {
         index: i32,
         arr: *mut SpeakerArrangement,
     ) -> tresult {
-        if index != 0 || arr.is_null() {
+        if !(0..self.buses()).contains(&index) || arr.is_null() {
             return kInvalidArgument;
         }
         unsafe {
@@ -466,6 +529,9 @@ impl IAudioProcessorTrait for Gain {
             for n in 0..data.numSamples.max(0) as usize {
                 unsafe { *dst.add(n) = *src.add(n) * g };
             }
+        }
+        if self.aux {
+            unsafe { report_buses(data) };
         }
         kResultOk
     }
@@ -652,6 +718,10 @@ impl IPluginFactoryTrait for Factory {
             RESTART_CID => Gain {
                 log_tag: Some(12),
                 restarts_on_activation: true,
+                ..Gain::new(None)
+            },
+            AUX_CID => Gain {
+                aux: true,
                 ..Gain::new(None)
             },
             STATE_FAIL_CID => Gain {

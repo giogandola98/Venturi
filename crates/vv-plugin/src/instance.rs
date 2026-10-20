@@ -6,10 +6,10 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, TryLockError};
 
 use vst3::Steinberg::Vst::{
-    AudioBusBuffers, AudioBusBuffers__type0, IAudioProcessor, IAudioProcessorTrait, IComponent,
-    IComponentHandler, IComponentTrait, IConnectionPoint, IConnectionPointTrait, IEditController,
-    IEditControllerTrait, IParameterChanges, ParameterInfo, ParameterInfo_, ProcessContext,
-    ProcessData, ProcessSetup, RestartFlags_, SpeakerArr, SpeakerArrangement,
+    AudioBusBuffers, AudioBusBuffers__type0, BusInfo, IAudioProcessor, IAudioProcessorTrait,
+    IComponent, IComponentHandler, IComponentTrait, IConnectionPoint, IConnectionPointTrait,
+    IEditController, IEditControllerTrait, IParameterChanges, ParameterInfo, ParameterInfo_,
+    ProcessContext, ProcessData, ProcessSetup, RestartFlags_, SpeakerArr, SpeakerArrangement,
 };
 use vst3::Steinberg::{
     FUnknown, IBStream, IPluginBaseTrait, TUID, kNotImplemented, kResultFalse, kResultOk, tresult,
@@ -57,10 +57,47 @@ impl ProcessMode {
     }
 }
 
+// Channels past this on an extra bus are not given a buffer.
+const MAX_BUS_CHANNELS: usize = 8;
+const MAX_BUSES: i32 = 16;
+
+/// One `AudioBusBuffers` per declared bus of a direction, built once so that
+/// process only hands out pointers. Bus 0 points at `Rt::inp`/`out`; the rest at `scratch`.
+struct Buses {
+    bufs: Vec<AudioBusBuffers>,
+    // Boxed storage the entries of `bufs` point into; never resized after setup.
+    tables: Vec<Vec<*mut f32>>,
+    scratch: Vec<Vec<f32>>,
+}
+
+impl Buses {
+    fn empty() -> Self {
+        Self {
+            bufs: Vec::new(),
+            tables: Vec::new(),
+            scratch: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, mut table: Vec<*mut f32>, silence: u64) {
+        let buf = AudioBusBuffers {
+            numChannels: table.len() as i32,
+            silenceFlags: silence,
+            __field0: AudioBusBuffers__type0 {
+                channelBuffers32: table.as_mut_ptr(),
+            },
+        };
+        self.tables.push(table);
+        self.bufs.push(buf);
+    }
+}
+
 /// Everything the audio thread touches; guarded by `Vst3Instance::busy`.
 struct Rt {
     inp: [Vec<f32>; 2],
     out: [Vec<f32>; 2],
+    ins: Buses,
+    outs: Buses,
     changes: ComWrapper<ParamChanges>,
     changes_ptr: ComPtr<IParameterChanges>,
     outputs: ComWrapper<ParamChanges>,
@@ -168,6 +205,8 @@ impl Vst3Instance {
         let rt = Rt {
             inp: [vec![0.0; MIX_BLOCK_FRAMES], vec![0.0; MIX_BLOCK_FRAMES]],
             out: [vec![0.0; MIX_BLOCK_FRAMES], vec![0.0; MIX_BLOCK_FRAMES]],
+            ins: Buses::empty(),
+            outs: Buses::empty(),
             changes_ptr: changes.to_com_ptr().ok_or("parameter changes")?,
             outputs_ptr: outputs.to_com_ptr().ok_or("parameter changes")?,
             outputs,
@@ -272,13 +311,34 @@ impl Vst3Instance {
     }
 
     fn setup(&self, sample_rate: u32) -> Result<(), String> {
-        let mut stereo = [SpeakerArr::kStereo];
         let mut arranged = [0 as SpeakerArrangement; 2];
         // SAFETY: calls on live interfaces with arrays of the lengths passed.
         unsafe {
+            let counts = [ids::INPUT, ids::OUTPUT].map(|dir| {
+                self.component
+                    .getBusCount(ids::AUDIO, dir)
+                    .clamp(1, MAX_BUSES)
+            });
+            // Bus 0 is the stereo main bus; the others keep the plugin's own arrangement.
+            let mut layouts = [ids::INPUT, ids::OUTPUT].map(|dir| {
+                let n = counts[usize::from(dir == ids::OUTPUT)];
+                (0..n)
+                    .map(|i| {
+                        let mut arr = SpeakerArr::kStereo;
+                        if i > 0 {
+                            self.processor.getBusArrangement(dir, i, &mut arr);
+                        }
+                        arr
+                    })
+                    .collect::<Vec<_>>()
+            });
             // A rejection is fine if the default arrangement is already stereo.
-            self.processor
-                .setBusArrangements(stereo.as_mut_ptr(), 1, stereo.as_mut_ptr(), 1);
+            self.processor.setBusArrangements(
+                layouts[0].as_mut_ptr(),
+                counts[0],
+                layouts[1].as_mut_ptr(),
+                counts[1],
+            );
             let dirs = [ids::INPUT, ids::OUTPUT];
             for (arr, dir) in arranged.iter_mut().zip(dirs) {
                 let res = self.processor.getBusArrangement(dir, 0, arr);
@@ -288,6 +348,7 @@ impl Vst3Instance {
                 // Not every plugin enables its buses by default.
                 self.component.activateBus(ids::AUDIO, dir, 0, 1);
             }
+            self.build_buses(counts);
             ok(
                 self.processor.canProcessSampleSize(ids::SAMPLE32),
                 "32-bit processing",
@@ -311,6 +372,43 @@ impl Vst3Instance {
             context.state = ids::TEMPO_VALID | ids::TIME_SIG_VALID;
         }
         Ok(())
+    }
+
+    /// Every declared bus gets a buffer (VST3 sizes `ProcessData` by the declared
+    /// buses); the extras are switched off and backed by silent/scratch memory.
+    fn build_buses(&self, counts: [i32; 2]) {
+        // SAFETY: setup runs before the instance is shared; nothing else touches `rt`.
+        let rt = unsafe { &mut *self.rt.get() };
+        let mut ins = Buses::empty();
+        let mut outs = Buses::empty();
+        ins.push(rt.inp.iter_mut().map(|c| c.as_mut_ptr()).collect(), 0);
+        outs.push(rt.out.iter_mut().map(|c| c.as_mut_ptr()).collect(), 0);
+        for (buses, dir, count) in [
+            (&mut ins, ids::INPUT, counts[0]),
+            (&mut outs, ids::OUTPUT, counts[1]),
+        ] {
+            for index in 1..count {
+                // SAFETY: a live component; `info` is a plain C struct filled by the callee.
+                let channels = unsafe {
+                    let mut info: BusInfo = std::mem::zeroed();
+                    let res = self.component.getBusInfo(ids::AUDIO, dir, index, &mut info);
+                    self.component.activateBus(ids::AUDIO, dir, index, 0);
+                    if res == kResultOk {
+                        (info.channelCount.max(1) as usize).min(MAX_BUS_CHANNELS)
+                    } else {
+                        2
+                    }
+                };
+                let mut planes = vec![vec![0.0f32; MIX_BLOCK_FRAMES]; channels];
+                let table = planes.iter_mut().map(|c| c.as_mut_ptr()).collect();
+                buses.scratch.extend(planes);
+                // Inputs are never written, so they stay silent.
+                let silence = if dir == ids::INPUT { u64::MAX } else { 0 };
+                buses.push(table, silence);
+            }
+        }
+        rt.ins = ins;
+        rt.outs = outs;
     }
 
     // A plugin that rejects a state keeps its defaults: not worth failing the insert.
@@ -520,30 +618,14 @@ impl Vst3Instance {
     }
 
     fn run_slice(&self, rt: &mut Rt, frames: usize) {
-        let mut ins = [rt.inp[0].as_mut_ptr(), rt.inp[1].as_mut_ptr()];
-        let mut outs = [rt.out[0].as_mut_ptr(), rt.out[1].as_mut_ptr()];
-        let mut input = AudioBusBuffers {
-            numChannels: 2,
-            silenceFlags: 0,
-            __field0: AudioBusBuffers__type0 {
-                channelBuffers32: ins.as_mut_ptr(),
-            },
-        };
-        let mut output = AudioBusBuffers {
-            numChannels: 2,
-            silenceFlags: 0,
-            __field0: AudioBusBuffers__type0 {
-                channelBuffers32: outs.as_mut_ptr(),
-            },
-        };
         let mut data = ProcessData {
             processMode: self.mode.sdk(),
             symbolicSampleSize: ids::SAMPLE32,
             numSamples: frames as i32,
-            numInputs: 1,
-            numOutputs: 1,
-            inputs: &mut input,
-            outputs: &mut output,
+            numInputs: rt.ins.bufs.len() as i32,
+            numOutputs: rt.outs.bufs.len() as i32,
+            inputs: rt.ins.bufs.as_mut_ptr(),
+            outputs: rt.outs.bufs.as_mut_ptr(),
             inputParameterChanges: rt.changes_ptr.as_ptr(),
             outputParameterChanges: rt.outputs_ptr.as_ptr(),
             inputEvents: std::ptr::null_mut(),

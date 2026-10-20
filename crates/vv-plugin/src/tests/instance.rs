@@ -929,3 +929,28 @@ fn a_valid_empty_controller_state_is_a_state() {
     let (_, controller) = instance.get_state().expect("state");
     assert!(controller.bytes().is_empty());
 }
+
+const AUX_CLASS: &str = "56565445535447414E0000000000000F";
+
+fn aux_fixture() -> Arc<Vst3Instance> {
+    fixture_instance(&effect_of(AUX_CLASS, Vec::new()))
+}
+
+#[test]
+fn every_declared_audio_bus_gets_a_buffer() {
+    let out = run(&aux_fixture(), &ramp(64, 2));
+    // numInputs 2 + 10 * numOutputs 2 + 100 for usable extra-bus channel pointers.
+    assert_eq!(out[0], 122.0);
+}
+
+#[test]
+fn processing_with_extra_buses_does_not_allocate() {
+    let instance = aux_fixture();
+    let mut audio = ramp(1300, 2);
+    instance.process(&mut audio, 2);
+    let before = ALLOCS.with(|c| c.get());
+    for _ in 0..8 {
+        instance.process(&mut audio, 2);
+    }
+    assert_eq!(ALLOCS.with(|c| c.get()) - before, 0);
+}
