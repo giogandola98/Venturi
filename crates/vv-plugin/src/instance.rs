@@ -16,6 +16,7 @@ use vst3::{ComPtr, ComWrapper};
 use vv_audio::{MIX_BLOCK_FRAMES, PluginProcessor};
 use vv_core::{PluginState, Vst3Effect};
 
+use crate::HostedPlugin;
 use crate::host::{ComponentHandler, HostApp, MAX_PARAMS, MemStream, ParamChanges, Shared};
 use crate::module::{Module, module};
 
@@ -347,19 +348,6 @@ impl Vst3Instance {
         self.latency.store(samples, Ordering::Relaxed);
     }
 
-    /// Waits for the audio thread to leave `process`; UI thread only.
-    pub fn set_state(&self, effect: &Vst3Effect) {
-        let _audio = self.lock_audio();
-        // A stale edit must not override the state just loaded.
-        self.shared
-            .params
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
-        self.load_state(&effect.component_state, &effect.controller_state);
-        self.refresh_latency();
-    }
-
     /// Queued edits reach the processor first (a VST3 parameter flush), so the
     /// component state includes them even when no audio is running.
     pub fn get_state(&self) -> (PluginState, PluginState) {
@@ -424,58 +412,6 @@ impl Vst3Instance {
     /// An edit gesture ended since the last call.
     pub fn take_dirty(&self) -> bool {
         self.shared.dirty.swap(false, Ordering::AcqRel)
-    }
-
-    /// Acts on a restart the plugin asked for: the deactivate/activate cycle
-    /// the spec requires. kIoChanged needs nothing more as the buses are fixed
-    /// stereo. UI thread only.
-    pub fn service_restart(&self) {
-        if self.shared.restart.load(Ordering::Acquire) == 0 {
-            return;
-        }
-        let flags = self.shared.restart.swap(0, Ordering::AcqRel);
-        let _audio = self.lock_audio();
-        let saved = (flags & RestartFlags_::kReloadComponent != 0).then(|| self.read_state());
-        // SAFETY: a live processor and component, from the UI thread; the busy
-        // guard keeps the audio thread out while processing is stopped.
-        unsafe {
-            self.processor.setProcessing(0);
-            self.component.setActive(0);
-            if let Some((component, controller)) = saved {
-                // The state read above already includes any edit queued before it.
-                self.shared
-                    .params
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clear();
-                self.load_state(&PluginState::new(component), &PluginState::new(controller));
-            }
-            self.component.setActive(1);
-            self.processor.setProcessing(1);
-        }
-        self.refresh_latency();
-    }
-
-    /// Stops and starts the component, which `reset` does not: a plugin may
-    /// clear its tails only there.
-    pub fn reactivate(&self) {
-        let _audio = self.lock_audio();
-        // SAFETY: as in `service_restart`.
-        unsafe {
-            self.processor.setProcessing(0);
-            self.component.setActive(0);
-            self.component.setActive(1);
-            self.processor.setProcessing(1);
-        }
-        self.refresh_latency();
-    }
-
-    pub fn state_hash(&self) -> u64 {
-        self.state_hash.load(Ordering::Relaxed)
-    }
-
-    pub fn set_state_hash(&self, hash: u64) {
-        self.state_hash.store(hash, Ordering::Relaxed);
     }
 
     /// Audio thread: never blocks, a contended block is skipped.
@@ -574,6 +510,78 @@ impl Vst3Instance {
                 rt.out[c][..frames].copy_from_slice(&rt.inp[c][..frames]);
             }
         }
+    }
+}
+
+impl HostedPlugin for Vst3Instance {
+    fn into_vst3(self: Arc<Self>) -> Option<Arc<Vst3Instance>> {
+        Some(self)
+    }
+
+    /// Waits for the audio thread to leave `process`; UI thread only.
+    fn set_state(&self, effect: &Vst3Effect) {
+        let _audio = self.lock_audio();
+        // A stale edit must not override the state just loaded.
+        self.shared
+            .params
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.load_state(&effect.component_state, &effect.controller_state);
+        self.refresh_latency();
+    }
+
+    fn state_hash(&self) -> u64 {
+        self.state_hash.load(Ordering::Relaxed)
+    }
+
+    fn set_state_hash(&self, hash: u64) {
+        self.state_hash.store(hash, Ordering::Relaxed);
+    }
+
+    /// The deactivate/activate cycle the spec requires; kIoChanged needs
+    /// nothing more as the buses are fixed stereo.
+    fn service_restart(&self) {
+        if self.shared.restart.load(Ordering::Acquire) == 0 {
+            return;
+        }
+        let flags = self.shared.restart.swap(0, Ordering::AcqRel);
+        let _audio = self.lock_audio();
+        let saved = (flags & RestartFlags_::kReloadComponent != 0).then(|| self.read_state());
+        // SAFETY: a live processor and component, from the UI thread; the busy
+        // guard keeps the audio thread out while processing is stopped.
+        unsafe {
+            self.processor.setProcessing(0);
+            self.component.setActive(0);
+            if let Some((component, controller)) = saved {
+                // The state read above already includes any edit queued before it.
+                self.shared
+                    .params
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clear();
+                self.load_state(&PluginState::new(component), &PluginState::new(controller));
+            }
+            self.component.setActive(1);
+            self.processor.setProcessing(1);
+        }
+        self.refresh_latency();
+    }
+
+    fn reactivate(&self) {
+        let _audio = self.lock_audio();
+        // SAFETY: as in `service_restart`.
+        unsafe {
+            self.processor.setProcessing(0);
+            self.component.setActive(0);
+            self.component.setActive(1);
+            self.processor.setProcessing(1);
+        }
+        self.refresh_latency();
+    }
+
+    fn take_gesture(&self) -> Option<(PluginState, PluginState)> {
+        self.take_dirty().then(|| self.get_state())
     }
 }
 
