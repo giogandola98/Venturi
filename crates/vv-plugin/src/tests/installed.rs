@@ -46,12 +46,22 @@ fn the_same_plugins_in_any_order_are_the_same_list() {
         &[a.clone(), b.clone()],
         &[b.clone(), a.clone()]
     ));
+    assert!(same_plugins(&[], &[]));
+}
+
+#[test]
+fn a_renamed_or_re_vendored_plugin_is_a_changed_list() {
+    let a = info("A", "/a.vst3", "1");
     let renamed = PluginInfo {
         name: "Other".into(),
         ..a.clone()
     };
-    assert!(same_plugins(std::slice::from_ref(&a), &[renamed]));
-    assert!(same_plugins(&[], &[]));
+    assert!(!same_plugins(std::slice::from_ref(&a), &[renamed]));
+    let re_vendored = PluginInfo {
+        vendor: "Other".into(),
+        ..a.clone()
+    };
+    assert!(!same_plugins(&[a], &[re_vendored]));
 }
 
 #[test]
