@@ -1865,24 +1865,31 @@ fn mix_into(
             if !state.rings.get(*track).copied().unwrap_or(true) {
                 let end = block_time + len as u64;
                 let mut plays = false;
+                let mut first_start = u64::MAX;
                 let idle = &mut state.idle[*track];
+                let previous_end = idle.last_end;
                 for clip in &snapshot.clips[range.clone()] {
                     if clip.start < end {
                         idle.last_end = idle.last_end.max(clip.start + clip.len);
-                        plays |= clip.start + clip.len > block_time;
+                        if clip.start + clip.len > block_time {
+                            plays = true;
+                            first_start = first_start.min(clip.start);
+                        }
                     }
                 }
-                if plays {
-                    idle.settled = false;
-                } else if !idle.settled
-                    && !idle.ringing
-                    && block_time >= idle.last_end + snapshot.settle_frames()
-                {
-                    idle.settled = true;
+                let after_settle = |from: u64| from >= previous_end + snapshot.settle_frames();
+                let restart = if plays {
+                    !idle.settled && !idle.ringing && after_settle(first_start)
+                } else {
+                    !idle.settled && !idle.ringing && after_settle(block_time)
+                };
+                if restart {
                     if let Some(chain) = state.tracks.get_mut(*track) {
                         chain.iter_mut().flatten().for_each(|p| p.reset());
                     }
                 }
+                let idle = &mut state.idle[*track];
+                idle.settled = !plays && (idle.settled || restart);
                 if idle.settled {
                     #[cfg(test)]
                     {
