@@ -3,16 +3,24 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use vv_core::{
     AudioEffect, AudioEffectKind, ChannelStrip, CommandLabel, EffectId, History, Id, MixerChannel,
-    PluginState, Project, SetAudioEffect, TimelineId, Vst3Effect,
+    PluginState, Project, SetAudioEffect, Timeline, TimelineId, Vst3Effect,
 };
 use vv_plugin::{Editor, HostedPlugin};
 
 use crate::mixer_panel::{channel_strip, plugin_key_of};
 use crate::timeline_audio::TimelineAudio;
 
-/// The last part is the occurrence among the strip's plugins with that id,
-/// counted like the mixer's placements, so duplicates stay apart.
-type Key = (TimelineId, MixerChannel, EffectId, u32);
+/// Strips the mixer numbers together: all tracks, or the master.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Group {
+    Tracks,
+    Master,
+}
+
+/// Like the mixer's live keys it has no track index, so removing another
+/// track does not misroute it; the last part is the occurrence of that id in
+/// the group, counted like the mixer's placements, so duplicates stay apart.
+type Key = (TimelineId, Group, EffectId, u32);
 
 /// Keeps the editor's own instance clear of the live keys.
 const ASIDE_SALT: u64 = 0x9E37_79B9_7F4A_7C15;
@@ -36,9 +44,9 @@ fn held_instances(
 ) -> Vec<(u64, Arc<dyn HostedPlugin>)> {
     editors
         .filter_map(|(key, instance)| {
-            let (index, _) = find(project, key)?;
+            let (channel, index, _) = find(project, key)?;
             Some((
-                plugin_key_of(project.timelines.get(key.0)?, key.1, index),
+                plugin_key_of(project.timelines.get(key.0)?, channel, index),
                 instance,
             ))
         })
@@ -61,32 +69,54 @@ fn raise_open<E>(
     }
 }
 
-fn find(
-    project: &Project,
-    (timeline, channel, id, occurrence): Key,
-) -> Option<(usize, &AudioEffect)> {
-    let strip = channel_strip(project.timelines.get(timeline)?, channel)?;
-    strip
-        .effects
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| matches!(&e.kind, AudioEffectKind::Vst3(v) if v.id == id))
-        .nth(occurrence as usize)
+/// The plugins of a group in mixer order, with their occurrence of that id.
+fn placements(
+    timeline: &Timeline,
+    group: Group,
+) -> impl Iterator<Item = (MixerChannel, usize, &AudioEffect, u32)> {
+    let strips: Vec<(MixerChannel, &ChannelStrip)> = match group {
+        Group::Tracks => timeline
+            .tracks
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (MixerChannel::Track(i), &t.mix))
+            .collect(),
+        Group::Master => vec![(MixerChannel::Master, &timeline.master)],
+    };
+    let mut met: HashMap<EffectId, u32> = HashMap::new();
+    strips.into_iter().flat_map(move |(channel, strip)| {
+        strip
+            .effects
+            .iter()
+            .enumerate()
+            .filter_map(|(index, effect)| Some((index, effect, plugin(effect)?.id)))
+            .map(|(index, effect, id)| {
+                let seen = met.entry(id).or_insert(0);
+                let occurrence = *seen;
+                *seen += 1;
+                (channel, index, effect, occurrence)
+            })
+            .collect::<Vec<_>>()
+    })
 }
 
-fn key_at(
-    timeline: TimelineId,
-    channel: MixerChannel,
-    strip: &ChannelStrip,
-    index: usize,
-) -> Option<Key> {
-    let id = plugin(strip.effects.get(index)?)?.id;
-    let occurrence = strip.effects[..index]
-        .iter()
-        .filter_map(plugin)
-        .filter(|v| v.id == id)
-        .count();
-    Some((timeline, channel, id, occurrence as u32))
+fn find(
+    project: &Project,
+    (timeline, group, id, occurrence): Key,
+) -> Option<(MixerChannel, usize, &AudioEffect)> {
+    placements(project.timelines.get(timeline)?, group)
+        .find(|(_, _, effect, n)| *n == occurrence && plugin(effect).is_some_and(|v| v.id == id))
+        .map(|(channel, index, effect, _)| (channel, index, effect))
+}
+
+fn key_at(timeline: &Timeline, id: TimelineId, channel: MixerChannel, index: usize) -> Option<Key> {
+    let group = match channel {
+        MixerChannel::Track(_) => Group::Tracks,
+        MixerChannel::Master => Group::Master,
+    };
+    placements(timeline, group)
+        .find(|(c, i, ..)| (*c, *i) == (channel, index))
+        .and_then(|(_, _, effect, occurrence)| Some((id, group, plugin(effect)?.id, occurrence)))
 }
 
 fn plugin(effect: &AudioEffect) -> Option<&Vst3Effect> {
@@ -105,7 +135,7 @@ fn record_edit(
     component: PluginState,
     controller: PluginState,
 ) -> Option<u64> {
-    let (index, effect) = find(project, key)?;
+    let (channel, index, effect) = find(project, key)?;
     let old = plugin(effect)?;
     if old.component_state == component && old.controller_state == controller {
         return None;
@@ -120,7 +150,7 @@ fn record_edit(
         kind: AudioEffectKind::Vst3(new),
         ..effect.clone()
     };
-    let (timeline, channel, ..) = key;
+    let (timeline, ..) = key;
     let label = CommandLabel::EditAudioEffect;
     let command = SetAudioEffect::new(timeline, channel, index, edited, label);
     history.do_command(project, Box::new(command));
@@ -217,7 +247,7 @@ impl PluginEditors {
         let Some(plugin) = strip.effects.get(index).and_then(plugin) else {
             return;
         };
-        let Some(key) = key_at(timeline, channel, strip, index) else {
+        let Some(key) = key_at(&project.timelines[timeline], timeline, channel, index) else {
             return;
         };
         if raise_open(&mut self.open, &key, Editor::is_open, Editor::raise) {
@@ -285,7 +315,7 @@ impl PluginEditors {
                 continue;
             }
             if changed
-                && let Some(plugin) = find(project, *key).and_then(|(_, e)| plugin(e))
+                && let Some(plugin) = find(project, *key).and_then(|(_, _, e)| plugin(e))
                 && plugin.content_hash() != instance.state_hash()
             {
                 // An undo of an instance no mix is playing.

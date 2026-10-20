@@ -5479,7 +5479,12 @@ pub(crate) fn app_with_pending_gesture() -> (VenturiApp, vv_core::TimelineId) {
         vv_core::PluginState::new(vec![9]),
         vv_core::PluginState::new(Vec::new()),
     ));
-    let key = (id, vv_core::MixerChannel::Master, vv_core::EffectId(7), 0);
+    let key = (
+        id,
+        crate::plugin_editors::Group::Master,
+        vv_core::EffectId(7),
+        0,
+    );
     app.plugin_editors
         .defer_gesture(key, std::sync::Arc::new(gesture));
     (app, id)
