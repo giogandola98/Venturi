@@ -663,6 +663,16 @@ fn a_reload_restart_keeps_more_queued_edits_than_one_block_holds() {
     assert_eq!(received(&instance), 100);
 }
 
+#[test]
+fn a_restart_of_an_active_plugin_keeps_its_queued_edits() {
+    let instance = counting_fixture();
+    edit_ids(&instance, 1..11);
+    request_restart(&instance, RestartFlags_::kLatencyChanged);
+    instance.service_restart();
+    run(&instance, &ramp(64, 2));
+    assert_eq!(received(&instance), 10);
+}
+
 // Mirrors the fixture's log path: it is loaded into this process.
 fn lifecycle_log_path(tag: u8) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(

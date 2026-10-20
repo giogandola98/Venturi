@@ -485,17 +485,21 @@ impl Vst3Instance {
             if self.processing.swap(false, Ordering::Relaxed) {
                 self.processor.setProcessing(0);
             }
-            if self.active.swap(false, Ordering::Relaxed) {
+            let was_active = self.active.swap(false, Ordering::Relaxed);
+            if was_active {
                 self.component.setActive(0);
             }
             between();
             if self.component.setActive(1) == kResultOk {
                 // Edits queued while inactive were never delivered; the state carries them.
-                self.shared
-                    .params
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clear();
+                // From an active plugin they are still due and flushed by the next block.
+                if !was_active {
+                    self.shared
+                        .params
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clear();
+                }
                 self.active.store(true, Ordering::Relaxed);
                 self.processor.setProcessing(1);
                 self.processing.store(true, Ordering::Relaxed);
