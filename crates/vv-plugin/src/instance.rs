@@ -11,7 +11,9 @@ use vst3::Steinberg::Vst::{
     IEditControllerTrait, IParameterChanges, ProcessContext, ProcessData, ProcessSetup,
     RestartFlags_, SpeakerArr, SpeakerArrangement,
 };
-use vst3::Steinberg::{FUnknown, IBStream, IPluginBaseTrait, TUID, kResultOk};
+use vst3::Steinberg::{
+    FUnknown, IBStream, IPluginBaseTrait, TUID, kNotImplemented, kResultFalse, kResultOk, tresult,
+};
 use vst3::{ComPtr, ComWrapper};
 use vv_audio::{MIX_BLOCK_FRAMES, PluginProcessor};
 use vv_core::{PluginState, Vst3Effect};
@@ -193,7 +195,7 @@ impl Vst3Instance {
         };
         this.attach_controller(&module)?;
         this.setup(sample_rate)?;
-        this.defaults = this.read_state();
+        this.defaults = this.read_state().unwrap_or_default();
         if !effect.component_state.bytes().is_empty() || !effect.controller_state.bytes().is_empty()
         {
             this.load_state(&effect.component_state, &effect.controller_state);
@@ -360,30 +362,37 @@ impl Vst3Instance {
 
     /// Queued edits reach the processor first (a VST3 parameter flush), so the
     /// component state includes them even when no audio is running.
-    pub fn get_state(&self) -> (PluginState, PluginState) {
+    /// `None` when the plugin failed to produce its state: an empty state is
+    /// valid and means "defaults", so a failure must never pass for one.
+    pub fn get_state(&self) -> Option<(PluginState, PluginState)> {
         self.flush_params();
-        let (component, controller) = self.read_state();
-        (PluginState::new(component), PluginState::new(controller))
+        let (component, controller) = self.read_state()?;
+        Some((PluginState::new(component), PluginState::new(controller)))
     }
 
-    fn read_state(&self) -> (Vec<u8>, Vec<u8>) {
-        let save = |write: &dyn Fn(*mut IBStream)| {
+    fn read_state(&self) -> Option<(Vec<u8>, Vec<u8>)> {
+        let save = |write: &dyn Fn(*mut IBStream) -> tresult| {
             let stream = MemStream::new(Vec::new());
-            if let Some(p) = stream.to_com_ptr::<IBStream>() {
-                write(p.as_ptr());
-            }
-            stream.take()
+            let p = stream.to_com_ptr::<IBStream>()?;
+            let result = write(p.as_ptr());
+            Some((result, stream.take()))
         };
         // SAFETY: the stream is live for the call.
-        let component = save(&|s| unsafe {
-            self.component.getState(s);
-        });
-        let controller = save(&|s| unsafe {
-            if let Some(c) = &self.controller {
-                c.getState(s);
-            }
-        });
-        (component, controller)
+        let (result, component) = save(&|s| unsafe { self.component.getState(s) })?;
+        if result != kResultOk {
+            return None;
+        }
+        let Some(c) = &self.controller else {
+            return Some((component, Vec::new()));
+        };
+        // SAFETY: as above.
+        let (result, controller) = save(&|s| unsafe { c.getState(s) })?;
+        // Plugins without controller state answer with one of these.
+        match result {
+            r if r == kResultOk => Some((component, controller)),
+            r if r == kResultFalse || r == kNotImplemented => Some((component, Vec::new())),
+            _ => None,
+        }
     }
 
     fn flush_params(&self) {
@@ -566,10 +575,13 @@ impl HostedPlugin for Vst3Instance {
         }
         let flags = self.shared.restart.swap(0, Ordering::AcqRel);
         let audio = self.lock_audio();
-        let saved = (flags & RestartFlags_::kReloadComponent != 0).then(|| {
-            self.flush_params_locked(&audio);
-            self.read_state()
-        });
+        // A failed read keeps the plugin's live state rather than reloading defaults.
+        let saved = (flags & RestartFlags_::kReloadComponent != 0)
+            .then(|| {
+                self.flush_params_locked(&audio);
+                self.read_state()
+            })
+            .flatten();
         // SAFETY: a live processor and component, from the UI thread; the busy
         // guard keeps the audio thread out while processing is stopped.
         unsafe {
@@ -603,7 +615,7 @@ impl HostedPlugin for Vst3Instance {
     }
 
     fn take_gesture(&self) -> Option<(PluginState, PluginState)> {
-        self.take_dirty().then(|| self.get_state())
+        self.take_dirty().then(|| self.get_state()).flatten()
     }
 }
 
