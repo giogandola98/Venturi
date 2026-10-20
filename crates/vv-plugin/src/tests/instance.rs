@@ -667,3 +667,63 @@ fn a_reload_restart_keeps_the_state_and_keeps_processing() {
     let input = ramp(256, 2);
     assert_scaled(&run(&instance, &input), &input, 0.5);
 }
+
+// Mirrors the fixture's log path: it is loaded into this process.
+fn lifecycle_log_path(tag: u8) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "venturi-fixture-lifecycle-{}-{tag}.log",
+        std::process::id()
+    ))
+}
+
+fn lifecycle_calls(tag: u8, class: &str) -> (Result<Arc<Vst3Instance>, String>, Vec<String>) {
+    let path = lifecycle_log_path(tag);
+    let _ = std::fs::remove_file(&path);
+    let result = Vst3Instance::new(
+        &fixture_bundle(),
+        &effect_of(class, Vec::new()),
+        48_000,
+        ProcessMode::Realtime,
+    );
+    (result, read_log(&path))
+}
+
+fn read_log(path: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_plugin_that_rejects_the_stereo_bus_is_never_deactivated() {
+    let (result, calls) = lifecycle_calls(9, "56565445535447414E00000000000009");
+    assert!(result.is_err());
+    assert_eq!(calls, ["terminate"]);
+}
+
+#[test]
+fn a_plugin_that_rejects_setup_is_never_deactivated() {
+    let (result, calls) = lifecycle_calls(10, "56565445535447414E0000000000000A");
+    assert!(result.is_err());
+    assert_eq!(calls, ["terminate"]);
+}
+
+#[test]
+fn a_built_instance_is_torn_down_in_reverse_order() {
+    let (result, calls) = lifecycle_calls(11, "56565445535447414E0000000000000B");
+    assert_eq!(calls, ["setActive(1)", "setProcessing(1)"]);
+    drop(result);
+    let calls = read_log(&lifecycle_log_path(11));
+    assert_eq!(
+        calls,
+        [
+            "setActive(1)",
+            "setProcessing(1)",
+            "setProcessing(0)",
+            "setActive(0)",
+            "terminate"
+        ]
+    );
+}

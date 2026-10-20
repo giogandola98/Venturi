@@ -41,8 +41,27 @@ const METER_CID: TUID = [
 const LATENCY_CID: TUID = [
     0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 8,
 ];
+// The next three record their lifecycle calls in `lifecycle_log_path(cid)`:
+// mono-only (rejects the stereo bus), rejecting setupProcessing, and well-behaved.
+const MONO_CID: TUID = [
+    0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 9,
+];
+const SETUP_FAIL_CID: TUID = [
+    0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 10,
+];
+const LOGGED_CID: TUID = [
+    0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 11,
+];
 const REACTIVATED_LATENCY: u32 = 64;
 const DEFAULT_NORMALIZED: f64 = 0.5;
+
+/// The plugin is loaded into the test process, so the pid matches the test's.
+fn lifecycle_log_path(tag: u8) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "venturi-fixture-lifecycle-{}-{tag}.log",
+        std::process::id()
+    ))
+}
 
 fn copy_cstring(src: &str, dst: &mut [c_char]) {
     let bytes = CString::new(src).unwrap_or_default();
@@ -80,6 +99,9 @@ struct Gain {
     counts_params: bool,
     writes_meter: bool,
     latency_on_reactivation: bool,
+    log_tag: Option<u8>,
+    mono_only: bool,
+    rejects_setup: bool,
     activations: AtomicU32,
     // Output parameter 1 as the controller last received it.
     meter: AtomicU64,
@@ -95,9 +117,24 @@ impl Gain {
             counts_params: false,
             writes_meter: false,
             latency_on_reactivation: false,
+            log_tag: None,
+            mono_only: false,
+            rejects_setup: false,
             activations: AtomicU32::new(0),
             meter: AtomicU64::new(0),
             seen: [AtomicU64::new(0), AtomicU64::new(0)],
+        }
+    }
+
+    fn log(&self, call: &str) {
+        use std::io::Write;
+        let Some(tag) = self.log_tag else { return };
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(lifecycle_log_path(tag))
+        {
+            let _ = writeln!(file, "{call}");
         }
     }
 
@@ -161,6 +198,7 @@ impl IPluginBaseTrait for Gain {
     }
 
     unsafe fn terminate(&self) -> tresult {
+        self.log("terminate");
         kResultOk
     }
 }
@@ -223,6 +261,7 @@ impl IComponentTrait for Gain {
     }
 
     unsafe fn setActive(&self, state: TBool) -> tresult {
+        self.log(&format!("setActive({state})"));
         if state != 0 {
             self.activations.fetch_add(1, Ordering::Relaxed);
         }
@@ -268,6 +307,9 @@ impl IAudioProcessorTrait for Gain {
         if num_ins != 1 || num_outs != 1 || inputs.is_null() || outputs.is_null() {
             return kResultFalse;
         }
+        if self.mono_only {
+            return kResultFalse;
+        }
         let stereo = unsafe { *inputs == SpeakerArr::kStereo && *outputs == SpeakerArr::kStereo };
         if stereo { kResultTrue } else { kResultFalse }
     }
@@ -281,7 +323,13 @@ impl IAudioProcessorTrait for Gain {
         if index != 0 || arr.is_null() {
             return kInvalidArgument;
         }
-        unsafe { *arr = SpeakerArr::kStereo };
+        unsafe {
+            *arr = if self.mono_only {
+                SpeakerArr::kMono
+            } else {
+                SpeakerArr::kStereo
+            }
+        };
         kResultOk
     }
 
@@ -302,10 +350,14 @@ impl IAudioProcessorTrait for Gain {
     }
 
     unsafe fn setupProcessing(&self, _setup: *mut ProcessSetup) -> tresult {
+        if self.rejects_setup {
+            return kResultFalse;
+        }
         kResultOk
     }
 
-    unsafe fn setProcessing(&self, _state: TBool) -> tresult {
+    unsafe fn setProcessing(&self, state: TBool) -> tresult {
+        self.log(&format!("setProcessing({state})"));
         self.set_processing_result
     }
 
@@ -520,6 +572,20 @@ impl IPluginFactoryTrait for Factory {
             },
             LATENCY_CID => Gain {
                 latency_on_reactivation: true,
+                ..Gain::new(None)
+            },
+            MONO_CID => Gain {
+                log_tag: Some(9),
+                mono_only: true,
+                ..Gain::new(None)
+            },
+            SETUP_FAIL_CID => Gain {
+                log_tag: Some(10),
+                rejects_setup: true,
+                ..Gain::new(None)
+            },
+            LOGGED_CID => Gain {
+                log_tag: Some(11),
                 ..Gain::new(None)
             },
             SPLIT_CID => Gain::new(Some(SPLIT_CONTROLLER_CID)),
