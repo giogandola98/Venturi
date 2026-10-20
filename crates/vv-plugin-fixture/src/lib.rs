@@ -504,6 +504,9 @@ impl IAudioProcessorTrait for Gain {
     }
 
     unsafe fn process(&self, data: *mut ProcessData) -> tresult {
+        if self.fails_reactivation {
+            self.log("process");
+        }
         if data.is_null() {
             return kInvalidArgument;
         }

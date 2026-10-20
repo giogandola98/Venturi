@@ -25,6 +25,10 @@ pub trait HostedPlugin: vv_audio::PluginProcessor {
     }
     /// Acts on a restart the plugin asked for; called every pass on the UI thread.
     fn service_restart(&self) {}
+    /// False once a re-activation was refused: the plugin plays dry.
+    fn is_active(&self) -> bool {
+        true
+    }
     /// The full deactivate/activate cycle: clears what `reset` leaves, such
     /// as a reverb's tail.
     fn reactivate(&self) {}
@@ -210,13 +214,11 @@ impl Instances {
 
     /// Whether the last attempt to make the instance under `key` failed.
     pub fn failed(&self, key: u64) -> bool {
-        matches!(
-            self.slots.get(&key),
-            Some(Slot {
-                state: SlotState::Failed { .. },
-                ..
-            })
-        )
+        match self.slots.get(&key).map(|slot| &slot.state) {
+            Some(SlotState::Failed { .. }) => true,
+            Some(SlotState::Ready { instance, .. }) => !instance.is_active(),
+            _ => false,
+        }
     }
 
     /// An offline pool starts a new render: each instance is reactivated

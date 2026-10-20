@@ -1003,7 +1003,10 @@ fn a_failed_reactivation_does_not_restart_processing_and_plays_dry() {
     assert!(!is_dry(&instance));
     instance.reactivate();
     assert_eq!(
-        log.calls(),
+        log.calls()
+            .into_iter()
+            .filter(|c| c != "process")
+            .collect::<Vec<_>>(),
         [
             "setActive(1)",
             "setProcessing(1)",
@@ -1040,4 +1043,23 @@ fn an_inactive_instance_retries_activation_without_a_second_deactivate() {
     instance.reactivate();
     instance.reactivate();
     assert_eq!(log.calls()[5..], ["setActive(1)"]);
+}
+
+#[test]
+fn an_inactive_instance_is_not_processed_to_read_its_state_or_flush_edits() {
+    let log = FixtureLog::new(18);
+    let instance = reactivate_fail_fixture();
+    instance.reactivate();
+    let before = log.calls().len();
+    // SAFETY: the handler is a live COM object owned by the instance.
+    unsafe {
+        instance.handler.beginEdit(0);
+        instance.handler.performEdit(0, 0.25);
+        instance.handler.endEdit(0);
+    }
+    assert!(instance.get_state().is_some());
+    request_restart(&instance, RestartFlags_::kReloadComponent);
+    instance.service_restart();
+    assert!(!log.calls()[before..].contains(&"process".to_owned()));
+    assert!(!instance.is_active());
 }
