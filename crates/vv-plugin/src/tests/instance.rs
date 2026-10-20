@@ -810,3 +810,10 @@ fn the_audio_guard_releases_busy_on_panic() {
     assert!(!busy.load(Ordering::Relaxed));
     assert!(AudioGuard::try_acquire(&busy).is_some());
 }
+
+#[test]
+fn process_mode_maps_to_the_sdk_constants() {
+    use vst3::Steinberg::Vst::ProcessModes_;
+    assert_eq!(ProcessMode::Realtime.sdk(), ProcessModes_::kRealtime as i32);
+    assert_eq!(ProcessMode::Offline.sdk(), ProcessModes_::kOffline as i32);
+}
