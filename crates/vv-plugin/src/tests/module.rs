@@ -1,4 +1,4 @@
-use super::{Registry, c_str, cached};
+use super::{LoadError, Registry, c_str, cached};
 use std::ffi::c_char;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -97,13 +97,28 @@ fn concurrent_same_path_loads_once_and_shares_the_arc() {
 }
 
 #[test]
-fn a_failed_load_is_retried() {
+fn a_failure_before_dlopen_is_retried() {
     let reg = registry();
-    assert!(cached(&reg, Path::new("p"), || Err("no".into())).is_err());
+    assert!(cached(&reg, Path::new("p"), || Err(LoadError::early("no"))).is_err());
     assert_eq!(
         *cached(&reg, Path::new("p"), || Ok(Arc::new(3))).unwrap(),
         3
     );
+}
+
+#[test]
+fn a_failure_after_dlopen_is_loaded_once_and_cached() {
+    let reg = registry();
+    let loads = AtomicUsize::new(0);
+    for _ in 0..3 {
+        let err = cached(&reg, Path::new("p"), || {
+            loads.fetch_add(1, Ordering::SeqCst);
+            Err(LoadError::loaded("entry failed"))
+        })
+        .unwrap_err();
+        assert_eq!(err, "entry failed");
+    }
+    assert_eq!(loads.load(Ordering::SeqCst), 1);
 }
 
 #[cfg(target_os = "macos")]
