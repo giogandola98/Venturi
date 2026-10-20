@@ -679,13 +679,25 @@ impl Drop for Vst3Instance {
     }
 }
 
-/// Mono feeds both plugin inputs; more than two channels: only the first two are read and written, the rest stay dry.
+/// Mono feeds both plugin inputs; more than two channels fold into the pair like `remix_channels_into` (`PluginEffect` re-derives the rest).
 pub(crate) fn deinterleave(
     samples: &[f32],
     channels: usize,
     out: &mut [Vec<f32>; 2],
     frames: usize,
 ) {
+    if channels > 2 {
+        for (n, frame) in samples.chunks_exact(channels).take(frames).enumerate() {
+            for (k, plane) in out.iter_mut().enumerate() {
+                let (sum, count) = frame[k..]
+                    .iter()
+                    .step_by(2)
+                    .fold((0.0, 0u32), |(sum, count), &v| (sum + v, count + 1));
+                plane[n] = sum / count as f32;
+            }
+        }
+        return;
+    }
     let right = usize::from(channels > 1);
     for (n, frame) in samples.chunks_exact(channels).take(frames).enumerate() {
         out[0][n] = frame[0];

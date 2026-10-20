@@ -2210,27 +2210,51 @@ fn plugin_mix_on_six_channels(effects: Vec<vv_core::AudioEffect>) -> Vec<f32> {
 }
 
 #[test]
-fn a_plugin_insert_processes_only_the_front_pair_of_a_wide_device() {
+fn a_plugin_insert_processes_every_channel_of_a_wide_device() {
     let out = plugin_mix_on_six_channels(vec![vst3(1, b"")]);
-    assert_eq!(out, [0.4, 0.2, 0.8, 0.4, 0.8, 0.4].repeat(2));
+    for (got, want) in out.iter().zip([0.4, 0.2, 0.4, 0.2, 0.4, 0.2].repeat(2)) {
+        assert!((got - want).abs() < 1e-6, "{out:?}");
+    }
 }
 
 #[test]
-fn a_mono_after_a_plugin_averages_the_dry_channels_too() {
+fn a_mono_after_a_plugin_does_not_mix_dry_channels_in() {
     let mono = vv_core::AudioEffect::new(vv_core::AudioEffectKind::Mono);
     let out = plugin_mix_on_six_channels(vec![vst3(1, b""), mono]);
-    let mean = (0.4 + 0.2 + 0.8 + 0.4 + 0.8 + 0.4) / 6.0;
-    assert!(out.iter().all(|&s| (s - mean).abs() < 1e-6), "{out:?}");
+    assert!(out.iter().all(|&s| (s - 0.3).abs() < 1e-6), "{out:?}");
 }
 
-/// Like the real host: touches only the stereo bus.
-struct FrontPairPlugin;
+#[test]
+fn a_plugin_receives_the_centre_through_the_fold() {
+    use crate::effect::{Effect, PluginEffect};
+    let mut effect = PluginEffect {
+        handle: Arc::new(FoldingPlugin),
+        channels: 6,
+    };
+    // L R C LFE Ls Rs with only the centre (channel 2) carrying signal.
+    let mut samples = vec![0.0, 0.0, 0.9, 0.0, 0.0, 0.0];
+    effect.process(&mut samples);
+    let want = 0.9 / 3.0;
+    assert!(
+        samples.iter().step_by(2).all(|s| (s - want).abs() < 1e-6),
+        "{samples:?}"
+    );
+    assert_eq!(samples[1], 0.0);
+}
 
-impl crate::effect::PluginProcessor for FrontPairPlugin {
+/// Folds the way the host does (mean of every second channel), writes the pair.
+struct FoldingPlugin;
+
+impl crate::effect::PluginProcessor for FoldingPlugin {
     fn process(&self, samples: &mut [f32], channels: usize) {
         for frame in samples.chunks_exact_mut(channels) {
-            frame[0] *= 0.5;
-            frame[1] *= 0.5;
+            let fold = |k: usize| {
+                let v: Vec<f32> = frame[k..].iter().step_by(2).copied().collect();
+                v.iter().sum::<f32>() / v.len() as f32
+            };
+            let (l, r) = (fold(0), fold(1));
+            frame[0] = l;
+            frame[1] = r;
         }
     }
 
@@ -2238,25 +2262,5 @@ impl crate::effect::PluginProcessor for FrontPairPlugin {
 
     fn latency(&self) -> u32 {
         0
-    }
-}
-
-#[test]
-fn a_plugin_leaves_the_channels_past_the_stereo_pair_alone() {
-    use crate::effect::{Effect, PluginEffect};
-    let mut effect = PluginEffect {
-        handle: Arc::new(FrontPairPlugin),
-        channels: 6,
-    };
-    let mut samples: Vec<f32> = (0..12).map(|n| n as f32).collect();
-    let dry = samples.clone();
-    effect.process(&mut samples);
-    for (out, dry) in samples.chunks(6).zip(dry.chunks(6)) {
-        assert_eq!(out[..2], [dry[0] * 0.5, dry[1] * 0.5]);
-        assert_eq!(
-            out[2..],
-            dry[2..],
-            "centre, LFE and surrounds stay as they were"
-        );
     }
 }
