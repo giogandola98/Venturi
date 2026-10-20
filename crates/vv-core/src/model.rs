@@ -2938,14 +2938,13 @@ impl Timeline {
             .nth(number.checked_sub(1)?)
     }
 
-    /// The tracks of kind `kind`, with their absolute index in `tracks`.
     pub fn has_audio_clips(&self) -> bool {
         self.tracks_of_kind(TrackKind::Audio)
             .any(|(_, t)| !t.clips.is_empty())
     }
 
-    /// Whether an enabled VST3 effect sits on a track or the master strip.
-    pub fn uses_enabled_plugins(&self) -> bool {
+    /// Whether an enabled VST3 effect sits on one of its own strips.
+    fn has_enabled_plugin(&self) -> bool {
         self.tracks
             .iter()
             .map(|track| &track.mix)
@@ -2954,6 +2953,7 @@ impl Timeline {
             .any(|effect| effect.enabled && matches!(effect.kind, AudioEffectKind::Vst3(_)))
     }
 
+    /// The tracks of kind `kind`, with their absolute index in `tracks`.
     pub fn tracks_of_kind(
         &self,
         kind: TrackKind,
@@ -3095,6 +3095,31 @@ pub struct ProjectView {
 }
 
 impl Project {
+    /// Whether `id` plays an enabled VST3, in itself or in the compounds it
+    /// holds. Conservative: it also counts muted tracks and disabled clips.
+    pub fn timeline_uses_enabled_plugins(&self, id: TimelineId) -> bool {
+        self.holds_enabled_plugin(id, 0)
+    }
+
+    fn holds_enabled_plugin(&self, id: TimelineId, depth: u32) -> bool {
+        let Some(timeline) = self.timelines.get(id) else {
+            return false;
+        };
+        if depth >= MAX_COMPOUND_DEPTH {
+            return false;
+        }
+        timeline.has_enabled_plugin()
+            || timeline
+                .tracks
+                .iter()
+                .flat_map(|track| &track.clips)
+                .filter_map(|clip| match &clip.source {
+                    ClipSource::Media(media) => self.media_pool.get(*media)?.compound,
+                    _ => None,
+                })
+                .any(|nested| self.holds_enabled_plugin(nested, depth + 1))
+    }
+
     pub fn alloc_clip_id(&mut self) -> ClipId {
         let id = ClipId(self.next_clip_id);
         self.next_clip_id += 1;
