@@ -216,3 +216,37 @@ fn without_a_watcher_thread_fds_are_polled() {
     assert!(rl.next_wake().is_some());
     rl.clear();
 }
+
+#[test]
+fn wake_after_is_the_earliest_of_the_timer_and_the_fd_poll() {
+    let now = Instant::now();
+    let in_ms = |ms| Some(now + Duration::from_millis(ms));
+    assert_eq!(wake_after(None, false, now), None);
+    assert_eq!(wake_after(None, true, now), Some(FD_POLL));
+    assert_eq!(
+        wake_after(in_ms(5), true, now),
+        Some(Duration::from_millis(5))
+    );
+    assert_eq!(wake_after(in_ms(500), true, now), Some(FD_POLL));
+    assert_eq!(
+        wake_after(in_ms(500), false, now),
+        Some(Duration::from_millis(500))
+    );
+    assert_eq!(
+        wake_after(now.checked_sub(FD_POLL), true, now),
+        Some(Duration::ZERO)
+    );
+}
+
+#[test]
+fn without_a_watcher_thread_the_extra_fd_is_polled() {
+    let rl = Rc::new(RunLoop {
+        poll_fallback: true,
+        extra_fd: Some(3),
+        ..Default::default()
+    });
+    assert_eq!(rl.next_wake(), Some(FD_POLL));
+    rl.add_timer(timer(&rl), Duration::from_millis(1));
+    assert!(rl.next_wake().unwrap() <= Duration::from_millis(1));
+    rl.clear();
+}
