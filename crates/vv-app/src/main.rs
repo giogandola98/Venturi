@@ -2461,7 +2461,8 @@ impl VenturiApp {
             ctx.request_repaint();
         });
         self.plugin_scan_rx = Some(rx);
-        vv_plugin::set_scanning(true);
+        // A rescan keeps the complete previous list, so only a first scan gates exports.
+        vv_plugin::set_scanning(self.settings.needs_plugin_scan());
     }
 
     /// Only while a scan runs: otherwise the marker is a real crash's, kept

@@ -296,10 +296,11 @@ impl FrameProvider for StreamingFrameProvider {
     }
 }
 
-/// An export started during the plugin scan would play every plugin as a
-/// pass-through: the installed list is still incomplete.
-pub fn scan_blocks_export(scanning: bool, project: &Project) -> bool {
-    scanning && project.uses_plugins()
+/// An export of `timeline` started during a first plugin scan would play
+/// its enabled plugins as pass-through: the installed list is incomplete.
+/// Video-only exports and timelines without plugins never wait.
+pub fn scan_blocks_export(scanning: bool, timeline: &Timeline, audio: bool) -> bool {
+    scanning && audio && timeline.has_audio_clips() && timeline.uses_enabled_plugins()
 }
 
 /// Exports the frames in `range` to `output_path`. Blocking.

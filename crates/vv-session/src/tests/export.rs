@@ -1361,30 +1361,42 @@ fn bench_processing_precision() {
     }
 }
 
-#[test]
-fn a_scan_blocks_only_an_export_whose_project_has_plugins() {
-    let mut with_plugin = Project::default();
-    let mut timeline = timeline_with(vec![]);
+fn timeline_with_plugin(enabled: bool, audio_clip: bool) -> Timeline {
+    let mut audio = Track::new(TrackKind::Audio);
+    if audio_clip {
+        audio.clips.push(solid_color_clip(1, 0, 10, Rgba::BLACK));
+    }
+    let mut timeline = timeline_with(vec![audio]);
+    let mut effect =
+        vv_core::AudioEffect::new(vv_core::AudioEffectKind::Vst3(vv_core::Vst3Effect {
+            id: vv_core::EffectId::fresh(),
+            class_id: "0123456789ABCDEF0123456789ABCDEF".into(),
+            name: "P".into(),
+            vendor: "V".into(),
+            version: "1".into(),
+            component_state: Default::default(),
+            controller_state: Default::default(),
+        }));
+    effect.enabled = enabled;
+    timeline.master.effects.push(effect);
     timeline
-        .master
-        .effects
-        .push(vv_core::AudioEffect::new(vv_core::AudioEffectKind::Vst3(
-            vv_core::Vst3Effect {
-                id: vv_core::EffectId::fresh(),
-                class_id: "0123456789ABCDEF0123456789ABCDEF".into(),
-                name: "P".into(),
-                vendor: "V".into(),
-                version: "1".into(),
-                component_state: Default::default(),
-                controller_state: Default::default(),
-            },
-        )));
-    with_plugin.timelines.insert(timeline);
-    let mut without = Project::default();
-    without.timelines.insert(timeline_with(vec![]));
+}
 
-    assert!(scan_blocks_export(true, &with_plugin));
-    assert!(!scan_blocks_export(false, &with_plugin));
-    assert!(!scan_blocks_export(true, &without));
-    assert!(!scan_blocks_export(true, &Project::default()));
+#[test]
+fn a_scan_blocks_only_an_audio_export_that_plays_an_enabled_plugin() {
+    let playing = timeline_with_plugin(true, true);
+    assert!(scan_blocks_export(true, &playing, true));
+    assert!(!scan_blocks_export(false, &playing, true));
+    assert!(!scan_blocks_export(true, &playing, false));
+    assert!(!scan_blocks_export(
+        true,
+        &timeline_with_plugin(false, true),
+        true
+    ));
+    assert!(!scan_blocks_export(
+        true,
+        &timeline_with_plugin(true, false),
+        true
+    ));
+    assert!(!scan_blocks_export(true, &timeline_with(vec![]), true));
 }
