@@ -198,7 +198,9 @@ fn drain_pending(
     if group_open {
         return;
     }
-    for (key, instance) in std::mem::take(pending) {
+    let mut ended = std::mem::take(pending);
+    ended.sort_by_key(|(_, instance)| instance.gesture_seq());
+    for (key, instance) in ended {
         record_gesture(project, history, key, &*instance, false);
     }
 }
@@ -226,12 +228,9 @@ impl PluginEditors {
             };
             let instance = editor.instance().clone();
             drop(editor);
-            if group_open {
-                self.pending.push((key, instance));
-            } else {
-                record_gesture(project, history, key, &*instance, false);
-            }
+            self.pending.push((key, instance));
         }
+        drain_pending(&mut self.pending, project, history, group_open);
     }
 
     /// `current` is the timeline the audio is playing.
@@ -291,7 +290,6 @@ impl PluginEditors {
         if self.open.is_empty() && !self.holding && self.pending.is_empty() {
             return;
         }
-        drain_pending(&mut self.pending, project, history, group_open);
         self.close_where(project, history, group_open, |project, key, editor| {
             Some(key.0) == current && find(project, *key).is_some() && editor.is_open()
         });
@@ -308,7 +306,13 @@ impl PluginEditors {
         let generation = history.generation();
         let changed = generation != self.checked;
         let mut wake: Option<std::time::Duration> = None;
-        for (key, editor) in &mut self.open {
+        let mut keys: Vec<Key> = self.open.keys().copied().collect();
+        // HashMap order would record simultaneous gestures in a random order.
+        keys.sort_by_key(|key| self.open[key].instance().gesture_seq());
+        for key in keys {
+            let Some(editor) = self.open.get_mut(&key) else {
+                continue;
+            };
             editor.idle();
             wake = match (wake, editor.next_wake()) {
                 (Some(a), Some(b)) => Some(a.min(b)),
@@ -316,12 +320,12 @@ impl PluginEditors {
             };
             let instance = editor.instance();
             // The sync below would overwrite a gesture still pending.
-            let consumed = record_gesture(project, history, *key, &**instance, group_open);
+            let consumed = record_gesture(project, history, key, &**instance, group_open);
             if group_open || consumed {
                 continue;
             }
             if changed
-                && let Some(plugin) = find(project, *key).and_then(|(_, _, e)| plugin(e))
+                && let Some(plugin) = find(project, key).and_then(|(_, _, e)| plugin(e))
                 && plugin.content_hash() != instance.state_hash()
             {
                 // An undo of an instance no mix is playing.
@@ -348,8 +352,9 @@ impl PluginEditors {
         project: &mut Project,
         history: &mut History,
         dropped: &[Arc<dyn HostedPlugin>],
+        group_open: bool,
     ) {
-        self.close_where(project, history, false, |_, _, editor| {
+        self.close_where(project, history, group_open, |_, _, editor| {
             !is_dropped(dropped, editor.instance())
         });
     }

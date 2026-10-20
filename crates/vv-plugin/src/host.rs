@@ -3,7 +3,7 @@
 use std::cell::Cell;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 use vst3::Steinberg::Vst::{
     IAttributeList, IAttributeList_iid, IAttributeListTrait, IComponentHandler,
@@ -108,6 +108,12 @@ impl Drop for AudioScope {
     }
 }
 
+/// Orders gestures across instances; the first is 1.
+fn next_gesture_seq() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 /// What the plugin's controller reports back, shared with the instance.
 pub(crate) struct Shared {
     /// Latest value per parameter, coalesced by id. The UI thread may grow it; the
@@ -117,6 +123,8 @@ pub(crate) struct Shared {
     pub outputs: Mutex<Vec<(ParamID, ParamValue, bool)>>,
     pub outputs_fresh: AtomicBool,
     pub dirty: AtomicBool,
+    /// `next_gesture_seq` at the last `endEdit`.
+    pub gesture_seq: AtomicU64,
     /// `RestartFlags` the UI thread still has to act on.
     pub restart: AtomicI32,
     waker: Mutex<Option<Waker>>,
@@ -129,6 +137,7 @@ impl Shared {
             outputs: Mutex::new(Vec::new()),
             outputs_fresh: AtomicBool::new(false),
             dirty: AtomicBool::new(false),
+            gesture_seq: AtomicU64::new(0),
             restart: AtomicI32::new(0),
             waker: Mutex::new(None),
         }
@@ -178,6 +187,9 @@ impl IComponentHandlerTrait for ComponentHandler {
     }
 
     unsafe fn endEdit(&self, _id: ParamID) -> tresult {
+        self.0
+            .gesture_seq
+            .store(next_gesture_seq(), Ordering::Release);
         self.0.dirty.store(true, Ordering::Release);
         self.0.wake();
         kResultOk

@@ -110,6 +110,7 @@ struct Fake {
     gesture: std::sync::Mutex<Option<(PluginState, PluginState)>>,
     hash: std::sync::atomic::AtomicU64,
     serviced: std::sync::atomic::AtomicUsize,
+    seq: std::sync::atomic::AtomicU64,
 }
 
 impl Fake {
@@ -118,6 +119,11 @@ impl Fake {
         *fake.gesture.lock().unwrap() =
             Some((PluginState::new(component), PluginState::new(Vec::new())));
         fake
+    }
+
+    fn at(self, seq: u64) -> Self {
+        self.seq.store(seq, std::sync::atomic::Ordering::Relaxed);
+        self
     }
 }
 
@@ -143,6 +149,9 @@ impl HostedPlugin for Fake {
     }
     fn take_gesture(&self) -> Option<(PluginState, PluginState)> {
         self.gesture.lock().unwrap().take()
+    }
+    fn gesture_seq(&self) -> u64 {
+        self.seq.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -449,4 +458,63 @@ fn a_removed_track_with_the_effect_drops_its_gesture() {
     record_gesture(&mut project, &mut history, key, &fake, false);
     assert_eq!(history.labels().count(), 0);
     assert!(fake.take_gesture().is_none());
+}
+
+fn two_strips() -> (Project, TimelineId, [Key; 2]) {
+    let (mut project, id, _) = setup();
+    let mut second = AudioEffect::new(AudioEffectKind::Vst3(plugin_effect(&[1])));
+    if let AudioEffectKind::Vst3(v) = &mut second.kind {
+        v.id = EffectId(8);
+    }
+    project.timelines[id].master.effects.push(second);
+    let keys = [
+        (id, Group::Master, EffectId(7), 0),
+        (id, Group::Master, EffectId(8), 0),
+    ];
+    (project, id, keys)
+}
+
+fn effect_order(history: &History) -> usize {
+    history.labels().count()
+}
+
+#[test]
+fn pending_gestures_are_recorded_in_the_order_they_ended() {
+    for order in [[0, 1], [1, 0]] {
+        let (mut project, id, keys) = two_strips();
+        let mut history = History::default();
+        // The editor of keys[order[0]] ended its gesture first.
+        let mut pending: Vec<(Key, Arc<dyn HostedPlugin>)> = Vec::new();
+        for (rank, which) in order.iter().enumerate() {
+            let fake = Fake::with_gesture(vec![10 + rank as u8]).at(1 + rank as u64);
+            pending.push((keys[*which], Arc::new(fake)));
+        }
+        // Whatever order they were queued in, the earlier gesture goes first.
+        pending.reverse();
+        drain_pending(&mut pending, &mut project, &mut history, false);
+        assert_eq!(effect_order(&history), 2);
+        history.undo(&mut project);
+        // The later gesture was the last step, so only it is undone.
+        let later = keys[order[1]];
+        let (_, index, _) = find(&project, later).unwrap();
+        assert_eq!(state_of(&project, id, index), [1], "order {order:?}");
+        let earlier = keys[order[0]];
+        let (_, index, _) = find(&project, earlier).unwrap();
+        assert_eq!(state_of(&project, id, index), [10], "order {order:?}");
+    }
+}
+
+#[test]
+fn closing_in_an_open_group_defers_and_records_after_it() {
+    let (mut project, id, key) = setup();
+    let mut history = History::default();
+    let mut editors = PluginEditors::default();
+    editors.defer_gesture(key, Arc::new(Fake::with_gesture(vec![9])));
+    let mark = history.begin_group();
+    editors.close_instances(&mut project, &mut history, &[], true);
+    assert_eq!(state_of(&project, id, 1), [1]);
+    history.end_group(mark);
+    editors.close_instances(&mut project, &mut history, &[], false);
+    assert_eq!(state_of(&project, id, 1), [9]);
+    assert_eq!(history.labels().count(), 1);
 }

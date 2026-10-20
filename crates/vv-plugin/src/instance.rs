@@ -783,6 +783,10 @@ impl HostedPlugin for Vst3Instance {
         }
         state
     }
+
+    fn gesture_seq(&self) -> u64 {
+        self.shared.gesture_seq.load(Ordering::Acquire)
+    }
 }
 
 impl PluginProcessor for Vst3Instance {

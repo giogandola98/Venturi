@@ -648,6 +648,18 @@ fn a_reload_restart_keeps_the_state_and_keeps_processing() {
 }
 
 #[test]
+fn gestures_are_stamped_in_the_order_they_end_across_instances() {
+    let (a, b) = (split_fixture(), split_fixture());
+    assert_eq!(a.gesture_seq(), 0);
+    // SAFETY: the handlers are live COM objects owned by the instances.
+    unsafe {
+        b.handler.endEdit(0);
+        a.handler.endEdit(0);
+    }
+    assert!(0 < b.gesture_seq() && b.gesture_seq() < a.gesture_seq());
+}
+
+#[test]
 fn a_reload_restart_keeps_an_edit_queued_before_it() {
     let instance = split_fixture();
     // SAFETY: the handler is a live COM object owned by the instance.
