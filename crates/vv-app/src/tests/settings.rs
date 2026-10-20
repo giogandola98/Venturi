@@ -306,7 +306,7 @@ fn a_scan_that_found_nothing_is_not_scanned_again_at_startup() {
         .join(format!("vv-settings-scanned-{}", std::process::id()))
         .join("settings.json");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    settings.vst3_blocklist = vec![PathBuf::from("/x/Bad.vst3")];
+    settings.vst3_blocklist = vec![legacy("/x/Bad.vst3")];
     settings.save(&path).unwrap();
     let loaded = Settings::load(&path);
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -332,15 +332,67 @@ fn crashing_rescans_accumulate_the_blocklist() {
     let mut settings = Settings::default();
 
     std::fs::write(&marker, b"/x/X.vst3").unwrap();
-    settings.prepare_plugin_scan(&marker);
-    assert_eq!(settings.vst3_blocklist, vec![x.clone()]);
+    settings.prepare_plugin_scan(true, &marker);
+    assert_eq!(settings.blocked_paths(), vec![x.clone()]);
     assert!(!marker.exists());
 
     std::fs::write(&marker, b"/x/Y.vst3").unwrap();
-    settings.prepare_plugin_scan(&marker);
-    settings.prepare_plugin_scan(&marker);
+    settings.prepare_plugin_scan(true, &marker);
+    settings.prepare_plugin_scan(true, &marker);
     let _ = std::fs::remove_dir_all(&dir);
-    assert_eq!(settings.vst3_blocklist, vec![x, y]);
+    assert_eq!(settings.blocked_paths(), vec![x, y]);
+}
+
+fn legacy(path: impl Into<PathBuf>) -> Blocked {
+    Blocked {
+        path: path.into(),
+        modified: None,
+    }
+}
+
+#[test]
+fn a_blocked_bundle_is_retried_only_once_it_changed_on_disk() {
+    let dir = std::env::temp_dir().join(format!("vv-settings-retry-{}", std::process::id()));
+    let bundle = dir.join("Crash.vst3");
+    std::fs::create_dir_all(&bundle).unwrap();
+    let marker = dir.join("scan.marker");
+    let mut settings = Settings::default();
+    settings.vst3_blocklist = vec![Blocked::new(bundle.clone()), legacy("/x/Old.vst3")];
+    let recorded = settings.vst3_blocklist[0].modified;
+    assert!(recorded.is_some());
+
+    settings.prepare_plugin_scan(true, &marker);
+    assert_eq!(settings.vst3_blocklist.len(), 2);
+
+    let later = std::time::SystemTime::UNIX_EPOCH
+        + std::time::Duration::from_secs(recorded.unwrap() + 1000);
+    std::fs::File::open(&bundle)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    settings.prepare_plugin_scan(false, &marker);
+    assert_eq!(settings.vst3_blocklist.len(), 2);
+    settings.prepare_plugin_scan(true, &marker);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(settings.vst3_blocklist, vec![legacy("/x/Old.vst3")]);
+}
+
+#[test]
+fn a_path_only_blocklist_entry_loads_as_legacy() {
+    let loaded = load_json(
+        "legacy-blocklist",
+        r#"{"vst3_blocklist":["/x/A.vst3",{"path":"/x/B.vst3","modified":7}]}"#,
+    );
+    assert_eq!(
+        loaded.vst3_blocklist,
+        vec![
+            legacy("/x/A.vst3"),
+            Blocked {
+                path: "/x/B.vst3".into(),
+                modified: Some(7)
+            }
+        ]
+    );
 }
 
 fn plugin(name: &str, path: PathBuf) -> vv_plugin::PluginInfo {
@@ -364,7 +416,7 @@ fn a_non_utf8_plugin_path_does_not_fail_the_save() {
         plugin("a", PathBuf::from("/p/a.vst3")),
         plugin("b", bad.clone()),
     ];
-    settings.vst3_blocklist = vec![bad, PathBuf::from("/x/Bad.vst3")];
+    settings.vst3_blocklist = vec![legacy(bad), legacy("/x/Bad.vst3")];
 
     let path = std::env::temp_dir()
         .join(format!("vv-settings-nonutf8-{}", std::process::id()))
@@ -377,7 +429,7 @@ fn a_non_utf8_plugin_path_does_not_fail_the_save() {
         loaded.vst3_plugins,
         vec![plugin("a", PathBuf::from("/p/a.vst3"))]
     );
-    assert_eq!(loaded.vst3_blocklist, vec![PathBuf::from("/x/Bad.vst3")]);
+    assert_eq!(loaded.vst3_blocklist, vec![legacy("/x/Bad.vst3")]);
 }
 
 #[test]
@@ -392,6 +444,6 @@ fn one_malformed_plugin_entry_does_not_reset_the_settings() {
         loaded.vst3_plugins,
         vec![plugin("a", PathBuf::from("/p/a.vst3"))]
     );
-    assert_eq!(loaded.vst3_blocklist, vec![PathBuf::from("/x/Bad.vst3")]);
+    assert_eq!(loaded.vst3_blocklist, vec![legacy("/x/Bad.vst3")]);
     assert!(!loaded.needs_plugin_scan());
 }

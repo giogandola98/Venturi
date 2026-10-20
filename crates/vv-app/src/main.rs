@@ -2442,7 +2442,7 @@ impl VenturiApp {
     /// from the Settings window and periodically/on close (see
     /// `eframe::App::save`).
     /// Scans off the UI thread: loading each bundle can take seconds.
-    fn start_plugin_scan(&mut self, ctx: &egui::Context) {
+    fn start_plugin_scan(&mut self, ctx: &egui::Context, manual: bool) {
         if self.plugin_scan_rx.is_some() {
             return;
         }
@@ -2453,9 +2453,9 @@ impl VenturiApp {
             .as_ref()
             .map(|p| p.with_file_name("vst3-scan.marker"))
             .unwrap_or_else(|| std::env::temp_dir().join("venturi-vst3-scan.marker"));
-        self.settings.prepare_plugin_scan(&marker);
+        self.settings.prepare_plugin_scan(manual, &marker);
         self.persist_settings();
-        let blocklist = self.settings.vst3_blocklist.clone();
+        let blocklist = self.settings.blocked_paths();
         std::thread::spawn(move || {
             let _ = tx.send(vv_plugin::scan_with_guard(
                 &vv_plugin::default_dirs(),
@@ -2484,7 +2484,9 @@ impl VenturiApp {
         self.plugin_scan_rx = None;
         let unchanged = apply_scan_result(&mut self.settings, list);
         vv_plugin::set_scanning(false);
-        self.settings.vst3_blocklist.extend(newly_blocked);
+        self.settings
+            .vst3_blocklist
+            .extend(newly_blocked.into_iter().map(settings::Blocked::new));
         if let Some(audio) = &mut self.timeline_audio {
             if unchanged {
                 audio.plugins_rescan_unchanged();
@@ -4475,7 +4477,7 @@ impl VenturiApp {
                 },
             ));
             if std::mem::take(&mut self.mixer_panel.rescan_requested) {
-                self.start_plugin_scan(ui.ctx());
+                self.start_plugin_scan(ui.ctx(), true);
             }
             // Saved at once: a preset must not wait for the periodic save.
             if (&self.settings.compressor_presets, &self.settings.eq_presets)
@@ -4937,7 +4939,7 @@ fn main() -> eframe::Result<()> {
             // Seeded even when empty so nothing scans on the UI thread.
             vv_plugin::set_installed(app.settings.vst3_plugins.clone());
             if app.settings.needs_plugin_scan() {
-                app.start_plugin_scan(&cc.egui_ctx);
+                app.start_plugin_scan(&cc.egui_ctx, false);
             }
             vv_media::hw::set_budget_bytes(app.settings.hw_decode_budget_bytes());
             hw_decode::start(app.settings.hw_decode);
