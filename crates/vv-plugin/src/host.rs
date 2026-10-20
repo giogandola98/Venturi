@@ -98,12 +98,19 @@ impl Shared {
     pub fn new() -> Self {
         Self {
             params: Mutex::new(Vec::with_capacity(MAX_PARAMS)),
-            outputs: Mutex::new(Vec::with_capacity(MAX_PARAMS)),
+            outputs: Mutex::new(Vec::new()),
             outputs_fresh: AtomicBool::new(false),
             dirty: AtomicBool::new(false),
             restart: AtomicI32::new(0),
             waker: Mutex::new(None),
         }
+    }
+
+    /// Setup time: room for every id the instance may publish, so audio never grows it.
+    pub fn reserve_outputs(&self, capacity: usize) {
+        let mut outputs = self.outputs.lock().unwrap_or_else(|e| e.into_inner());
+        let more = capacity.saturating_sub(outputs.len());
+        outputs.reserve_exact(more);
     }
 
     pub fn set_waker(&self, waker: Option<Waker>) {
@@ -257,6 +264,20 @@ struct ParamQueue {
     offset: Cell<int32>,
     points: Cell<int32>,
     output: bool,
+    discard: bool,
+}
+
+impl ParamQueue {
+    fn new(output: bool, discard: bool) -> ComWrapper<Self> {
+        ComWrapper::new(Self {
+            id: Cell::new(0),
+            value: Cell::new(0.0),
+            offset: Cell::new(0),
+            points: Cell::new(0),
+            output,
+            discard,
+        })
+    }
 }
 
 impl Class for ParamQueue {
@@ -287,6 +308,9 @@ impl IParamValueQueueTrait for ParamQueue {
         if !self.output {
             return kResultFalse;
         }
+        if self.discard {
+            return kResultOk;
+        }
         self.offset.set(offset);
         self.value.set(value);
         self.points.set(1);
@@ -300,6 +324,8 @@ impl IParamValueQueueTrait for ParamQueue {
 /// Fixed-capacity parameter changes for one block, reused without allocating.
 pub(crate) struct ParamChanges {
     queues: Vec<ComWrapper<ParamQueue>>,
+    // Never null for an output id past capacity: plugins write unconditionally.
+    sink: ComWrapper<ParamQueue>,
     count: Cell<usize>,
     output: bool,
 }
@@ -310,30 +336,27 @@ unsafe impl Send for ParamChanges {}
 unsafe impl Sync for ParamChanges {}
 
 impl ParamChanges {
-    fn make(output: bool) -> ComWrapper<Self> {
+    fn make(output: bool, capacity: usize) -> ComWrapper<Self> {
         ComWrapper::new(Self {
-            queues: (0..MAX_PARAMS)
-                .map(|_| {
-                    ComWrapper::new(ParamQueue {
-                        id: Cell::new(0),
-                        value: Cell::new(0.0),
-                        offset: Cell::new(0),
-                        points: Cell::new(0),
-                        output,
-                    })
-                })
+            queues: (0..capacity)
+                .map(|_| ParamQueue::new(output, false))
                 .collect(),
+            sink: ParamQueue::new(output, true),
             count: Cell::new(0),
             output,
         })
     }
 
     pub fn input() -> ComWrapper<Self> {
-        Self::make(false)
+        Self::make(false, MAX_PARAMS)
     }
 
     pub fn output() -> ComWrapper<Self> {
-        Self::make(true)
+        Self::make(true, MAX_PARAMS)
+    }
+
+    pub fn output_with_capacity(capacity: usize) -> ComWrapper<Self> {
+        Self::make(true, capacity)
     }
 
     pub fn clear(&self) {
@@ -403,7 +426,12 @@ impl IParameterChangesTrait for ParamChanges {
                 self.count.set(count + 1);
                 count
             }
-            None => return std::ptr::null_mut(),
+            None => {
+                return self
+                    .sink
+                    .as_com_ref::<IParamValueQueue>()
+                    .map_or(std::ptr::null_mut(), |r| r.as_ptr());
+            }
         };
         if !index.is_null() {
             unsafe { *index = slot as int32 };

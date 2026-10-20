@@ -202,6 +202,7 @@ impl Vst3Instance {
             defaults: (Vec::new(), Vec::new()),
         };
         this.attach_controller(&module)?;
+        this.size_outputs()?;
         this.setup(sample_rate)?;
         this.defaults = this.read_state().unwrap_or_default();
         if !effect.component_state.bytes().is_empty() || !effect.controller_state.bytes().is_empty()
@@ -256,6 +257,22 @@ impl Vst3Instance {
             // SAFETY: the handler outlives the controller's use of it (cleared in Drop).
             unsafe { controller.setComponentHandler(self.handler.as_ptr()) };
         }
+        Ok(())
+    }
+
+    fn size_outputs(&mut self) -> Result<(), String> {
+        // SAFETY: a live controller, called before any processing starts.
+        let declared = self
+            .controller
+            .as_ref()
+            .map_or(0, |c| unsafe { c.getParameterCount() })
+            .max(0) as usize;
+        let capacity = declared.max(MAX_PARAMS);
+        let outputs = ParamChanges::output_with_capacity(capacity);
+        let rt = self.rt.get_mut();
+        rt.outputs_ptr = outputs.to_com_ptr().ok_or("parameter changes")?;
+        rt.outputs = outputs;
+        self.shared.reserve_outputs(capacity);
         Ok(())
     }
 
@@ -465,7 +482,7 @@ impl Vst3Instance {
                     *slot = (id, value, true);
                     fresh = true;
                 }
-            } else if latest.len() < MAX_PARAMS {
+            } else if latest.len() < latest.capacity() {
                 latest.push((id, value, true));
                 fresh = true;
             }
@@ -483,8 +500,7 @@ impl Vst3Instance {
         if !self.shared.outputs_fresh.load(Ordering::Acquire) {
             return;
         }
-        let mut changed = [(0, 0.0); MAX_PARAMS];
-        let mut n = 0;
+        let mut changed = Vec::new();
         {
             let mut latest = self
                 .shared
@@ -494,11 +510,10 @@ impl Vst3Instance {
             self.shared.outputs_fresh.store(false, Ordering::Release);
             for slot in latest.iter_mut().filter(|p| p.2) {
                 slot.2 = false;
-                changed[n] = (slot.0, slot.1);
-                n += 1;
+                changed.push((slot.0, slot.1));
             }
         }
-        for &(id, value) in &changed[..n] {
+        for (id, value) in changed {
             // SAFETY: a live controller, called from the UI thread.
             unsafe { controller.setParamNormalized(id, value) };
         }
