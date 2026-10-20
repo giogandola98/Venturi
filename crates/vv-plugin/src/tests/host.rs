@@ -3,7 +3,7 @@ use vst3::{ComPtr, ComRef};
 use super::*;
 
 #[test]
-fn stream_seek_past_end_is_refused_and_read_is_empty() {
+fn stream_seek_past_end_reads_nothing_and_negative_is_refused() {
     use vst3::Steinberg::{IBStream, IBStreamTrait};
     let stream = MemStream::new(vec![1, 2, 3]);
     let s = stream.as_com_ref::<IBStream>().unwrap();
@@ -12,11 +12,56 @@ fn stream_seek_past_end_is_refused_and_read_is_empty() {
     let mut read = -1;
     // SAFETY: valid out-pointers on a live stream.
     unsafe {
-        assert_ne!(s.seek(10, 0, &mut pos), kResultOk);
-        assert_eq!(s.seek(3, 0, &mut pos), kResultOk);
+        assert_eq!(s.seek(10, 0, &mut pos), kResultOk);
+        assert_eq!(pos, 10);
         assert_eq!(s.read(buf.as_mut_ptr().cast(), 4, &mut read), kResultOk);
+        assert_eq!(read, 0);
+        assert_ne!(s.seek(-1, 0, &mut pos), kResultOk);
+        assert_eq!(s.seek(0, 1, &mut pos), kResultOk);
+        assert_eq!(pos, 10);
     }
-    assert_eq!(read, 0);
+}
+
+#[test]
+fn stream_seek_forward_then_write_zero_fills_the_gap() {
+    use vst3::Steinberg::{IBStream, IBStreamTrait};
+    let stream = MemStream::new(Vec::new());
+    let s = stream.as_com_ref::<IBStream>().unwrap();
+    let body = [7u8, 8, 9];
+    let mut written = 0;
+    // SAFETY: valid buffers and out-pointers on a live stream.
+    unsafe {
+        assert_eq!(s.seek(4, 1, std::ptr::null_mut()), kResultOk);
+        assert_eq!(
+            s.write(body.as_ptr().cast_mut().cast(), 3, &mut written),
+            kResultOk
+        );
+        assert_eq!(written, 3);
+    }
+    assert_eq!(stream.take(), [0, 0, 0, 0, 7, 8, 9]);
+}
+
+#[test]
+fn stream_header_reserved_by_seeking_forward_keeps_the_body() {
+    use vst3::Steinberg::{IBStream, IBStreamTrait};
+    let stream = MemStream::new(Vec::new());
+    let s = stream.as_com_ref::<IBStream>().unwrap();
+    let body = [1u8, 2, 3, 4, 5];
+    let size = (body.len() as u32).to_le_bytes();
+    // SAFETY: valid buffers and out-pointers on a live stream.
+    unsafe {
+        assert_eq!(s.seek(4, 1, std::ptr::null_mut()), kResultOk);
+        assert_eq!(
+            s.write(body.as_ptr().cast_mut().cast(), 5, std::ptr::null_mut()),
+            kResultOk
+        );
+        assert_eq!(s.seek(0, 0, std::ptr::null_mut()), kResultOk);
+        assert_eq!(
+            s.write(size.as_ptr().cast_mut().cast(), 4, std::ptr::null_mut()),
+            kResultOk
+        );
+    }
+    assert_eq!(stream.take(), [5, 0, 0, 0, 1, 2, 3, 4, 5]);
 }
 
 #[test]
