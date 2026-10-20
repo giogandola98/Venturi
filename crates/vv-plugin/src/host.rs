@@ -271,12 +271,12 @@ impl IBStreamTrait for MemStream {
             m if m == IStreamSeekMode_::kIBSeekEnd as i32 => data.len() as int64,
             _ => return kInvalidArgument,
         };
-        match base.checked_add(pos) {
-            // Past the end would make a later write allocate whatever the plugin asks.
-            Some(target) if (0..=data.len() as int64).contains(&target) => {
-                *cursor = target as usize
-            }
-            _ => return kResultFalse,
+        match base
+            .checked_add(pos)
+            .and_then(|target| usize::try_from(target).ok())
+        {
+            Some(target) => *cursor = target,
+            None => return kResultFalse,
         }
         if !result.is_null() {
             unsafe { *result = *cursor as int64 };
