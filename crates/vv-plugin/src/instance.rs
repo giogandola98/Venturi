@@ -8,8 +8,8 @@ use std::sync::{Arc, TryLockError};
 use vst3::Steinberg::Vst::{
     AudioBusBuffers, AudioBusBuffers__type0, IAudioProcessor, IAudioProcessorTrait, IComponent,
     IComponentHandler, IComponentTrait, IConnectionPoint, IConnectionPointTrait, IEditController,
-    IEditControllerTrait, IParameterChanges, ProcessContext, ProcessData, ProcessSetup,
-    RestartFlags_, SpeakerArr, SpeakerArrangement,
+    IEditControllerTrait, IParameterChanges, ParameterInfo, ParameterInfo_, ProcessContext,
+    ProcessData, ProcessSetup, RestartFlags_, SpeakerArr, SpeakerArrangement,
 };
 use vst3::Steinberg::{
     FUnknown, IBStream, IPluginBaseTrait, TUID, kNotImplemented, kResultFalse, kResultOk, tresult,
@@ -261,13 +261,8 @@ impl Vst3Instance {
     }
 
     fn size_outputs(&mut self) -> Result<(), String> {
-        // SAFETY: a live controller, called before any processing starts.
-        let declared = self
-            .controller
-            .as_ref()
-            .map_or(0, |c| unsafe { c.getParameterCount() })
-            .max(0) as usize;
-        let capacity = declared.max(MAX_PARAMS);
+        let readonly = self.controller.as_ref().map_or(0, read_only_count);
+        let capacity = readonly.max(MAX_PARAMS);
         let outputs = ParamChanges::output_with_capacity(capacity);
         let rt = self.rt.get_mut();
         rt.outputs_ptr = outputs.to_com_ptr().ok_or("parameter changes")?;
@@ -780,3 +775,17 @@ pub(crate) fn interleave(inp: &[Vec<f32>; 2], channels: usize, samples: &mut [f3
 #[cfg(test)]
 #[path = "tests/instance.rs"]
 mod tests;
+
+/// Output parameters are the read-only ones; asked once per parameter at setup.
+fn read_only_count(controller: &ComPtr<IEditController>) -> usize {
+    // SAFETY: a live controller, called before any processing starts.
+    let total = unsafe { controller.getParameterCount() };
+    (0..total)
+        .filter(|&i| {
+            // SAFETY: a plain C struct; zero is valid, and the controller fills it.
+            let mut info: ParameterInfo = unsafe { std::mem::zeroed() };
+            let res = unsafe { controller.getParameterInfo(i, &mut info) };
+            res == kResultOk && info.flags & ParameterInfo_::ParameterFlags_::kIsReadOnly != 0
+        })
+        .count()
+}

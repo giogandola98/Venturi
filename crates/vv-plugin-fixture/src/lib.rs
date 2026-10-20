@@ -154,6 +154,14 @@ impl Gain {
         }
     }
 
+    fn meters(&self) -> u32 {
+        if self.writes_meter {
+            self.meter_count
+        } else {
+            0
+        }
+    }
+
     fn log(&self, call: &str) {
         use std::io::Write;
         let Some(tag) = self.log_tag else { return };
@@ -481,23 +489,28 @@ impl IEditControllerTrait for Gain {
     }
 
     unsafe fn getParameterCount(&self) -> i32 {
-        self.meter_count.max(1) as i32
+        1 + self.meters() as i32
     }
 
     unsafe fn getParameterInfo(&self, index: i32, info: *mut ParameterInfo) -> tresult {
-        if index != 0 || info.is_null() {
+        if index < 0 || index > self.meters() as i32 || info.is_null() {
             return kInvalidArgument;
         }
         let info = unsafe { &mut *info };
-        info.id = 0;
-        copy_wstring("Gain", &mut info.title);
-        copy_wstring("Gain", &mut info.shortTitle);
+        let name = if index == 0 { "Gain" } else { "Meter" };
+        info.id = index as u32;
+        copy_wstring(name, &mut info.title);
+        copy_wstring(name, &mut info.shortTitle);
         copy_wstring("", &mut info.units);
         info.stepCount = 0;
         info.defaultNormalizedValue = DEFAULT_NORMALIZED;
         info.unitId = 0;
         #[allow(clippy::unnecessary_cast)] // enum constant width differs per target
-        let flags = ParameterInfo_::ParameterFlags_::kCanAutomate as i32;
+        let flags = if index == 0 {
+            ParameterInfo_::ParameterFlags_::kCanAutomate as i32
+        } else {
+            ParameterInfo_::ParameterFlags_::kIsReadOnly as i32
+        };
         info.flags = flags;
         kResultOk
     }
