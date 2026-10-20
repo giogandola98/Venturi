@@ -58,6 +58,9 @@ pub struct LevelAnalysis<'a> {
     pub sample_rate: u32,
     pub channels: u16,
     pub segments: Vec<LevelSegment>,
+    /// Placements the live pool did not make when `segments` were keyed:
+    /// the measure plays them pass-through to match its keys.
+    pub dry: Vec<u64>,
 }
 
 impl LevelAnalysis<'_> {

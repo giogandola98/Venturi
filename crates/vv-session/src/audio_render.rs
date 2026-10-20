@@ -321,6 +321,13 @@ impl Mix<'_> {
             Mix::Stretch(request) => request.snapshot(source, range, (rate, channels)),
         }
     }
+
+    fn dry(&self) -> &[u64] {
+        match self {
+            Mix::Measured(analysis) => &analysis.dry,
+            _ => &[],
+        }
+    }
 }
 
 fn render(
@@ -413,8 +420,9 @@ pub struct LevelCache {
     pub cancel: Option<Arc<AtomicBool>>,
     /// Segments rendered, not found.
     pub rendered: usize,
-    /// A render through it played a plugin pass-through that was meant to
-    /// process (not made); the caller clears it.
+    /// A render through it played an installed plugin pass-through that was
+    /// meant to process (not made). Set by the renders, cleared by whoever
+    /// reads it (the level and stretch workers, before each measure).
     pub degraded: bool,
 }
 
@@ -757,6 +765,7 @@ impl<'c> StreamingAudio<'c> {
         }
         let mut provider = Provider {
             audio: self,
+            dry: mix.dry(),
             stretched_used: HashSet::new(),
             levels_used: HashSet::new(),
         };
@@ -877,6 +886,9 @@ impl AudioSource for Wanted {
 
 struct Provider<'a, 'c> {
     audio: &'a mut StreamingAudio<'c>,
+    /// Plugin placements played pass-through, as the keys of the measure
+    /// assume.
+    dry: &'a [u64],
     stretched_used: HashSet<u64>,
     levels_used: HashSet<u64>,
 }
@@ -913,9 +925,16 @@ impl AudioSource for Provider<'_, '_> {
     }
 
     fn plugin(&mut self, request: PluginRequest<'_>) -> Option<PluginHandle> {
+        if self.dry.contains(&request.key) {
+            return None;
+        }
         let process = request.process;
-        let handle = self.audio.plugins().get(request);
-        self.audio.cache.degraded |= process && handle.is_none();
+        let effect = request.effect;
+        let plugins = self.audio.plugins();
+        let handle = plugins.get(request);
+        // A plugin not installed never plays: nothing to wait for.
+        let missed = process && handle.is_none() && plugins.knows(effect);
+        self.audio.cache.degraded |= missed;
         handle
     }
 

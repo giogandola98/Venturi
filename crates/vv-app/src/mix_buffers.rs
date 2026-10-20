@@ -86,6 +86,7 @@ struct OwnedAnalysis {
     mode: NormalizeMode,
     format: (u32, u16),
     segments: Vec<LevelSegment>,
+    dry: Vec<u64>,
 }
 
 impl OwnedAnalysis {
@@ -99,6 +100,7 @@ impl OwnedAnalysis {
             sample_rate: self.format.0,
             channels: self.format.1,
             segments: self.segments.clone(),
+            dry: self.dry.clone(),
         }
     }
 }
@@ -108,8 +110,9 @@ struct LevelJob {
     analysis: OwnedAnalysis,
 }
 
-/// `None`: dropped for a newer job of the same slot.
-type LevelResult = (u64, Option<AnalysisSlot>, Option<f32>);
+/// `None`: dropped for a newer job of the same slot. Last: measured while
+/// an installed plugin was not made.
+type LevelResult = (u64, Option<AnalysisSlot>, Option<f32>, bool);
 
 /// Blocks kept on each side of what the clips read: a trim into them
 /// decodes nothing.
@@ -230,7 +233,7 @@ pub struct MixBufferCache {
     /// every frame.
     stretch_busy: Arc<AtomicUsize>,
     stretch_worker: Worker<StretchJob>,
-    stretch_rx: mpsc::Receiver<(u64, Result<SampleBlocks, String>)>,
+    stretch_rx: mpsc::Receiver<(u64, Result<SampleBlocks, String>, bool)>,
     /// Normalization levels by `LevelAnalysis::key`; `None` while measuring.
     levels: HashMap<u64, Option<f32>>,
     last_level: HashMap<AnalysisSlot, f32>,
@@ -239,6 +242,9 @@ pub struct MixBufferCache {
     level_busy: Arc<AtomicUsize>,
     level_worker: Worker<LevelJob>,
     level_rx: mpsc::Receiver<LevelResult>,
+    /// Keys of the levels and stretches rendered while a plugin was not
+    /// made: a rescan measures them again.
+    degraded: HashSet<u64>,
     /// Stops the level worker's measures when the cache drops.
     closing: Arc<AtomicBool>,
     /// Created on the first plugin asked for, so projects without plugins
@@ -280,13 +286,16 @@ impl MixBufferCache {
             cache.threads = 1;
             for StretchJob { project, stretch } in jobs {
                 cache.cancel = Some(stretch.cancelled.clone());
+                cache.degraded = false;
                 let result = match stretch_offline(&stretch.request(&project), &mut cache) {
                     Err(ExportError::Cancelled) => None,
                     result => Some(result.map_err(|e| e.to_string())),
                 };
                 worker_stretch_busy.fetch_sub(1, Ordering::Relaxed);
                 if let Some(result) = result
-                    && stretch_tx.send((stretch.key, result)).is_err()
+                    && stretch_tx
+                        .send((stretch.key, result, cache.degraded))
+                        .is_err()
                 {
                     break;
                 }
@@ -312,7 +321,7 @@ impl MixBufferCache {
                     if let Some(older) = older {
                         let dropped = std::mem::replace(&mut batch[older], job).analysis;
                         worker_level_busy.fetch_sub(1, Ordering::Relaxed);
-                        if level_tx.send((dropped.key, slot, None)).is_err() {
+                        if level_tx.send((dropped.key, slot, None, false)).is_err() {
                             return;
                         }
                     } else {
@@ -320,6 +329,7 @@ impl MixBufferCache {
                     }
                 }
                 for LevelJob { project, analysis } in batch {
+                    cache.degraded = false;
                     let measured = measure_level(&analysis.analysis(&project), &mut cache);
                     worker_level_busy.fetch_sub(1, Ordering::Relaxed);
                     if worker_closing.load(Ordering::Relaxed) {
@@ -331,7 +341,7 @@ impl MixBufferCache {
                         0.0
                     });
                     if level_tx
-                        .send((analysis.key, analysis.slot, Some(level)))
+                        .send((analysis.key, analysis.slot, Some(level), cache.degraded))
                         .is_err()
                     {
                         return;
@@ -368,6 +378,7 @@ impl MixBufferCache {
             level_busy,
             level_worker,
             level_rx,
+            degraded: HashSet::new(),
             closing,
             plugins: None,
         }
@@ -465,6 +476,8 @@ impl MixBufferCache {
             .retain(|stretch| !stretch.cancelled.load(Ordering::Relaxed));
         let used = std::mem::take(&mut self.level_used);
         self.levels.retain(|key, _| used.contains(key));
+        self.degraded
+            .retain(|key| self.levels.contains_key(key) || self.stretched.contains_key(key));
         let levels = &self.levels;
         self.queued_levels
             .retain(|analysis| levels.contains_key(&analysis.key));
@@ -474,12 +487,26 @@ impl MixBufferCache {
     /// current installed list.
     pub fn reset_plugins(&mut self) {
         self.plugins = None;
+        self.remeasure_degraded();
     }
 
     /// Lets plugins that failed be tried again, keeping the live ones.
     pub fn clear_plugin_failures(&mut self) {
         if let Some(plugins) = &mut self.plugins {
             plugins.clear_failures();
+        }
+        self.remeasure_degraded();
+    }
+
+    /// Drops what the workers rendered while a plugin was not made; the
+    /// next pass asks for it again (`last_level` plays meanwhile). Once per
+    /// rescan, so a plugin that keeps failing cannot loop.
+    fn remeasure_degraded(&mut self) {
+        for key in std::mem::take(&mut self.degraded) {
+            self.levels.remove(&key);
+            if let Some(Stretch::Ready(_) | Stretch::Failed) = self.stretched.get(&key) {
+                self.stretched.remove(&key);
+            }
         }
     }
 
@@ -756,8 +783,11 @@ impl MixBufferCache {
             self.unreported_blocks = false;
             self.last_block_report = Some(now);
         }
-        while let Ok((key, result)) = self.stretch_rx.try_recv() {
+        while let Ok((key, result, degraded)) = self.stretch_rx.try_recv() {
             if let Some(entry) = self.stretched.get_mut(&key) {
+                if degraded {
+                    self.degraded.insert(key);
+                }
                 *entry = match result {
                     Ok(stretched) => Stretch::Ready(stretched),
                     Err(e) => {
@@ -768,11 +798,14 @@ impl MixBufferCache {
                 changed = true;
             }
         }
-        while let Ok((key, slot, level)) = self.level_rx.try_recv() {
+        while let Ok((key, slot, level, degraded)) = self.level_rx.try_recv() {
             match level {
                 Some(level) => {
                     if let Some(entry) = self.levels.get_mut(&key) {
                         *entry = Some(level);
+                        if degraded {
+                            self.degraded.insert(key);
+                        }
                         changed = true;
                     }
                     if let Some(slot) = slot {
@@ -931,6 +964,7 @@ impl AudioSource for MixBufferCache {
                     mode: analysis.mode,
                     format: (analysis.sample_rate, analysis.channels),
                     segments: analysis.segments,
+                    dry: analysis.dry,
                 });
                 self.levels.insert(key, None);
                 LevelReading::Pending(last)
