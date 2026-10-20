@@ -14,6 +14,8 @@ use vst3::{Class, ComPtr, ComRef, ComWrapper};
 
 use crate::{HostedPlugin, Waker};
 
+#[cfg(unix)]
+mod fd_watcher;
 mod run_loop;
 
 #[cfg(target_os = "macos")]
@@ -124,7 +126,7 @@ impl Editor {
             resize: RefCell::new(Some(resize.clone())),
             resizing: Cell::new(false),
             #[cfg(target_os = "linux")]
-            run_loop: Default::default(),
+            run_loop: run_loop::RunLoop::new(waker.clone(), Some(window.fd())),
         });
         let frame_ptr = frame.to_com_ptr::<IPlugFrame>().ok_or("plugin frame")?;
         // SAFETY: the frame outlives the view's use of it (cleared in Drop).
@@ -160,7 +162,10 @@ impl Editor {
         }
         #[cfg(target_os = "linux")]
         self.frame.run_loop.pump();
-        if let Some((width, height)) = self.window.idle() {
+        let resized = self.window.idle();
+        #[cfg(target_os = "linux")]
+        self.frame.run_loop.rearm();
+        if let Some((width, height)) = resized {
             let mut rect = ViewRect {
                 left: 0,
                 top: 0,

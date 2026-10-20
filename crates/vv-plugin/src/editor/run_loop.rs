@@ -8,7 +8,8 @@ use vst3::ComPtr;
 use vst3::Steinberg::Linux::{IEventHandler, ITimerHandler};
 use vst3::Steinberg::{kResultFalse, kResultOk, tresult};
 
-const FD_POLL: Duration = Duration::from_millis(16);
+use super::fd_watcher::FdWatcher;
+use crate::Waker;
 
 struct Timer {
     handler: ComPtr<ITimerHandler>,
@@ -25,11 +26,46 @@ struct Timer {
 pub(super) struct RunLoop {
     handlers: RefCell<Vec<(ComPtr<IEventHandler>, c_int)>>,
     timers: RefCell<Vec<Timer>>,
+    watcher: RefCell<Option<FdWatcher>>,
+    extra_fd: Option<c_int>,
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 impl RunLoop {
+    /// Wakes `waker` when a registered fd, or `extra_fd`, becomes readable.
+    pub fn new(waker: Waker, extra_fd: Option<c_int>) -> Self {
+        let watcher = FdWatcher::new(waker).ok();
+        if let Some(w) = &watcher {
+            w.set_fds(extra_fd.into_iter().collect());
+        }
+        Self {
+            watcher: RefCell::new(watcher),
+            extra_fd,
+            ..Default::default()
+        }
+    }
+
+    fn sync_fds(&self) {
+        let Ok(watcher) = self.watcher.try_borrow() else {
+            return;
+        };
+        if let Some(watcher) = watcher.as_ref() {
+            let handlers = self.handlers.try_borrow();
+            let fds = handlers.iter().flat_map(|h| h.iter().map(|(_, fd)| *fd));
+            watcher.set_fds(self.extra_fd.into_iter().chain(fds).collect());
+        }
+    }
+
+    /// The UI thread pumped: the watcher may wake the app again.
+    pub fn rearm(&self) {
+        if let Ok(Some(watcher)) = self.watcher.try_borrow().as_deref() {
+            watcher.rearm();
+        }
+    }
+
     pub fn clear(&self) {
+        // Joins the watcher thread.
+        drop(self.watcher.try_borrow_mut().map(|mut w| w.take()));
         let handlers = self
             .handlers
             .try_borrow_mut()
@@ -45,6 +81,8 @@ impl RunLoop {
         match self.handlers.try_borrow_mut() {
             Ok(mut list) => {
                 list.push((handler, fd));
+                drop(list);
+                self.sync_fds();
                 kResultOk
             }
             Err(_) => kResultFalse,
@@ -62,6 +100,7 @@ impl RunLoop {
             }
             Err(_) => return kResultFalse,
         };
+        self.sync_fds();
         drop::<Vec<_>>(removed);
         kResultOk
     }
@@ -95,12 +134,8 @@ impl RunLoop {
         kResultOk
     }
 
-    /// When the plugin needs the loop next: nothing is registered, nothing to wake for.
-    /// There is no cheap wake on an fd, so those are polled at a GUI-friendly pace.
+    /// The next timer deadline; fds wake the app through the watcher.
     pub fn next_wake(&self) -> Option<Duration> {
-        if !self.handlers.try_borrow().ok()?.is_empty() {
-            return Some(FD_POLL);
-        }
         let now = Instant::now();
         let timers = self.timers.try_borrow().ok()?;
         let next = timers.iter().map(|t| t.next).min()?;
