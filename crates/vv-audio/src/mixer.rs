@@ -539,6 +539,20 @@ impl MixSnapshot {
             })
     }
 
+    fn has_plugins(&self) -> bool {
+        let processes = |channel: &Channel| {
+            channel
+                .inserts
+                .iter()
+                .any(|i| matches!(i, Insert::Plugin(p) if p.handle.is_some()))
+        };
+        self.tracks.iter().chain([&self.master]).any(processes)
+            || self.clips.iter().any(|clip| match &clip.input {
+                ClipInput::Nested(nested) => nested.mix.has_plugins(),
+                ClipInput::Blocks(_) => false,
+            })
+    }
+
     fn track(&self, index: usize) -> &Channel {
         static UNITY: Channel = Channel::UNITY;
         self.tracks.get(index).unwrap_or(&UNITY)
@@ -578,6 +592,9 @@ pub struct MixState {
     scratch: Vec<f32>,
     peaks: Vec<[f32; 2]>,
     next: Option<u64>,
+    /// Plugins pass through while the snapshot has some: the normalize
+    /// gains were measured through them, so they are dropped too.
+    skip_gains: bool,
 }
 
 impl MixState {
@@ -593,6 +610,7 @@ impl MixState {
 
     fn build(snapshot: &MixSnapshot, plugins: bool) -> Self {
         let (rate, channels) = (snapshot.sample_rate, snapshot.channels);
+        let skip_gains = !plugins && snapshot.has_plugins();
         let processors = |channel: &Channel| -> Vec<Option<Box<dyn Effect>>> {
             channel
                 .inserts
@@ -613,6 +631,7 @@ impl MixState {
                 .collect(),
             scratch: vec![0.0; MIX_BLOCK_FRAMES * snapshot.channels.max(1) as usize],
             peaks: vec![[0.0; 2]; snapshot.tracks.len()],
+            skip_gains,
             next: None,
         }
     }
@@ -1729,6 +1748,7 @@ fn mix_into(
                 ch,
                 block_time,
                 meters,
+                state.skip_gains,
             );
             let mut peak = [0.0f32; 2];
             for (dst, src) in block.chunks_exact_mut(ch).zip(scratch.chunks_exact(ch)) {
@@ -1752,6 +1772,7 @@ fn mix_into(
             ch,
             block_time,
             meters,
+            state.skip_gains,
         );
         for frame in block.chunks_exact_mut(ch) {
             for (c, s) in frame.iter_mut().enumerate() {
@@ -1784,10 +1805,12 @@ fn apply_inserts(
     channels: usize,
     time: u64,
     meters: Option<&[InsertMeter]>,
+    skip_gains: bool,
 ) {
     for (index, insert) in inserts.iter().enumerate() {
         match insert {
             Insert::Off => {}
+            Insert::Gain(_) | Insert::ClipGains(_) if skip_gains => {}
             Insert::Gain(gain) => samples.iter_mut().for_each(|s| *s *= gain),
             Insert::ClipGains(gains) => apply_clip_gains(gains, time, samples, channels),
             Insert::Mono => {
