@@ -16,6 +16,7 @@ struct Counts {
     made: AtomicUsize,
     loads: AtomicUsize,
     dropped: AtomicUsize,
+    reactivated: AtomicUsize,
 }
 
 struct Fake {
@@ -38,6 +39,9 @@ impl PluginProcessor for Fake {
 }
 
 impl HostedPlugin for Fake {
+    fn reactivate(&self) {
+        self.counts.reactivated.fetch_add(1, Ordering::SeqCst);
+    }
     fn set_state(&self, _: &Vst3Effect) {
         self.counts.loads.fetch_add(1, Ordering::SeqCst);
     }
@@ -350,4 +354,22 @@ fn a_restart_request_is_serviced_by_the_pool_without_an_editor() {
     pool.begin_pass();
     pool.get(request(1, &e)).expect("instance");
     assert_eq!(instance.latency(), 64);
+}
+
+#[test]
+fn a_new_render_reactivates_each_instance_once_not_per_pass() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = pool(&counts);
+    let e = effect(CLASS, &[1]);
+    for render in 0..3 {
+        pool.begin_render();
+        for _ in 0..4 {
+            pool.begin_pass();
+            pool.get(request(7, &e)).unwrap();
+            pool.sweep();
+        }
+        // A new instance starts clean: the first render reactivates nothing.
+        assert_eq!(counts.reactivated.load(Ordering::SeqCst), render);
+    }
+    assert_eq!(counts.made.load(Ordering::SeqCst), 1);
 }
