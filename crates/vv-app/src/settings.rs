@@ -624,8 +624,8 @@ pub struct Settings {
     pub vst3_plugins: Vec<vv_plugin::PluginInfo>,
     /// A scan has run, so an empty `vst3_plugins` means none were found.
     pub vst3_scanned: bool,
-    /// Bundles whose scan crashed; never loaded again by a scan.
-    pub vst3_blocklist: Vec<PathBuf>,
+    /// Bundles whose scan crashed; not loaded again until they change on disk.
+    pub vst3_blocklist: Vec<Blocked>,
     /// Microphone of the voiceover, by name; `None` is the system's default.
     pub input_device: Option<String>,
     /// Of the takes; `None`, or one this FFmpeg lacks, is
@@ -822,16 +822,77 @@ struct PanelLayoutFile {
     library_layout: Option<crate::media_pool::PoolLayout>,
 }
 
+/// A bundle that crashed a scan, with its modification time (seconds since the
+/// epoch) when it was blocked; `None` for entries saved before it was recorded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "BlockedRepr")]
+pub struct Blocked {
+    pub path: PathBuf,
+    pub modified: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum BlockedRepr {
+    Path(PathBuf),
+    Entry {
+        path: PathBuf,
+        modified: Option<u64>,
+    },
+}
+
+impl From<BlockedRepr> for Blocked {
+    fn from(repr: BlockedRepr) -> Self {
+        match repr {
+            BlockedRepr::Path(path) => Self {
+                path,
+                modified: None,
+            },
+            BlockedRepr::Entry { path, modified } => Self { path, modified },
+        }
+    }
+}
+
+impl Blocked {
+    pub fn new(path: PathBuf) -> Self {
+        let modified = bundle_mtime(&path);
+        Self { path, modified }
+    }
+
+    /// Legacy entries (no recorded time) stay blocked.
+    fn is_unchanged(&self) -> bool {
+        self.modified.is_none() || self.modified == bundle_mtime(&self.path)
+    }
+}
+
+fn bundle_mtime(path: &Path) -> Option<u64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    Some(
+        modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs(),
+    )
+}
+
 impl Settings {
     /// A bundle that crashed the last scan is blocked (and so persisted) before
-    /// this one starts. The blocklist only grows: clearing it on a manual rescan
-    /// made several crashing bundles take turns crashing every rescan.
-    pub fn prepare_plugin_scan(&mut self, marker: &Path) {
-        if let Some(crashed) = vv_plugin::take_crashed(marker)
-            && !self.vst3_blocklist.contains(&crashed)
-        {
-            self.vst3_blocklist.push(crashed);
+    /// this one starts. The blocklist only grows, except that a manual rescan
+    /// retries bundles changed on disk since: clearing it all made several
+    /// crashing bundles take turns crashing every rescan.
+    pub fn prepare_plugin_scan(&mut self, manual: bool, marker: &Path) {
+        if manual {
+            self.vst3_blocklist.retain(Blocked::is_unchanged);
         }
+        if let Some(crashed) = vv_plugin::take_crashed(marker)
+            && !self.vst3_blocklist.iter().any(|b| b.path == crashed)
+        {
+            self.vst3_blocklist.push(Blocked::new(crashed));
+        }
+    }
+
+    pub fn blocked_paths(&self) -> Vec<PathBuf> {
+        self.vst3_blocklist.iter().map(|b| b.path.clone()).collect()
     }
 
     pub fn needs_plugin_scan(&self) -> bool {
@@ -1018,7 +1079,7 @@ impl Settings {
             eq_presets: preset_values(&self.eq_presets),
             vst3_plugins: utf8_entries(&self.vst3_plugins, |p| &p.path),
             vst3_scanned: Some(self.vst3_scanned),
-            vst3_blocklist: utf8_entries(&self.vst3_blocklist, |p| p),
+            vst3_blocklist: utf8_entries(&self.vst3_blocklist, |b| &b.path),
             input_device: self.input_device.clone(),
             recording_format: self.recording_format.map(|f| f.id().to_owned()),
             recording_dir: self.recording_dir.clone(),
