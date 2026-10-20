@@ -43,6 +43,22 @@ fn held_instances(
         .collect()
 }
 
+/// Brings an already open window to the front; false when there is none to raise.
+fn raise_open<E>(
+    editors: &mut HashMap<Key, E>,
+    key: &Key,
+    is_open: impl Fn(&E) -> bool,
+    raise: impl Fn(&E),
+) -> bool {
+    match editors.get(key) {
+        Some(editor) if is_open(editor) => {
+            raise(editor);
+            true
+        }
+        _ => false,
+    }
+}
+
 fn find(project: &Project, (timeline, channel, id): Key) -> Option<(usize, &AudioEffect)> {
     let strip = channel_strip(project.timelines.get(timeline)?, channel)?;
     strip
@@ -180,7 +196,7 @@ impl PluginEditors {
             return;
         };
         let key = (timeline, channel, plugin.id);
-        if self.open.get(&key).is_some_and(Editor::is_open) {
+        if raise_open(&mut self.open, &key, Editor::is_open, Editor::raise) {
             return;
         }
         self.open.remove(&key);
