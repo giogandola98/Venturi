@@ -427,6 +427,9 @@ impl IParameterChangesTrait for ParamChanges {
                 count
             }
             None => {
+                if !index.is_null() {
+                    unsafe { *index = self.count.get() as int32 };
+                }
                 return self
                     .sink
                     .as_com_ref::<IParamValueQueue>()

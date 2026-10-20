@@ -570,7 +570,15 @@ fn an_unchanged_output_value_is_not_fresh_again() {
 
 #[test]
 fn process_with_output_parameters_does_not_allocate() {
-    let instance = meter_fixture();
+    for instance in [
+        meter_fixture(),
+        fixture_instance(&effect_of(MANY_METERS_CLASS, Vec::new())),
+    ] {
+        no_allocation_with_outputs(&instance);
+    }
+}
+
+fn no_allocation_with_outputs(instance: &Vst3Instance) {
     let mut audio = ramp(1300, 2);
     instance.process(&mut audio, 2);
     instance.forward_outputs();
