@@ -604,6 +604,11 @@ impl TimelineAudio {
         Some(samples as f32 * 1000.0 / self.mix.sample_rate as f32)
     }
 
+    /// See `MixBufferCache::plugin_known`.
+    pub fn plugin_known(&self, effect: &vv_core::Vst3Effect) -> Option<bool> {
+        self.buffers.plugin_known(effect)
+    }
+
     /// Whether the plugin placed under `key` failed to load.
     pub fn plugin_failed(&self, key: u64) -> bool {
         self.buffers.plugin_failed(key)
