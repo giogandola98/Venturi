@@ -758,14 +758,11 @@ struct StreamingAudio<'c> {
     /// By `LevelAnalysis::key`: a normalization is asked again by every
     /// chunk.
     levels: HashMap<u64, f32>,
-    /// Made on the first plugin request, so projects without plugins never
-    /// scan.
     plugins: Option<Instances>,
     cache: &'c mut LevelCache,
 }
 
 impl<'c> StreamingAudio<'c> {
-    /// Made on first use, from the list the cache knows.
     fn plugins(&mut self) -> &mut Instances {
         let known = self.cache.known.clone().unwrap_or_else(|| Arc::from([]));
         let make = &self.cache.new_pool;

@@ -575,7 +575,6 @@ impl MixBufferCache {
         }
     }
 
-    /// Made on first use, from the list installed at that time.
     fn plugins(&mut self) -> &mut vv_plugin::Instances {
         self.plugins
             .get_or_insert_with(|| vv_plugin::Instances::realtime(vv_plugin::installed()))

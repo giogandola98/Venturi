@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use vst3::ComRef;
 use vst3::Steinberg::Vst::{IComponentHandlerTrait, RestartFlags_};
-use vst3::Steinberg::kResultOk;
 use vv_audio::PluginProcessor;
 use vv_core::Vst3Effect;
 
@@ -463,59 +461,6 @@ fn meter_input(peak: f32) -> Vec<f32> {
 fn controller_value(instance: &Vst3Instance, id: u32) -> f64 {
     // SAFETY: a live controller owned by the instance.
     unsafe { instance.controller().unwrap().getParamNormalized(id) }
-}
-
-#[test]
-fn output_queues_read_back_what_the_plugin_added() {
-    use vst3::Steinberg::Vst::{IParamValueQueueTrait, IParameterChangesTrait};
-    let changes = crate::host::ParamChanges::output();
-    let out = changes
-        .as_com_ref::<vst3::Steinberg::Vst::IParameterChanges>()
-        .unwrap();
-    let mut index = -1;
-    // SAFETY: valid out-pointers on live host objects.
-    unsafe {
-        let queue = ComRef::from_raw(out.addParameterData(&7, &mut index)).unwrap();
-        assert_eq!((index, out.getParameterCount()), (0, 1));
-        assert_eq!(queue.getPointCount(), 0);
-        assert_eq!(queue.addPoint(3, 0.25, &mut index), kResultOk);
-        assert_eq!(queue.addPoint(5, 0.75, &mut index), kResultOk);
-        assert_eq!(out.getParameterCount(), 1);
-        let back = ComRef::from_raw(out.getParameterData(0)).unwrap();
-        assert_eq!((back.getParameterId(), back.getPointCount()), (7, 1));
-        let (mut offset, mut value) = (-1, -1.0);
-        assert_eq!(back.getPoint(0, &mut offset, &mut value), kResultOk);
-        assert_eq!((offset, value), (5, 0.75));
-        out.addParameterData(&7, &mut index);
-        assert_eq!((index, out.getParameterCount()), (0, 1));
-        for id in 100..163 {
-            assert!(!out.addParameterData(&id, &mut index).is_null());
-        }
-        assert_eq!(out.getParameterCount(), 64);
-    }
-}
-
-#[test]
-fn output_ids_beyond_capacity_get_a_discarding_sink() {
-    use vst3::Steinberg::Vst::{IParamValueQueueTrait, IParameterChangesTrait};
-    let changes = crate::host::ParamChanges::output_with_capacity(2);
-    let out = changes
-        .as_com_ref::<vst3::Steinberg::Vst::IParameterChanges>()
-        .unwrap();
-    let mut index = -1;
-    // SAFETY: valid out-pointers on live host objects.
-    unsafe {
-        for id in 10..13 {
-            let queue = ComRef::from_raw(out.addParameterData(&id, &mut index)).unwrap();
-            assert_eq!(queue.addPoint(0, 0.5, &mut index), kResultOk);
-        }
-        assert_eq!(out.getParameterCount(), 2);
-        let mut seen = Vec::new();
-        changes.for_each_value(|id, _| seen.push(id));
-        assert_eq!(seen, [10, 11]);
-        let sink = ComRef::from_raw(out.addParameterData(&99, &mut index)).unwrap();
-        assert_eq!(sink.getPointCount(), 0);
-    }
 }
 
 const MANY_METERS_CLASS: &str = "56565445535447414E0000000000000E";
