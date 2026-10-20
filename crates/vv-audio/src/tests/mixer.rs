@@ -808,16 +808,16 @@ fn copies_of_a_pitch_corrected_compound_without_plugins_share_the_stretch() {
 }
 
 #[test]
-fn copies_of_a_pitch_corrected_compound_with_a_plugin_stretch_apart() {
+fn copies_of_a_pitch_corrected_compound_with_a_plugin_share_the_stretch() {
     let (mut project, compound) = project_with_long_compound();
     let nested = project.media_pool[compound].compound.unwrap();
     project.timelines[nested].tracks[0].mix.effects = vec![vst3(1, b"")];
     let keys = copy_stretch_keys(&project, compound);
-    assert_ne!(keys[0], keys[1]);
+    assert_eq!(keys[0], keys[1]);
 }
 
 #[test]
-fn copies_of_a_compound_holding_a_plugin_compound_stretch_apart() {
+fn copies_of_a_compound_holding_a_plugin_compound_share_the_stretch() {
     let (mut project, inner) = project_with_long_compound();
     let inner_timeline = project.media_pool[inner].compound.unwrap();
     project.timelines[inner_timeline].tracks[0].mix.effects = vec![vst3(1, b"")];
@@ -832,7 +832,26 @@ fn copies_of_a_compound_holding_a_plugin_compound_stretch_apart() {
         folder: None,
     });
     let keys = copy_stretch_keys(&project, outer);
-    assert_ne!(keys[0], keys[1]);
+    assert_eq!(keys[0], keys[1]);
+}
+
+#[test]
+fn copies_of_a_plugin_compound_with_different_trims_stretch_apart() {
+    let (mut project, compound) = project_with_long_compound();
+    let nested = project.media_pool[compound].compound.unwrap();
+    project.timelines[nested].tracks[0].mix.effects = vec![vst3(1, b"")];
+    let copies = [2, 3].map(|offset| {
+        let mut clip = sped_up_clip(compound, Rational::new(2, 1), 2);
+        clip.pitch_correction = true;
+        clip.source_offset = clip.rate().scale_round(offset * 10);
+        clip.timeline_start = offset * 10;
+        clip
+    });
+    let tl = timeline(vec![audio_track(copies.into())]);
+    let mut source = FakeStretch::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    assert_eq!(source.keys.len(), 2);
+    assert_ne!(source.keys[0], source.keys[1]);
 }
 
 /// Its audio ends at 600: past it the stretch would be silence.
