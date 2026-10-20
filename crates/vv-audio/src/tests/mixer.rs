@@ -2495,3 +2495,59 @@ fn a_slow_release_restarts_at_the_clip_whether_or_not_a_whole_block_fits_in_the_
         assert!(worst < 1e-5, "chunk {chunk}: {worst}");
     }
 }
+
+struct CountingAlloc;
+
+thread_local! {
+    static ALLOCS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+// SAFETY: forwards to the system allocator, only counting on this thread.
+unsafe impl std::alloc::GlobalAlloc for CountingAlloc {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let _ = ALLOCS.try_with(|c| c.set(c.get() + 1));
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        unsafe { std::alloc::System.dealloc(ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new: usize) -> *mut u8 {
+        let _ = ALLOCS.try_with(|c| c.set(c.get() + 1));
+        unsafe { std::alloc::System.realloc(ptr, layout, new) }
+    }
+}
+
+#[global_allocator]
+static COUNTING: CountingAlloc = CountingAlloc;
+
+#[test]
+fn request_plugins_does_not_allocate_for_a_strip_without_plugins() {
+    let strip = ChannelStrip {
+        effects: vec![normalize(0.0), normalize(-3.0)],
+        ..Default::default()
+    };
+    let mut source = PluginSource::default();
+    let mut keys = PluginKeys::new(0, TRACK_STRIPS);
+    let before = ALLOCS.with(|c| c.get());
+    let plugins = request_plugins(&strip, None, &mut keys, &mut source, RATE);
+    assert_eq!(ALLOCS.with(|c| c.get()) - before, 0);
+    assert!(plugins.is_empty());
+}
+
+#[test]
+fn request_plugins_counts_the_plugins_after_the_stop() {
+    let strip = ChannelStrip {
+        effects: vec![vst3(7, b""), normalize(0.0), vst3(7, b"")],
+        ..Default::default()
+    };
+    let mut source = PluginSource::default();
+    let mut keys = PluginKeys::new(0, TRACK_STRIPS);
+    request_plugins(&strip, Some(2), &mut keys, &mut source, RATE);
+    let next = keys.next(&match &strip.effects[2].kind {
+        vv_core::AudioEffectKind::Vst3(plugin) => plugin.clone(),
+        _ => unreachable!(),
+    });
+    assert_eq!(next, plugin_key(0, TRACK_STRIPS, vv_core::EffectId(7), 2));
+}
