@@ -185,7 +185,9 @@ fn a_root_symlinked_to_another_root_lists_each_plugin_once() {
     json_bundle(&lib, "A.vst3", "AA");
     json_bundle(&lib.join("Vendor"), "B.vst3", "BB");
     std::os::unix::fs::symlink(&lib, root.join("lib64")).unwrap();
-    let infos = scan(&[lib.clone(), root.join("lib64")]);
+    let dirs = [lib.clone(), root.join("lib64")];
+    assert_eq!(bundles_in(&dirs).len(), 2);
+    let infos = scan(&dirs);
     assert_eq!(infos.len(), 2);
     assert!(infos.iter().all(|i| i.path.starts_with(&lib)));
 }
@@ -207,6 +209,7 @@ fn a_bundle_reached_through_two_links_is_listed_once() {
     json_bundle(&root.join("real"), "A.vst3", "AA");
     std::os::unix::fs::symlink(root.join("real"), root.join("l1")).unwrap();
     std::os::unix::fs::symlink(root.join("real/A.vst3"), root.join("A2.vst3")).unwrap();
+    assert_eq!(bundles_in(std::slice::from_ref(&root)).len(), 1);
     assert_eq!(scan(&[root]).len(), 1);
 }
 
