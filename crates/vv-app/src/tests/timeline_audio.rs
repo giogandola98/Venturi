@@ -411,3 +411,33 @@ fn a_failed_stretch_is_not_retried_every_frame() {
     }
     assert_eq!(audio.next_request_id, before);
 }
+
+fn stretch_result(mix: &Arc<MixSnapshot>) -> StretchResult {
+    StretchResult {
+        id: 0,
+        _mix: mix.clone(),
+        samples: Ok(Vec::new()),
+    }
+}
+
+#[test]
+fn a_stretch_result_without_receiver_is_leaked_not_dropped() {
+    let mix = Arc::new(MixSnapshot::empty(PROJECT_SAMPLE_RATE, 2));
+    let (tx, rx) = mpsc::channel();
+    drop(rx);
+    hand_back(&tx, stretch_result(&mix));
+    assert_eq!(
+        Arc::strong_count(&mix),
+        2,
+        "the snapshot must not be dropped"
+    );
+}
+
+#[test]
+fn a_stretch_result_with_receiver_is_delivered() {
+    let mix = Arc::new(MixSnapshot::empty(PROJECT_SAMPLE_RATE, 2));
+    let (tx, rx) = mpsc::channel();
+    hand_back(&tx, stretch_result(&mix));
+    drop(rx.try_recv().expect("delivered"));
+    assert_eq!(Arc::strong_count(&mix), 1);
+}
