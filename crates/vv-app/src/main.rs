@@ -2464,6 +2464,14 @@ impl VenturiApp {
         vv_plugin::set_scanning(true);
     }
 
+    /// Only while a scan runs: otherwise the marker is a real crash's, kept
+    /// for the next scan.
+    fn abandon_plugin_scan(&self) {
+        if self.plugin_scan_rx.is_some() {
+            vv_plugin::abandon_scan(&self.plugin_scan_marker());
+        }
+    }
+
     fn plugin_scan_marker(&self) -> PathBuf {
         self.settings_path
             .as_ref()
@@ -4038,7 +4046,7 @@ impl eframe::App for VenturiApp {
     // Quitting mid-scan is not a crash: keep the next launch from blaming the
     // bundle that is still loading.
     fn on_exit(&mut self) {
-        vv_plugin::abandon_scan(&self.plugin_scan_marker());
+        self.abandon_plugin_scan();
     }
 }
 

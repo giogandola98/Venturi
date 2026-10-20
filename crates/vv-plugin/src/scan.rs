@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -59,25 +60,47 @@ pub fn scan_with_guard(
     (infos, newly_blocked)
 }
 
-/// Markers of scans cut short by an orderly quit. The lock makes "write the
-/// marker" and "abandon" atomic, so a quitting app cannot be left with a marker
-/// written after it was removed.
-static ABANDONED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+/// A load this long at quit is a hang, not a slow plugin: it stays blamed.
+const HANG_AFTER: Duration = Duration::from_secs(30);
 
-fn lock_abandoned() -> std::sync::MutexGuard<'static, Vec<PathBuf>> {
-    ABANDONED.lock().unwrap_or_else(|e| e.into_inner())
+#[derive(Default)]
+struct ScanState {
+    abandoned: Vec<PathBuf>,
+    loading: Vec<(PathBuf, Instant)>,
+}
+
+/// One lock makes "write the marker" and "abandon" atomic, so a quitting app
+/// cannot be left with a marker written after it was removed.
+static STATE: Mutex<ScanState> = Mutex::new(ScanState {
+    abandoned: Vec::new(),
+    loading: Vec::new(),
+});
+
+fn lock_state() -> std::sync::MutexGuard<'static, ScanState> {
+    STATE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn is_abandoned(marker: &Path) -> bool {
-    lock_abandoned().iter().any(|m| m == marker)
+    lock_state().abandoned.iter().any(|m| m == marker)
 }
 
-/// For an orderly quit: the process is not crashing, so a bundle still loading
-/// must not be blamed by the next launch. A real crash never gets here.
+/// For an orderly quit while a scan runs: the process is not crashing, so a
+/// bundle still loading must not be blamed by the next launch. A real crash
+/// never gets here; a load that has hung for 30 s keeps its marker.
 pub fn abandon_scan(marker: &Path) {
-    let mut abandoned = lock_abandoned();
-    abandoned.push(marker.to_path_buf());
-    let _ = std::fs::remove_file(marker);
+    abandon_scan_at(marker, Instant::now(), HANG_AFTER);
+}
+
+fn abandon_scan_at(marker: &Path, now: Instant, hang_after: Duration) {
+    let mut state = lock_state();
+    state.abandoned.push(marker.to_path_buf());
+    let hung = state
+        .loading
+        .iter()
+        .any(|(m, since)| m == marker && now.saturating_duration_since(*since) >= hang_after);
+    if !hung {
+        let _ = std::fs::remove_file(marker);
+    }
 }
 
 /// The bundle a previous scan died in, if any; consumes the marker. The app
@@ -167,10 +190,12 @@ fn scan_bundle(bundle: &Path, marker: Option<&Path>) -> Vec<PluginInfo> {
         return infos;
     }
     if let Some(marker) = marker {
-        let abandoned = lock_abandoned();
-        if abandoned.iter().any(|m| m == marker) {
+        let mut state = lock_state();
+        if state.abandoned.iter().any(|m| m == marker) {
             return Vec::new();
         }
+        state.loading.retain(|(m, _)| m != marker);
+        state.loading.push((marker.to_path_buf(), Instant::now()));
         if let Err(e) = std::fs::write(marker, path_to_bytes(bundle)) {
             static WARNED: std::sync::Once = std::sync::Once::new();
             WARNED.call_once(|| eprintln!("VST3 scan crash marker not writable ({e}): unguarded"));
@@ -180,10 +205,12 @@ fn scan_bundle(bundle: &Path, marker: Option<&Path>) -> Vec<PluginInfo> {
     let infos = crate::module::module(bundle)
         .map(|m| m.effect_classes(bundle))
         .unwrap_or_default();
-    if let Some(marker) = marker
-        && !is_abandoned(marker)
-    {
-        let _ = std::fs::remove_file(marker);
+    if let Some(marker) = marker {
+        let mut state = lock_state();
+        state.loading.retain(|(m, _)| m != marker);
+        if !state.abandoned.iter().any(|m| m == marker) {
+            let _ = std::fs::remove_file(marker);
+        }
     }
     infos
 }

@@ -193,6 +193,31 @@ fn abandoning_one_marker_leaves_other_scans_running() {
     assert_eq!(infos.len(), 1, "{infos:?}");
 }
 
+fn loading_since(marker: &Path, since: Instant) {
+    std::fs::write(marker, b"/p/Slow.vst3").unwrap();
+    lock_state().loading.push((marker.to_path_buf(), since));
+}
+
+#[test]
+fn a_load_under_the_hang_threshold_is_cleared_at_quit_and_a_hung_one_stays_blamed() {
+    let (root, _plugins, marker) = guard_dirs("hang");
+    let hang = Duration::from_secs(30);
+    let started = Instant::now();
+    loading_since(&marker, started);
+    abandon_scan_at(&marker, started + Duration::from_secs(29), hang);
+    let short_left = marker.exists();
+
+    let hung_marker = root.join("hung.marker");
+    loading_since(&hung_marker, started);
+    abandon_scan_at(&hung_marker, started + hang, hang);
+    let hung_left = hung_marker.exists();
+    let crashed = take_crashed(&hung_marker);
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(!short_left);
+    assert!(hung_left);
+    assert_eq!(crashed, Some(PathBuf::from("/p/Slow.vst3")));
+}
+
 fn info_json(cid: &str) -> String {
     format!(
         r#"{{"Classes": [{{"CID": "{cid}", "Category": "Audio Module Class",

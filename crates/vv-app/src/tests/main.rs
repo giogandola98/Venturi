@@ -5503,3 +5503,23 @@ fn plugin_editors_are_pumped_by_logic_without_a_ui_pass() {
     assert_eq!(app.session.history.labels().count(), steps + 1);
     assert_eq!(plugin_state(&app, id), [9]);
 }
+
+#[test]
+fn a_crash_marker_survives_a_quit_when_no_scan_is_running() {
+    let dir = std::env::temp_dir().join(format!("vv-quit-marker-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = VenturiApp::default();
+    app.settings_path = Some(dir.join("settings.json"));
+    let marker = app.plugin_scan_marker();
+    std::fs::write(&marker, b"/p/Crashed.vst3").unwrap();
+    app.abandon_plugin_scan();
+    let kept = marker.exists();
+
+    let (_tx, rx) = mpsc::channel();
+    app.plugin_scan_rx = Some(rx);
+    app.abandon_plugin_scan();
+    let removed = !marker.exists();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(kept);
+    assert!(removed);
+}
