@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::host::MemStream;
-use vst3::Steinberg::Vst::IComponentHandlerTrait;
+use vst3::Steinberg::Vst::{IComponentHandlerTrait, RestartFlags_};
 use vst3::Steinberg::kResultOk;
 use vst3::{ComPtr, ComRef, ComWrapper};
 use vv_audio::PluginProcessor;
@@ -614,4 +614,56 @@ fn process_with_output_parameters_does_not_allocate() {
         instance.process(&mut audio, 2);
     }
     assert_eq!(ALLOCS.with(|c| c.get()) - before, 0);
+}
+
+const LATENCY_CLASS: &str = "56565445535447414E00000000000008";
+
+fn latency_fixture(state: Vec<u8>) -> Arc<Vst3Instance> {
+    Vst3Instance::new(
+        &fixture_bundle(),
+        &effect_of(LATENCY_CLASS, state),
+        48_000,
+        ProcessMode::Realtime,
+    )
+    .expect("latency fixture instance")
+}
+
+fn request_restart(instance: &Vst3Instance, flags: i32) {
+    // SAFETY: the handler is a live COM object owned by the instance.
+    unsafe { instance.handler.restartComponent(flags) };
+}
+
+#[test]
+fn a_latency_restart_reactivates_the_plugin_and_rereads_its_latency() {
+    let instance = latency_fixture(Vec::new());
+    assert_eq!(instance.latency(), 0);
+    request_restart(&instance, RestartFlags_::kLatencyChanged);
+    instance.service_restart();
+    assert_eq!(instance.latency(), 64);
+}
+
+#[test]
+fn servicing_without_a_request_does_not_reactivate() {
+    let instance = latency_fixture(Vec::new());
+    instance.service_restart();
+    assert_eq!(instance.latency(), 0);
+    request_restart(&instance, RestartFlags_::kLatencyChanged);
+    instance.service_restart();
+    instance.service_restart();
+    assert_eq!(instance.latency(), 64);
+}
+
+#[test]
+fn a_reload_restart_keeps_the_state_and_keeps_processing() {
+    let instance = latency_fixture(0.25f32.to_le_bytes().to_vec());
+    request_restart(
+        &instance,
+        RestartFlags_::kReloadComponent | RestartFlags_::kIoChanged,
+    );
+    instance.service_restart();
+    let (component, _) = instance.get_state();
+    assert_eq!(component.bytes(), 0.25f32.to_le_bytes());
+    assert_eq!(instance.latency(), 64);
+    let input = ramp(256, 2);
+    assert_scaled(&run(&instance, &input), &input, 0.5);
 }

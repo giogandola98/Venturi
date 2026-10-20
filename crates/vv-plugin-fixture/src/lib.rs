@@ -2,7 +2,7 @@
 //! the trait impls are unsafe by nature; nothing here may panic across it.
 use std::ffi::{CString, c_char, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use vst3::Steinberg::Vst::*;
 use vst3::Steinberg::*;
@@ -37,6 +37,11 @@ const COUNTING_CID: TUID = [
 const METER_CID: TUID = [
     0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 7,
 ];
+// Single component that reports a latency of 64 only once it was reactivated.
+const LATENCY_CID: TUID = [
+    0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 8,
+];
+const REACTIVATED_LATENCY: u32 = 64;
 const DEFAULT_NORMALIZED: f64 = 0.5;
 
 fn copy_cstring(src: &str, dst: &mut [c_char]) {
@@ -74,6 +79,8 @@ struct Gain {
     set_processing_result: tresult,
     counts_params: bool,
     writes_meter: bool,
+    latency_on_reactivation: bool,
+    activations: AtomicU32,
     // Output parameter 1 as the controller last received it.
     meter: AtomicU64,
     seen: [AtomicU64; 2],
@@ -87,6 +94,8 @@ impl Gain {
             set_processing_result: kResultOk,
             counts_params: false,
             writes_meter: false,
+            latency_on_reactivation: false,
+            activations: AtomicU32::new(0),
             meter: AtomicU64::new(0),
             seen: [AtomicU64::new(0), AtomicU64::new(0)],
         }
@@ -213,7 +222,10 @@ impl IComponentTrait for Gain {
         kResultOk
     }
 
-    unsafe fn setActive(&self, _state: TBool) -> tresult {
+    unsafe fn setActive(&self, state: TBool) -> tresult {
+        if state != 0 {
+            self.activations.fetch_add(1, Ordering::Relaxed);
+        }
         kResultOk
     }
 
@@ -282,7 +294,11 @@ impl IAudioProcessorTrait for Gain {
     }
 
     unsafe fn getLatencySamples(&self) -> u32 {
-        0
+        if self.latency_on_reactivation && self.activations.load(Ordering::Relaxed) >= 2 {
+            REACTIVATED_LATENCY
+        } else {
+            0
+        }
     }
 
     unsafe fn setupProcessing(&self, _setup: *mut ProcessSetup) -> tresult {
@@ -500,6 +516,10 @@ impl IPluginFactoryTrait for Factory {
             },
             METER_CID => Gain {
                 writes_meter: true,
+                ..Gain::new(None)
+            },
+            LATENCY_CID => Gain {
+                latency_on_reactivation: true,
                 ..Gain::new(None)
             },
             SPLIT_CID => Gain::new(Some(SPLIT_CONTROLLER_CID)),
