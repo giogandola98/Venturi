@@ -5432,3 +5432,65 @@ fn a_scan_result_updates_installed_and_the_cache_together() {
     assert!(settings.vst3_scanned);
     vv_plugin::set_installed(Vec::new());
 }
+
+#[derive(Default)]
+struct GestureOnce(std::sync::Mutex<Option<(vv_core::PluginState, vv_core::PluginState)>>);
+
+impl vv_audio::PluginProcessor for GestureOnce {
+    fn process(&self, _: &mut [f32], _: usize) {}
+    fn reset(&self) {}
+    fn latency(&self) -> u32 {
+        0
+    }
+}
+
+impl vv_plugin::HostedPlugin for GestureOnce {
+    fn set_state(&self, _: &vv_core::Vst3Effect) {}
+    fn state_hash(&self) -> u64 {
+        0
+    }
+    fn mark_state(&self, _: u64) {}
+    fn service_restart(&self) {}
+    fn take_gesture(&self) -> Option<(vv_core::PluginState, vv_core::PluginState)> {
+        self.0.lock().unwrap().take()
+    }
+}
+
+// A hidden main window gets `App::logic` only, never `App::ui`.
+#[test]
+fn plugin_editors_are_pumped_by_logic_without_a_ui_pass() {
+    let mut app = VenturiApp::default();
+    let id = app.ensure_timeline();
+    let effect = vv_core::Vst3Effect {
+        id: vv_core::EffectId(7),
+        class_id: "ab".into(),
+        name: "Comp".into(),
+        vendor: String::new(),
+        version: String::new(),
+        component_state: vv_core::PluginState::new(vec![1]),
+        controller_state: vv_core::PluginState::new(Vec::new()),
+    };
+    app.session.project.timelines[id].master.effects = vec![vv_core::AudioEffect::new(
+        vv_core::AudioEffectKind::Vst3(effect),
+    )];
+    let gesture = GestureOnce::default();
+    *gesture.0.lock().unwrap() = Some((
+        vv_core::PluginState::new(vec![9]),
+        vv_core::PluginState::new(Vec::new()),
+    ));
+    let key = (id, vv_core::MixerChannel::Master, vv_core::EffectId(7), 0);
+    app.plugin_editors
+        .defer_gesture(key, std::sync::Arc::new(gesture));
+
+    let steps = app.session.history.labels().count();
+    let ctx = egui::Context::default();
+    eframe::App::logic(&mut app, &ctx, &mut eframe::Frame::_new_kittest());
+
+    assert_eq!(app.session.history.labels().count(), steps + 1);
+    let vv_core::AudioEffectKind::Vst3(v) =
+        &app.session.project.timelines[id].master.effects[0].kind
+    else {
+        panic!("not a plugin");
+    };
+    assert_eq!(v.component_state.bytes(), [9]);
+}

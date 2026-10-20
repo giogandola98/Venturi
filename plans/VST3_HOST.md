@@ -133,7 +133,9 @@ All `unsafe` and all COM code live here.
 - **Realtime safety is checked, not assumed.** The no-allocation claim is a
   test; a `process` that finds the plugin busy passes the audio through.
 - **Editors are event-driven.** A periodic repaint kept the app at a
-  constant CPU cost while a plugin window was open.
+  constant CPU cost while a plugin window was open. They are pumped from
+  `App::logic`, not `App::ui`: eframe runs only `logic` while the main
+  window is minimized, occluded or on another Space.
 
 ## 4. Known limits
 
