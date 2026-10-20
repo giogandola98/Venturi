@@ -18,13 +18,14 @@ pub fn set_installed(list: Vec<PluginInfo>) {
     *INSTALLED.lock().unwrap_or_else(|e| e.into_inner()) = Some(list.into());
 }
 
-/// Whether two scans found the same plugins (order aside): a rescan then
-/// has nothing to rebuild.
+/// Whether two scans found the same plugins, names and vendors included
+/// (order aside): a rescan then has nothing to publish.
 pub fn same_plugins(a: &[PluginInfo], b: &[PluginInfo]) -> bool {
-    fn keys(list: &[PluginInfo]) -> Vec<(&String, &PathBuf, &String)> {
+    type Key<'a> = (&'a String, &'a PathBuf, &'a String, &'a String, &'a String);
+    fn keys(list: &[PluginInfo]) -> Vec<Key<'_>> {
         let mut keys: Vec<_> = list
             .iter()
-            .map(|i| (&i.class_id, &i.path, &i.version))
+            .map(|i| (&i.class_id, &i.path, &i.version, &i.name, &i.vendor))
             .collect();
         keys.sort();
         keys
