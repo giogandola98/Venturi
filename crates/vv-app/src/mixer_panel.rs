@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use vv_audio::StripKeys;
 use vv_audio::dynamics::BandActivity;
 use vv_audio::mixer::{BandMeter, MixMeters, StereoPeak, db_to_linear};
 use vv_core::{
@@ -172,6 +173,7 @@ pub(crate) fn show_mixer(
                 .map(|strip| strip.effects.len())
                 .max()
                 .unwrap_or(0);
+            let keys = vv_audio::plugin_keys_in(0, timeline);
             let mut edits: Vec<(StripEdit, MixerChannel)> = Vec::new();
             egui::ScrollArea::horizontal().show(ui, |ui| {
                 ui.horizontal_top(|ui| {
@@ -182,7 +184,7 @@ pub(crate) fn show_mixer(
                         let flags = Some((track.solo, track.muted));
                         let edit = strip(
                             ui,
-                            timeline,
+                            &keys,
                             channel,
                             &timeline.track_label(index),
                             &track.mix,
@@ -197,7 +199,7 @@ pub(crate) fn show_mixer(
                     falling |= level.iter().any(|l| *l > 0.001);
                     let edit = strip(
                         ui,
-                        timeline,
+                        &keys,
                         MixerChannel::Master,
                         &t!("mixer.master"),
                         &timeline.master,
@@ -349,6 +351,7 @@ pub(crate) fn channel_strip(timeline: &Timeline, channel: MixerChannel) -> Optio
 pub(crate) struct Vst3View<'a> {
     pub(crate) installed: &'a [PluginInfo],
     pub(crate) scanning: bool,
+    pub(crate) known: &'a dyn Fn(&Vst3Effect) -> bool,
     pub(crate) latency_ms: &'a dyn Fn(u64) -> Option<f32>,
     pub(crate) failed: &'a dyn Fn(u64) -> bool,
 }
@@ -589,7 +592,7 @@ impl StripEdit {
 /// `flags` are solo and mute, only for the tracks.
 fn strip(
     ui: &mut egui::Ui,
-    timeline: &Timeline,
+    keys: &StripKeys,
     channel: MixerChannel,
     label: &str,
     mix: &ChannelStrip,
@@ -608,7 +611,7 @@ fn strip(
             ui.push_id(channel, |ui| {
                 effects(
                     ui,
-                    timeline,
+                    keys,
                     channel,
                     &mix.effects,
                     effect_slots,
@@ -673,7 +676,7 @@ struct EffectDrag {
 /// effects are dragged to reorder them within the chain.
 fn effects(
     ui: &mut egui::Ui,
-    timeline: &Timeline,
+    keys: &StripKeys,
     channel: MixerChannel,
     effects: &[AudioEffect],
     slots: usize,
@@ -688,8 +691,8 @@ fn effects(
         let mut name = effect_name(&effect.kind);
         let mut hover = name.clone();
         if let AudioEffectKind::Vst3(plugin) = &effect.kind {
-            let key = plugin_key_of(timeline, channel, index);
-            let missing = !vst3.installed.iter().any(|i| i.class_id == plugin.class_id);
+            let key = keys.get(channel, index).unwrap_or(0);
+            let missing = !(vst3.known)(plugin);
             let badge = vst3_badge(missing, !missing && (vst3.failed)(key));
             if let Some(badge) = badge {
                 name.insert_str(0, "! ");

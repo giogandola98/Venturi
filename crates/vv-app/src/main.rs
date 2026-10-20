@@ -4518,6 +4518,14 @@ impl VenturiApp {
                 &mixer_panel::Vst3View {
                     installed: &installed,
                     scanning: self.plugin_scan_rx.is_some(),
+                    known: &|effect| {
+                        self.timeline_audio
+                            .as_ref()
+                            .and_then(|audio| audio.plugin_known(effect))
+                            .unwrap_or_else(|| {
+                                installed.iter().any(|i| i.class_id == effect.class_id)
+                            })
+                    },
                     latency_ms: &|key| {
                         self.timeline_audio
                             .as_ref()

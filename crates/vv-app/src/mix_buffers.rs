@@ -620,6 +620,11 @@ impl MixBufferCache {
         self.plugins.as_ref()?.instance(key).map(|p| p.latency())
     }
 
+    /// Whether the pool has scanned `effect`'s plugin; `None` without a pool.
+    pub fn plugin_known(&self, effect: &vv_core::Vst3Effect) -> Option<bool> {
+        self.plugins.as_ref().map(|p| p.knows(effect))
+    }
+
     pub fn plugin_failed(&self, key: u64) -> bool {
         self.plugins.as_ref().is_some_and(|p| p.failed(key))
     }
