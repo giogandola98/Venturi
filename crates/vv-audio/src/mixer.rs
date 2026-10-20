@@ -1333,12 +1333,11 @@ pub fn plugin_key_in(
     index: usize,
 ) -> Option<u64> {
     let (group, before, strip) = match channel {
-        MixerChannel::Track(i) => (
-            TRACK_STRIPS,
-            &timeline.tracks[..i],
-            &timeline.tracks.get(i)?.mix,
-        ),
-        MixerChannel::Master => (MASTER_STRIPS, &timeline.tracks[..0], &timeline.master),
+        MixerChannel::Track(i) => {
+            let mix = &timeline.tracks.get(i)?.mix;
+            (TRACK_STRIPS, &timeline.tracks[..i], mix)
+        }
+        MixerChannel::Master => (MASTER_STRIPS, &[][..], &timeline.master),
     };
     let AudioEffectKind::Vst3(this) = &strip.effects.get(index)?.kind else {
         return None;
