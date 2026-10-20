@@ -2387,3 +2387,56 @@ fn a_plugin_track_keeps_running_through_the_gap() {
         5000_usize.div_ceil(MIX_BLOCK_FRAMES)
     );
 }
+
+fn gapped_at(second: i64, effects: Vec<vv_core::AudioEffect>) -> (Project, Timeline) {
+    let (project, a, _) = project();
+    let mut track = audio_track(vec![clip_at(a, 0, 0, 5), clip_at(a, second, 0, 5)]);
+    track.mix.effects = effects;
+    (project, timeline(vec![track]))
+}
+
+#[test]
+fn a_ringing_low_boost_is_not_cut_when_the_gap_passes_the_settle_time() {
+    let mut eq = vv_core::Equalizer::DEFAULT;
+    eq.bands[2] = vv_core::EqBand::new(vv_core::EqShape::Peak, 20.0, true);
+    eq.bands[2].gain_db = 24.0;
+    eq.bands[2].q = 18.0;
+    let effects = vec![vv_core::AudioEffect::new(
+        vv_core::AudioEffectKind::Equalizer(eq),
+    )];
+    let (project, tl) = gapped_at(40, effects);
+    let snap = MixSnapshot::from_timeline(&project, &tl, BUILTIN_RATE, 1, &mut buffers);
+    let mut out = vec![9.0; 192_000];
+    mix_range_from(&snap, &mut MixState::new(&snap), 0, &mut out);
+    let gap = &out[24_000..];
+    let loudest = gap.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    assert!(loudest > 0.01, "the tail rings: {loudest}");
+    let jump = gap
+        .windows(2)
+        .fold(0.0f32, |m, w| m.max((w[1] - w[0]).abs()));
+    assert!(jump < loudest * 0.05, "no thump: {jump} of {loudest}");
+}
+
+#[test]
+fn a_gap_near_the_settle_time_renders_the_same_whole_or_chunked() {
+    for second in [25, 26, 30] {
+        let (project, tl) = gapped_at(second, builtin_chain());
+        let snap = MixSnapshot::from_timeline(&project, &tl, BUILTIN_RATE, 1, &mut buffers);
+        let frames = (second as usize + 5) * 4800;
+        let mut whole = vec![9.0; frames];
+        mix_range_from(&snap, &mut MixState::new(&snap), 0, &mut whole);
+        let mut state = MixState::new(&snap);
+        let mut chunked = vec![9.0; frames];
+        let mut at = 0;
+        for chunk in chunked.chunks_mut(7001) {
+            mix_range_from(&snap, &mut state, at, chunk);
+            at += chunk.len() as u64;
+        }
+        let worst = whole
+            .iter()
+            .zip(&chunked)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max);
+        assert!(worst < 1e-5, "{second}: {worst}");
+    }
+}
