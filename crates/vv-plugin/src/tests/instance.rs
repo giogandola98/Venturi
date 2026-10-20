@@ -103,8 +103,9 @@ fn interleave_maps_mono_and_surround() {
 
     let surround = ramp(3, 6);
     deinterleave(&surround, 6, &mut planar, 3);
-    assert_eq!(planar[0][1], surround[6]);
-    assert_eq!(planar[1][1], surround[7]);
+    let frame = &surround[6..12];
+    assert_eq!(planar[0][1], (frame[0] + frame[2] + frame[4]) / 3.0);
+    assert_eq!(planar[1][1], (frame[1] + frame[3] + frame[5]) / 3.0);
     planar[0][..3].fill(-1.0);
     planar[1][..3].fill(-2.0);
     let mut out = surround.clone();
@@ -259,8 +260,11 @@ fn mono_and_surround_run_through_the_plugin() {
     let mut out = surround.clone();
     instance.process(&mut out, 6);
     for (o, i) in out.chunks(6).zip(surround.chunks(6)) {
-        assert!((o[0] - i[0] * 0.5).abs() < 1e-6);
-        assert_eq!(o[2..], i[2..]);
+        let left = (i[0] + i[2] + i[4]) / 3.0;
+        let right = (i[1] + i[3] + i[5]) / 3.0;
+        assert!((o[0] - left * 0.5).abs() < 1e-6);
+        assert!((o[1] - right * 0.5).abs() < 1e-6);
+        assert_eq!(o[2..], i[2..], "PluginEffect re-derives these");
     }
 }
 

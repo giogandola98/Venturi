@@ -174,10 +174,9 @@ All `unsafe` and all COM code live here.
    both deadlock.
 10. A module whose load fails after `dlopen` stays cached as failed until
     restart: `dlclose` is never called.
-11. Plugins are stereo: on a device with more than two channels only L/R go
-    through the plugin and the other channels pass dry; on a mono device the
-    mean of the plugin's two outputs is played. The export is stereo, so a
-    surround clip sounds different in the preview.
+11. Plugins are stereo: surround is folded to stereo before the plugin and
+    re-upmixed after it, so discrete imaging is lost on plugin strips. A
+    mono device plays the mean of the plugin's two outputs.
 12. A headless MCP sees plugins only from the settings cache, so none until
     one GUI scan or rescan has run.
 13. An unchanged rescan clears failures in the live pool only; worker pools
