@@ -1526,42 +1526,43 @@ fn request_plugins(
     source: &mut impl AudioSource,
     sample_rate: u32,
 ) -> Vec<Option<PluginInsert>> {
-    let keys: Vec<Option<u64>> = strip
+    if !strip
         .effects
         .iter()
-        .map(|effect| match &effect.kind {
-            AudioEffectKind::Vst3(plugin) => Some(plugin_keys.next(plugin)),
-            _ => None,
-        })
-        .collect();
-    if !keys.iter().any(Option::is_some) {
+        .any(|effect| matches!(effect.kind, AudioEffectKind::Vst3(_)))
+    {
         return Vec::new();
     }
-    strip
-        .effects
-        .iter()
-        .zip(keys)
-        .take(stop.unwrap_or(usize::MAX))
-        .map(|(effect, key)| match (&effect.kind, key) {
-            (AudioEffectKind::Vst3(plugin), Some(key)) => {
-                let build = source.plugin_build(plugin);
-                let handle = source.plugin(PluginRequest {
-                    key,
-                    effect: plugin,
-                    sample_rate,
-                    process: effect.enabled,
-                });
-                effect.enabled.then(|| PluginInsert {
-                    key,
-                    content: build.map_or(plugin.content_hash(), |b| {
-                        stable_hash((plugin.content_hash(), b))
-                    }),
-                    handle,
-                })
+    let stop = stop.unwrap_or(usize::MAX);
+    let mut plugins = Vec::with_capacity(strip.effects.len().min(stop));
+    for (i, effect) in strip.effects.iter().enumerate() {
+        let AudioEffectKind::Vst3(plugin) = &effect.kind else {
+            if i < stop {
+                plugins.push(None);
             }
-            _ => None,
-        })
-        .collect()
+            continue;
+        };
+        // Past the stop the key is still taken, to keep the occurrences.
+        let key = plugin_keys.next(plugin);
+        if i >= stop {
+            continue;
+        }
+        let build = source.plugin_build(plugin);
+        let handle = source.plugin(PluginRequest {
+            key,
+            effect: plugin,
+            sample_rate,
+            process: effect.enabled,
+        });
+        plugins.push(effect.enabled.then(|| PluginInsert {
+            key,
+            content: build.map_or(plugin.content_hash(), |b| {
+                stable_hash((plugin.content_hash(), b))
+            }),
+            handle,
+        }));
+    }
+    plugins
 }
 
 /// The keys of the plugins in `inserts` that process but were not made.
