@@ -423,7 +423,7 @@ struct VenturiApp {
     /// A clipboard read for a paste in flight, see `request_clipboard_image`.
     clipboard_image_rx: Option<mpsc::Receiver<Option<paste_image::ClipboardImage>>>,
     /// A VST3 scan in flight, see `start_plugin_scan`.
-    plugin_scan_rx: Option<mpsc::Receiver<(Vec<vv_plugin::PluginInfo>, Vec<PathBuf>)>>,
+    plugin_scan_rx: Option<mpsc::Receiver<Vec<vv_plugin::PluginInfo>>>,
     paste_image_dialog: Option<paste_image::PasteImageDialog>,
     paste_image_needs_save: bool,
     paste_key_watch: paste_image::PasteKeyWatch,
@@ -2484,7 +2484,7 @@ impl VenturiApp {
         let Some(rx) = &self.plugin_scan_rx else {
             return;
         };
-        let (list, newly_blocked) = match rx.try_recv() {
+        let list = match rx.try_recv() {
             Ok(result) => result,
             Err(mpsc::TryRecvError::Empty) => return,
             Err(mpsc::TryRecvError::Disconnected) => {
@@ -2496,9 +2496,6 @@ impl VenturiApp {
         self.plugin_scan_rx = None;
         let unchanged = apply_scan_result(&mut self.settings, list);
         vv_plugin::set_scanning(false);
-        self.settings
-            .vst3_blocklist
-            .extend(newly_blocked.into_iter().map(settings::Blocked::new));
         let group_open = self.undo_group_open();
         if let Some(audio) = &mut self.timeline_audio {
             if unchanged {

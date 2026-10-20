@@ -36,30 +36,20 @@ pub fn scan(dirs: &[PathBuf]) -> Vec<PluginInfo> {
 }
 
 /// Like `scan`, but a bundle that has to be loaded is first named in `marker`,
-/// so a crash inside it is blamed on the next run: that bundle is returned in
-/// the second list, to be persisted by the caller and passed back as `blocklist`.
-pub fn scan_with_guard(
-    dirs: &[PathBuf],
-    marker: &Path,
-    blocklist: &[PathBuf],
-) -> (Vec<PluginInfo>, Vec<PathBuf>) {
-    let newly_blocked: Vec<PathBuf> = take_crashed(marker)
-        .filter(|c| !blocklist.contains(c))
-        .into_iter()
-        .collect();
-    let blocked =
-        |b: &Path| blocklist.contains(&b.to_path_buf()) || newly_blocked.iter().any(|n| n == b);
+/// so a crash inside it is blamed on the next run. The caller consumes a
+/// leftover marker with `take_crashed` and passes the result in `blocklist`.
+pub fn scan_with_guard(dirs: &[PathBuf], marker: &Path, blocklist: &[PathBuf]) -> Vec<PluginInfo> {
     let infos = unique_classes(
         bundles_in(dirs)
             .iter()
-            .filter(|b| !blocked(b))
+            .filter(|b| !blocklist.contains(b))
             .take_while(|_| !is_abandoned(marker))
             .flat_map(|b| scan_bundle(b, Some(marker))),
     );
     if !is_abandoned(marker) {
         let _ = std::fs::remove_file(marker);
     }
-    (infos, newly_blocked)
+    infos
 }
 
 /// A load this long at quit is a hang, not a slow plugin: it stays blamed.
