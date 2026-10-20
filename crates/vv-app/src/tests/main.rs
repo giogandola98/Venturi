@@ -5379,3 +5379,29 @@ fn a_library_asset_previews_without_joining_the_project_until_dragged() {
     assert_eq!(app.import_library_asset(&id), first);
     assert_eq!(app.session.project.media_pool.len(), 1);
 }
+
+#[test]
+fn headless_startup_seeds_the_installed_list_from_the_cached_settings() {
+    let plugin = vv_plugin::PluginInfo {
+        class_id: "AB".into(),
+        name: "Cached".into(),
+        vendor: "V".into(),
+        version: "1".into(),
+        path: PathBuf::from("/p/cached.vst3"),
+    };
+    let path = std::env::temp_dir()
+        .join(format!("vv-headless-seed-{}", std::process::id()))
+        .join("settings.json");
+    let settings = settings::Settings {
+        vst3_plugins: vec![plugin.clone()],
+        vst3_scanned: true,
+        ..Default::default()
+    };
+    settings.save(&path).unwrap();
+    seed_installed_from_settings(Some(&path));
+    assert_eq!(&*vv_plugin::installed(), &[plugin]);
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    seed_installed_from_settings(Some(&path));
+    assert!(vv_plugin::installed().is_empty());
+}
