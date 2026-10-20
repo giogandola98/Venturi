@@ -140,9 +140,10 @@ All `unsafe` and all COM code live here.
 - Only VST3. CLAP, LV2 and AU are not loaded.
 - Fast playback (2x-8x) leaves the plugins out, as an instance takes one
   caller at a time and the audio callback owns it. The Normalize gains
-  measured through a plugin are left out with it (in a snapshot that has
-  one), so a window is neither louder nor clipped; the rest of the chain
-  (EQ, compressor) still runs.
+  measured through a plugin are left out with it: from the first plugin
+  of a strip on (the whole track if a compound clip on it has one, the
+  whole master if any track does), so a window is neither louder nor
+  clipped. Other gains and the EQ and compressor still run.
 - Plugins run in the Venturi process: a crashing plugin takes the app down.
 
 ## 5. What's left
