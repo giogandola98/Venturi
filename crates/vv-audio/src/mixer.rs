@@ -1883,10 +1883,8 @@ fn mix_into(
                 } else {
                     !idle.settled && !idle.ringing && after_settle(block_time)
                 };
-                if restart {
-                    if let Some(chain) = state.tracks.get_mut(*track) {
-                        chain.iter_mut().flatten().for_each(|p| p.reset());
-                    }
+                if let (true, Some(chain)) = (restart, state.tracks.get_mut(*track)) {
+                    chain.iter_mut().flatten().for_each(|p| p.reset());
                 }
                 let idle = &mut state.idle[*track];
                 idle.settled = !plays && (idle.settled || restart);
