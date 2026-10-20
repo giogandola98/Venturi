@@ -204,16 +204,9 @@ fn timeline_audio_levels_wait_for_the_plugin_scan() {
     let timeline = timeline_from(&mut session, &media);
     insert(&mut session, &timeline, &media, 0);
     let id = ids::timeline_id(&session.project, &timeline).unwrap();
-    let mut effect =
-        vv_core::AudioEffect::new(vv_core::AudioEffectKind::Vst3(vv_core::Vst3Effect {
-            id: vv_core::EffectId::fresh(),
-            class_id: "0123456789ABCDEF0123456789ABCDEF".into(),
-            name: "P".into(),
-            vendor: "V".into(),
-            version: "1".into(),
-            component_state: Default::default(),
-            controller_state: Default::default(),
-        }));
+    let mut effect = vv_core::AudioEffect::new(vv_core::AudioEffectKind::Vst3(
+        vv_plugin::testing::fixture_effect_of("0123456789ABCDEF0123456789ABCDEF", &[]),
+    ));
     effect.enabled = true;
     session.project.timelines[id].master.effects.push(effect);
     let fps = session.project.timelines[id].fps.as_f64().round() as i64;

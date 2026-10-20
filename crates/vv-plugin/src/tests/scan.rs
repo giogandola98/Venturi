@@ -299,3 +299,23 @@ fn a_cached_plugin_info_with_a_lowercase_id_loads_canonical() {
     let info: PluginInfo = serde_json::from_str(json).unwrap();
     assert_eq!(info.class_id, "56565445535447414E00000000000001");
 }
+
+#[test]
+fn a_scanned_plugin_becomes_a_fresh_empty_effect() {
+    let info = PluginInfo {
+        class_id: "ab12".into(),
+        name: "Comp".into(),
+        vendor: "Acme".into(),
+        version: "3".into(),
+        path: PathBuf::from("/c.vst3"),
+    };
+    let (a, b) = (info.effect(), info.effect());
+    assert_ne!(a.id, b.id);
+    assert_eq!(a.class_id, "AB12");
+    assert_eq!(
+        (a.name.as_str(), a.vendor.as_str(), a.version.as_str()),
+        ("Comp", "Acme", "3")
+    );
+    assert_eq!(a.component_state, vv_core::PluginState::default());
+    assert_eq!(a.controller_state, vv_core::PluginState::default());
+}

@@ -887,23 +887,13 @@ impl vv_plugin::HostedPlugin for Stub {
 fn listed(class_id: &str, path: &str) -> vv_plugin::PluginInfo {
     vv_plugin::PluginInfo {
         class_id: class_id.into(),
-        name: String::new(),
-        vendor: String::new(),
-        version: String::new(),
         path: path.into(),
+        ..vv_plugin::testing::fixture_info()
     }
 }
 
 fn effect_of(class_id: &str) -> vv_core::Vst3Effect {
-    vv_core::Vst3Effect {
-        id: vv_core::EffectId(1),
-        class_id: class_id.into(),
-        name: String::new(),
-        vendor: String::new(),
-        component_state: Default::default(),
-        version: String::new(),
-        controller_state: Default::default(),
-    }
+    vv_plugin::testing::fixture_effect_of(class_id, &[])
 }
 
 #[test]

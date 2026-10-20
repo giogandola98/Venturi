@@ -5,12 +5,8 @@ use super::*;
 fn plugin_effect(state: &[u8]) -> Vst3Effect {
     Vst3Effect {
         id: EffectId(7),
-        class_id: "ab".into(),
         name: "Comp".into(),
-        vendor: String::new(),
-        version: String::new(),
-        component_state: PluginState::new(state.to_vec()),
-        controller_state: PluginState::new(Vec::new()),
+        ..vv_plugin::testing::fixture_effect_of("ab", state)
     }
 }
 

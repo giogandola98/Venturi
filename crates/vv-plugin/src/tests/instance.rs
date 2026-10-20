@@ -7,7 +7,7 @@ use vv_audio::PluginProcessor;
 use vv_core::Vst3Effect;
 
 use super::*;
-use crate::testing::{fixture_bundle, fixture_effect, fixture_instance};
+use crate::testing::{fixture_bundle, fixture_effect, fixture_effect_of, fixture_instance};
 
 struct CountingAlloc;
 
@@ -121,10 +121,7 @@ fn effect(state: Vec<u8>) -> Vst3Effect {
 }
 
 fn effect_of(class_id: &str, state: Vec<u8>) -> Vst3Effect {
-    Vst3Effect {
-        class_id: class_id.into(),
-        ..fixture_effect(&state)
-    }
+    fixture_effect_of(class_id, &state)
 }
 
 fn fixture(state: Vec<u8>) -> Arc<Vst3Instance> {

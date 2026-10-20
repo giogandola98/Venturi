@@ -23,4 +23,4 @@ vv-session = { path = "../vv-session" }
 rmcp = { version = "3.4.1", features = ["client"] }
 tokio = { version = "1", features = ["macros", "rt", "io-util"] }
 vv-media = { path = "../vv-media" }
-vv-plugin = { path = "../vv-plugin" }
+vv-plugin = { path = "../vv-plugin", features = ["testing"] }

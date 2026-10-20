@@ -818,14 +818,11 @@ fn a_decode_thread_gone_without_an_end_fails_the_render() {
 
 use vv_plugin::testing::{
     FIXTURE_CLASS_ID as FIXTURE_CLASS, Passthrough, counting_pool, fixture_dir, fixture_effect,
-    fixture_info,
+    fixture_effect_of, fixture_info,
 };
 
 fn plugin_effect(class_id: &str, state: &[u8]) -> AudioEffect {
-    AudioEffect::new(AudioEffectKind::Vst3(vv_core::Vst3Effect {
-        class_id: class_id.into(),
-        ..fixture_effect(state)
-    }))
+    AudioEffect::new(AudioEffectKind::Vst3(fixture_effect_of(class_id, state)))
 }
 
 fn chirp_project(secs: u32) -> (Project, Track) {

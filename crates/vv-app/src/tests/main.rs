@@ -5385,9 +5385,8 @@ fn headless_startup_seeds_the_installed_list_from_the_cached_settings() {
     let plugin = vv_plugin::PluginInfo {
         class_id: "AB".into(),
         name: "Cached".into(),
-        vendor: "V".into(),
-        version: "1".into(),
         path: PathBuf::from("/p/cached.vst3"),
+        ..vv_plugin::testing::fixture_info()
     };
     let path = std::env::temp_dir()
         .join(format!("vv-headless-seed-{}", std::process::id()))
@@ -5410,9 +5409,8 @@ fn a_scan_result_updates_installed_and_the_cache_together() {
     let plugin = |id: &str| vv_plugin::PluginInfo {
         class_id: id.into(),
         name: id.into(),
-        vendor: "V".into(),
-        version: "1".into(),
         path: PathBuf::from(format!("/p/{id}.vst3")),
+        ..vv_plugin::testing::fixture_info()
     };
     let mut settings = settings::Settings::default();
     vv_plugin::set_installed(vec![plugin("A")]);
@@ -5463,12 +5461,8 @@ pub(crate) fn app_with_pending_gesture() -> (VenturiApp, vv_core::TimelineId) {
     let id = app.ensure_timeline();
     let effect = vv_core::Vst3Effect {
         id: vv_core::EffectId(7),
-        class_id: "ab".into(),
         name: "Comp".into(),
-        vendor: String::new(),
-        version: String::new(),
-        component_state: vv_core::PluginState::new(vec![1]),
-        controller_state: vv_core::PluginState::new(Vec::new()),
+        ..vv_plugin::testing::fixture_effect_of("ab", &[1])
     };
     app.session.project.timelines[id].master.effects = vec![vv_core::AudioEffect::new(
         vv_core::AudioEffectKind::Vst3(effect),

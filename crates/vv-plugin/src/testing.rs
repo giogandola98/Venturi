@@ -39,15 +39,18 @@ pub fn fixture_info() -> PluginInfo {
 
 /// The fixture gain with `state` as its component state (the gain is twice its first f32).
 pub fn fixture_effect(state: &[u8]) -> Vst3Effect {
-    let info = fixture_info();
     Vst3Effect {
         id: EffectId(1),
-        class_id: info.class_id,
-        name: info.name,
-        vendor: info.vendor,
-        version: info.version,
         component_state: PluginState::new(state.to_vec()),
-        controller_state: PluginState::new(Vec::new()),
+        ..fixture_info().effect()
+    }
+}
+
+/// `fixture_effect` under another class id, as written (not canonicalised).
+pub fn fixture_effect_of(class_id: &str, state: &[u8]) -> Vst3Effect {
+    Vst3Effect {
+        class_id: class_id.into(),
+        ..fixture_effect(state)
     }
 }
 

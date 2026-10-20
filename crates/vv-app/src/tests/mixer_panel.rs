@@ -74,8 +74,7 @@ fn info(class: &str, vendor: &str, name: &str) -> vv_plugin::PluginInfo {
         class_id: class.into(),
         name: name.into(),
         vendor: vendor.into(),
-        version: "1".into(),
-        path: "/p.vst3".into(),
+        ..vv_plugin::testing::fixture_info()
     }
 }
 
@@ -119,13 +118,9 @@ fn a_vst3_row_is_badged_when_missing_or_failed_to_load() {
 
 fn plugin(id: u64) -> AudioEffect {
     AudioEffect::new(AudioEffectKind::Vst3(Vst3Effect {
-        id: EffectId(id),
-        class_id: "00".repeat(16),
+        id: vv_core::EffectId(id),
         name: "Fake".into(),
-        vendor: String::new(),
-        version: "1".into(),
-        component_state: PluginState::default(),
-        controller_state: PluginState::default(),
+        ..vv_plugin::testing::fixture_effect_of(&"00".repeat(16), &[])
     }))
 }
 
