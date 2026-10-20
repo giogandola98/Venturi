@@ -19,6 +19,10 @@ pub trait HostedPlugin: vv_audio::PluginProcessor {
     fn into_vst3(self: Arc<Self>) -> Option<Arc<Vst3Instance>> {
         None
     }
+    /// The bundle it was made from; `None` for a stand-in.
+    fn bundle(&self) -> Option<&Path> {
+        None
+    }
     /// Acts on a restart the plugin asked for; called every pass on the UI thread.
     fn service_restart(&self) {}
     /// The full deactivate/activate cycle: clears what `reset` leaves, such
@@ -149,7 +153,11 @@ impl Instances {
                 return None;
             }
         }
-        let held = self.held.get(&request.key).cloned();
+        let held = self
+            .held
+            .get(&request.key)
+            .filter(|h| h.bundle().is_none_or(|b| b == path))
+            .cloned();
         let Some(instance) =
             held.or_else(|| (self.make)(&path, request.effect, request.sample_rate))
         else {
@@ -256,6 +264,20 @@ impl Instances {
             }
             SlotState::Failed { .. } => false,
         });
+        // A held instance of a dropped slot or of a moved class must not be
+        // adopted again: it runs the old bundle's code.
+        let mut extra: Vec<Arc<dyn HostedPlugin>> = Vec::new();
+        self.held.retain(|_, h| {
+            let listed = dropped.iter().any(|d| Arc::ptr_eq(d, h));
+            let moved = h
+                .bundle()
+                .is_some_and(|b| !known.values().any(|i| i.path == b));
+            if moved && !listed {
+                extra.push(h.clone());
+            }
+            !(listed || moved)
+        });
+        dropped.extend(extra);
         dropped
     }
 
