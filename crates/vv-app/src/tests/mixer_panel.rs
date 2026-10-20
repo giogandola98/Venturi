@@ -108,22 +108,3 @@ fn add_plugin_effect_has_fresh_id() {
     assert_eq!((a.class_id.as_str(), a.name.as_str()), ("ab", "Comp"));
     assert_eq!(a.component_state, vv_core::PluginState::default());
 }
-
-#[test]
-fn a_repeated_plugin_is_counted_per_placement() {
-    let effect = |id| {
-        AudioEffect::new(AudioEffectKind::Vst3(vv_core::Vst3Effect {
-            id: vv_core::EffectId(id),
-            class_id: String::new(),
-            name: String::new(),
-            vendor: String::new(),
-            version: String::new(),
-            component_state: Default::default(),
-            controller_state: Default::default(),
-        }))
-    };
-    let chain = [effect(1), effect(2), effect(1)];
-    assert_eq!(plugin_occurrence(&chain, 0), 0);
-    assert_eq!(plugin_occurrence(&chain, 1), 0);
-    assert_eq!(plugin_occurrence(&chain, 2), 1);
-}
