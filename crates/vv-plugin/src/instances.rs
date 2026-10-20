@@ -110,6 +110,10 @@ impl Instances {
         if !request.process {
             if let Some(slot) = self.slots.get_mut(&request.key) {
                 slot.used_this_pass = true;
+                // Its tails are from before the bypass.
+                if let SlotState::Ready { stale, .. } = &mut slot.state {
+                    *stale = true;
+                }
             }
             return None;
         }

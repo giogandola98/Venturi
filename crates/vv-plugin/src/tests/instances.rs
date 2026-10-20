@@ -315,6 +315,43 @@ fn a_bypassed_request_keeps_the_instance_alive_without_processing_it() {
 }
 
 #[test]
+fn a_re_enabled_instance_is_reactivated_once_to_clear_its_tails() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = pool(&counts);
+    let e = effect(CLASS, &[1]);
+    pool.begin_pass();
+    pool.get(request(1, &e)).unwrap();
+    pool.sweep();
+    pool.begin_pass();
+    pool.get(bypassed(1, &e));
+    pool.sweep();
+    assert_eq!(counts.reactivated.load(Ordering::SeqCst), 0);
+    for _ in 0..3 {
+        pool.begin_pass();
+        pool.get(request(1, &e)).unwrap();
+        pool.sweep();
+    }
+    assert_eq!(counts.reactivated.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_bypassed_request_keeps_a_failed_slot_without_retrying() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = failing_pool(&counts);
+    let e = effect(CLASS, &[1]);
+    pool.begin_pass();
+    assert!(pool.get(request(1, &e)).is_none());
+    pool.sweep();
+    for _ in 0..3 {
+        pool.begin_pass();
+        assert!(pool.get(bypassed(1, &e)).is_none());
+        pool.sweep();
+    }
+    assert!(pool.failed(1));
+    assert_eq!(counts.made.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn a_bypassed_request_never_makes_an_instance() {
     let counts = Arc::new(Counts::default());
     let mut pool = pool(&counts);

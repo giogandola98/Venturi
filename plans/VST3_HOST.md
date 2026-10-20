@@ -145,6 +145,9 @@ All `unsafe` and all COM code live here.
   whole master if any track does), so a window is neither louder nor
   clipped. Other gains and the EQ and compressor still run.
 - Plugins run in the Venturi process: a crashing plugin takes the app down.
+- A bypassed plugin's instance (and its memory) stays resident while it is in
+  the timeline. Switching timelines drops and recreates the instances that
+  an open editor does not hold; their state is restored from the project.
 
 ## 5. What's left
 
