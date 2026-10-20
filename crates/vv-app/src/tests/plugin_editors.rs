@@ -518,3 +518,29 @@ fn closing_in_an_open_group_defers_and_records_after_it() {
     assert_eq!(state_of(&project, id, 1), [9]);
     assert_eq!(history.labels().count(), 1);
 }
+
+#[test]
+fn a_gesture_shares_the_half_it_did_not_change() {
+    let (mut project, id, key) = setup();
+    let before = match &project.timelines[id].master.effects[1].kind {
+        AudioEffectKind::Vst3(v) => v.clone(),
+        _ => panic!("not a plugin"),
+    };
+    let mut history = History::default();
+    record_edit(
+        &mut project,
+        &mut history,
+        key,
+        PluginState::new(before.component_state.bytes().to_vec()),
+        PluginState::new(vec![9, 9]),
+    );
+    let AudioEffectKind::Vst3(after) = &project.timelines[id].master.effects[1].kind else {
+        panic!("not a plugin");
+    };
+    assert_eq!(after.controller_state.bytes(), [9, 9]);
+    assert!(
+        after
+            .component_state
+            .shares_bytes_with(&before.component_state)
+    );
+}

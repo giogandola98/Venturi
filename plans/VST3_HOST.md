@@ -164,6 +164,11 @@ All `unsafe` and all COM code live here.
 - A bypassed plugin's instance (and its memory) stays resident while it is in
   the timeline. Switching timelines drops and recreates the instances that
   an open editor does not hold; their state is restored from the project.
+- The undo history has no cap (for any edit). Each recorded plugin gesture
+  keeps the half of the state it changed (component, controller), shared
+  with the live effect when unchanged, so a plugin with a multi-MB state
+  that changes on every gesture holds one more copy per step until the
+  project is closed.
 
 ## 5. What's left
 

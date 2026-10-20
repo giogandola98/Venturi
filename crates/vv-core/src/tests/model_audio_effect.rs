@@ -135,3 +135,11 @@ fn content_hash_ignores_id_name_and_vendor() {
     };
     assert_ne!(other_version.content_hash(), original.content_hash());
 }
+
+#[test]
+fn plugin_state_new_takes_the_buffer_without_copying() {
+    let bytes = vec![5u8; 1 << 16];
+    let ptr = bytes.as_ptr();
+    let state = PluginState::new(bytes);
+    assert_eq!(state.bytes().as_ptr(), ptr);
+}
