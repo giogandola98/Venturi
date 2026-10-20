@@ -990,7 +990,7 @@ fn collect_clips(
                     }
                 }
                 let nested_scope = stable_hash((scope, clip.id));
-                let (input, content) = match nested {
+                let (input, content, key_scope) = match nested {
                     Some(timeline) => (
                         StretchInput::Nested {
                             timeline,
@@ -1000,6 +1000,8 @@ fn collect_clips(
                         timeline_key(project, timeline, sample_rate, depth + 1, &mut |effect| {
                             source.plugin_available(effect)
                         }),
+                        // Only plugin instances make a placement's render differ.
+                        holds_plugins(project, timeline, depth + 1).then_some(nested_scope),
                     ),
                     None => (
                         StretchInput::File {
@@ -1007,11 +1009,12 @@ fn collect_clips(
                             stream: clip.audio_stream_index,
                         },
                         stable_hash((item.content_hash, clip.audio_stream_index)),
+                        None,
                     ),
                 };
                 let key = stable_hash((
                     content,
-                    nested_scope,
+                    key_scope,
                     (frames.start, frames.end),
                     span.step.to_bits(),
                     (sample_rate, channels),
@@ -1435,6 +1438,36 @@ fn normalize_gain(target_db: f32, reading: LevelReading) -> Option<f32> {
     level
         .filter(|level| *level > 1e-6)
         .map(|level| (db_to_linear(target_db) / level).min(db_to_linear(vv_core::GAIN_DB_MAX)))
+}
+
+/// Whether `timeline`, or a compound inside it, has a plugin effect.
+fn holds_plugins(project: &Project, timeline: &Timeline, depth: u32) -> bool {
+    let strips = timeline
+        .tracks
+        .iter()
+        .map(|track| &track.mix)
+        .chain([&timeline.master]);
+    for strip in strips {
+        if strip
+            .effects
+            .iter()
+            .any(|effect| matches!(effect.kind, AudioEffectKind::Vst3(_)))
+        {
+            return true;
+        }
+    }
+    depth + 1 < vv_core::MAX_COMPOUND_DEPTH
+        && timeline.tracks.iter().flat_map(|t| &t.clips).any(|clip| {
+            let ClipSource::Media(id) = &clip.source else {
+                return false;
+            };
+            project
+                .media_pool
+                .get(*id)
+                .and_then(|item| item.compound)
+                .and_then(|id| project.timelines.get(id))
+                .is_some_and(|nested| holds_plugins(project, nested, depth + 1))
+        })
 }
 
 /// The nested timeline of compound clip `media_id`, ready to be mixed in
