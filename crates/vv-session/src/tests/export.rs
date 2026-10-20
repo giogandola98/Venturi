@@ -1367,16 +1367,9 @@ fn timeline_with_plugin(enabled: bool, audio_clip: bool) -> Timeline {
         audio.clips.push(solid_color_clip(1, 0, 10, Rgba::BLACK));
     }
     let mut timeline = timeline_with(vec![audio]);
-    let mut effect =
-        vv_core::AudioEffect::new(vv_core::AudioEffectKind::Vst3(vv_core::Vst3Effect {
-            id: vv_core::EffectId::fresh(),
-            class_id: "0123456789ABCDEF0123456789ABCDEF".into(),
-            name: "P".into(),
-            vendor: "V".into(),
-            version: "1".into(),
-            component_state: Default::default(),
-            controller_state: Default::default(),
-        }));
+    let mut effect = vv_core::AudioEffect::new(vv_core::AudioEffectKind::Vst3(
+        vv_plugin::testing::fixture_effect_of("0123456789ABCDEF0123456789ABCDEF", &[]),
+    ));
     effect.enabled = enabled;
     timeline.master.effects.push(effect);
     timeline

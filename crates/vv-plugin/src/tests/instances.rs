@@ -8,7 +8,8 @@ use vv_core::Vst3Effect;
 use super::*;
 use crate::scan;
 use crate::testing::{
-    FIXTURE_CLASS_ID, fixture_dir, fixture_effect, fixture_info, fixture_instance,
+    FIXTURE_CLASS_ID, fixture_dir, fixture_effect, fixture_effect_of, fixture_info,
+    fixture_instance,
 };
 
 const CLASS: &str = FIXTURE_CLASS_ID;
@@ -91,10 +92,7 @@ fn pool(counts: &Arc<Counts>) -> Instances {
 }
 
 fn effect(class_id: &str, state: &[u8]) -> Vst3Effect {
-    Vst3Effect {
-        class_id: class_id.into(),
-        ..fixture_effect(state)
-    }
+    fixture_effect_of(class_id, state)
 }
 
 fn request(key: u64, effect: &Vst3Effect) -> PluginRequest<'_> {

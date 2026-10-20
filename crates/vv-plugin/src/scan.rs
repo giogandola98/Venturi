@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use vv_core::canonical_class_id;
+use vv_core::{EffectId, PluginState, Vst3Effect, canonical_class_id};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PluginInfo {
@@ -14,6 +14,21 @@ pub struct PluginInfo {
     pub vendor: String,
     pub version: String,
     pub path: PathBuf,
+}
+
+impl PluginInfo {
+    /// A new effect for this plugin, with no saved state.
+    pub fn effect(&self) -> Vst3Effect {
+        Vst3Effect {
+            id: EffectId::fresh(),
+            class_id: canonical_class_id(&self.class_id),
+            name: self.name.clone(),
+            vendor: self.vendor.clone(),
+            version: self.version.clone(),
+            component_state: PluginState::default(),
+            controller_state: PluginState::default(),
+        }
+    }
 }
 
 pub fn default_dirs() -> Vec<PathBuf> {

@@ -128,7 +128,7 @@ mod macos {
     use crate::testing::fixture_bundle;
     use std::path::PathBuf;
     use vv_audio::PluginProcessor;
-    use vv_core::{EffectId, PluginState, Vst3Effect};
+    use vv_core::{PluginState, Vst3Effect};
 
     const PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -171,13 +171,8 @@ mod macos {
         let found = scan(&[bundle.parent().unwrap().to_path_buf()]);
         assert_eq!(found.len(), 1, "{found:?}");
         let effect = Vst3Effect {
-            id: EffectId(1),
-            class_id: found[0].class_id.clone(),
-            name: found[0].name.clone(),
-            vendor: found[0].vendor.clone(),
-            version: found[0].version.clone(),
             component_state: PluginState::new(0.25f32.to_le_bytes().to_vec()),
-            controller_state: PluginState::new(Vec::new()),
+            ..found[0].effect()
         };
         let instance = Vst3Instance::new(&bundle, &effect, 48_000, ProcessMode::Offline).unwrap();
         let mut audio = vec![1.0f32; 64];
