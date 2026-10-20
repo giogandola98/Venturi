@@ -2,15 +2,17 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use vv_core::{
-    AudioEffect, AudioEffectKind, CommandLabel, EffectId, History, Id, MixerChannel, PluginState,
-    Project, SetAudioEffect, TimelineId, Vst3Effect,
+    AudioEffect, AudioEffectKind, ChannelStrip, CommandLabel, EffectId, History, Id, MixerChannel,
+    PluginState, Project, SetAudioEffect, TimelineId, Vst3Effect,
 };
 use vv_plugin::{Editor, HostedPlugin};
 
 use crate::mixer_panel::{channel_strip, plugin_key_of};
 use crate::timeline_audio::TimelineAudio;
 
-type Key = (TimelineId, MixerChannel, EffectId);
+/// The last part is the occurrence among the strip's plugins with that id,
+/// counted like the mixer's placements, so duplicates stay apart.
+type Key = (TimelineId, MixerChannel, EffectId, u32);
 
 /// Keeps the editor's own instance clear of the live keys.
 const ASIDE_SALT: u64 = 0x9E37_79B9_7F4A_7C15;
@@ -59,13 +61,32 @@ fn raise_open<E>(
     }
 }
 
-fn find(project: &Project, (timeline, channel, id): Key) -> Option<(usize, &AudioEffect)> {
+fn find(
+    project: &Project,
+    (timeline, channel, id, occurrence): Key,
+) -> Option<(usize, &AudioEffect)> {
     let strip = channel_strip(project.timelines.get(timeline)?, channel)?;
     strip
         .effects
         .iter()
         .enumerate()
-        .find(|(_, e)| matches!(&e.kind, AudioEffectKind::Vst3(v) if v.id == id))
+        .filter(|(_, e)| matches!(&e.kind, AudioEffectKind::Vst3(v) if v.id == id))
+        .nth(occurrence as usize)
+}
+
+fn key_at(
+    timeline: TimelineId,
+    channel: MixerChannel,
+    strip: &ChannelStrip,
+    index: usize,
+) -> Option<Key> {
+    let id = plugin(strip.effects.get(index)?)?.id;
+    let occurrence = strip.effects[..index]
+        .iter()
+        .filter_map(plugin)
+        .filter(|v| v.id == id)
+        .count();
+    Some((timeline, channel, id, occurrence as u32))
 }
 
 fn plugin(effect: &AudioEffect) -> Option<&Vst3Effect> {
@@ -99,7 +120,7 @@ fn record_edit(
         kind: AudioEffectKind::Vst3(new),
         ..effect.clone()
     };
-    let (timeline, channel, _) = key;
+    let (timeline, channel, ..) = key;
     let label = CommandLabel::EditAudioEffect;
     let command = SetAudioEffect::new(timeline, channel, index, edited, label);
     history.do_command(project, Box::new(command));
@@ -196,7 +217,9 @@ impl PluginEditors {
         let Some(plugin) = strip.effects.get(index).and_then(plugin) else {
             return;
         };
-        let key = (timeline, channel, plugin.id);
+        let Some(key) = key_at(timeline, channel, strip, index) else {
+            return;
+        };
         if raise_open(&mut self.open, &key, Editor::is_open, Editor::raise) {
             return;
         }
