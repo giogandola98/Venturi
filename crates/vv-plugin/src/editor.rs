@@ -79,7 +79,9 @@ pub struct Editor {
     frame: ComWrapper<Frame>,
     window: platform::Window,
     resize: Resizer,
-    refused: Option<(i32, i32)>,
+    // Only Linux window managers refuse a size.
+    #[cfg(target_os = "linux")]
+    requested: Option<(i32, i32)>,
     instance: Arc<Vst3Instance>,
 }
 
@@ -89,29 +91,19 @@ struct ResizeDecision {
     notify: (i32, i32),
 }
 
-/// A window manager that keeps `window` after being asked for `constrained` must be obeyed,
-/// or its answer would trigger the same request again forever.
+/// A window manager can keep `window` instead of `constrained`; asking again would loop, and
+/// telling the plugin the rejected `window` can make it resize back. `requested` is the size
+/// asked for last, only until the next report.
 fn resize_decision(
     window: (i32, i32),
     constrained: (i32, i32),
-    refused: &mut Option<(i32, i32)>,
+    requested: &mut Option<(i32, i32)>,
 ) -> ResizeDecision {
-    if constrained == window {
-        *refused = None;
-        return ResizeDecision {
-            request: None,
-            notify: constrained,
-        };
-    }
-    if *refused == Some(window) {
-        return ResizeDecision {
-            request: None,
-            notify: window,
-        };
-    }
-    *refused = Some(window);
+    let repeat = requested.take() == Some(constrained);
+    let request = (constrained != window && !repeat).then_some(constrained);
+    *requested = request;
     ResizeDecision {
-        request: Some(constrained),
+        request,
         notify: constrained,
     }
 }
@@ -182,7 +174,8 @@ impl Editor {
             frame,
             window,
             resize,
-            refused: None,
+            #[cfg(target_os = "linux")]
+            requested: None,
             instance,
         })
     }
@@ -209,7 +202,11 @@ impl Editor {
             // SAFETY: the view is live until Drop.
             unsafe {
                 self.view.checkSizeConstraint(&mut rect);
-                let decision = resize_decision((width, height), size_of(&rect), &mut self.refused);
+                #[cfg(target_os = "linux")]
+                let requested = &mut self.requested;
+                #[cfg(not(target_os = "linux"))]
+                let requested = &mut None;
+                let decision = resize_decision((width, height), size_of(&rect), requested);
                 if let Some((w, h)) = decision.request {
                     (self.resize)(w, h);
                 }
