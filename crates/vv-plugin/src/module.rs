@@ -22,12 +22,40 @@ pub(crate) struct Module {
 unsafe impl Send for Module {}
 unsafe impl Sync for Module {}
 
-type Slot<T> = Arc<Mutex<Option<T>>>;
+type Slot<T> = Arc<Mutex<Option<Result<T, String>>>>;
 type Registry<T> = Mutex<Option<HashMap<PathBuf, Slot<T>>>>;
 
 static MODULES: Registry<Arc<Module>> = Mutex::new(None);
 
-/// Loaded once per path and kept.
+pub(crate) struct LoadError {
+    msg: String,
+    // The binary was dlopened: it can never be unloaded, so a retry would re-run its initialisers.
+    after_dlopen: bool,
+}
+
+impl LoadError {
+    fn early(msg: impl Into<String>) -> Self {
+        Self {
+            msg: msg.into(),
+            after_dlopen: false,
+        }
+    }
+
+    fn loaded(msg: impl Into<String>) -> Self {
+        Self {
+            msg: msg.into(),
+            after_dlopen: true,
+        }
+    }
+}
+
+impl From<String> for LoadError {
+    fn from(msg: String) -> Self {
+        Self::early(msg)
+    }
+}
+
+/// Loaded once per path and kept; a failure after dlopen is kept too.
 pub(crate) fn module(path: &Path) -> Result<Arc<Module>, String> {
     cached(&MODULES, path, || load(path).map(Arc::new))
 }
@@ -37,7 +65,7 @@ pub(crate) fn module(path: &Path) -> Result<Arc<Module>, String> {
 fn cached<T: Clone>(
     registry: &Registry<T>,
     path: &Path,
-    load: impl FnOnce() -> Result<T, String>,
+    load: impl FnOnce() -> Result<T, LoadError>,
 ) -> Result<T, String> {
     let slot = {
         let mut guard = registry.lock().unwrap_or_else(|e| e.into_inner());
@@ -48,12 +76,21 @@ fn cached<T: Clone>(
             .clone()
     };
     let mut loaded = slot.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(m) = loaded.as_ref() {
-        return Ok(m.clone());
+    if let Some(done) = loaded.as_ref() {
+        return done.clone();
     }
-    let m = load()?;
-    *loaded = Some(m.clone());
-    Ok(m)
+    match load() {
+        Ok(m) => {
+            *loaded = Some(Ok(m.clone()));
+            Ok(m)
+        }
+        Err(e) => {
+            if e.after_dlopen {
+                *loaded = Some(Err(e.msg.clone()));
+            }
+            Err(e.msg)
+        }
+    }
 }
 
 fn stem(bundle: &Path) -> Result<&std::ffi::OsStr, String> {
@@ -93,18 +130,19 @@ fn binary_path(bundle: &Path) -> Result<PathBuf, String> {
         .join(format!("{stem}.so")))
 }
 
-fn load(bundle: &Path) -> Result<Module, String> {
+fn load(bundle: &Path) -> Result<Module, LoadError> {
     #[cfg(target_os = "macos")]
     let cf_bundle = bundle_ref(bundle)?;
     #[cfg(target_os = "macos")]
     let bin = binary_path(bundle, &cf_bundle)?;
     #[cfg(not(target_os = "macos"))]
     let bin = binary_path(bundle)?;
-    let (library, handle) = open(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let (library, handle) =
+        open(&bin).map_err(|e| LoadError::early(format!("{}: {e}", bin.display())))?;
     #[cfg(target_os = "macos")]
-    enter(&library, handle, cf_bundle)?;
+    enter(&library, handle, cf_bundle).map_err(LoadError::loaded)?;
     #[cfg(not(target_os = "macos"))]
-    enter(&library, handle)?;
+    enter(&library, handle).map_err(LoadError::loaded)?;
     // SAFETY: GetPluginFactory is the VST3 module entry point with this signature.
     let raw = unsafe {
         library
@@ -118,24 +156,27 @@ fn load(bundle: &Path) -> Result<Module, String> {
     });
     match factory {
         Ok(factory) => Ok(Module {
-            _library: ManuallyDrop::new(library),
+            _library: library,
             factory,
         }),
         Err(e) => {
             exit(&library);
-            Err(e)
+            Err(LoadError::loaded(e))
         }
     }
 }
 
 // ModuleEntry wants the raw dlopen handle, so open through the unix layer.
-fn open(bin: &Path) -> Result<(libloading::Library, *mut c_void), libloading::Error> {
+fn open(bin: &Path) -> Result<(ManuallyDrop<libloading::Library>, *mut c_void), libloading::Error> {
     use libloading::os::unix::{Library, RTLD_LOCAL, RTLD_NOW};
     // SAFETY: loading a plugin runs its initialisers; that is what hosting means.
     let lib = unsafe { Library::open(Some(bin), RTLD_NOW | RTLD_LOCAL)? };
     let handle = lib.into_raw();
     // SAFETY: handle was just produced by into_raw.
-    Ok((unsafe { Library::from_raw(handle) }.into(), handle))
+    Ok((
+        ManuallyDrop::new(unsafe { Library::from_raw(handle) }.into()),
+        handle,
+    ))
 }
 
 #[cfg(target_os = "macos")]
