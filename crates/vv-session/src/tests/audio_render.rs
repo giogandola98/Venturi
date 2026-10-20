@@ -381,6 +381,8 @@ struct BothMeasures<'c> {
     levels: Vec<(f32, f32)>,
     /// The live pool makes every plugin.
     live_plugins: bool,
+    /// ... as an `Echo` rather than a pass-through.
+    echo: bool,
 }
 
 impl AudioSource for BothMeasures<'_> {
@@ -389,14 +391,41 @@ impl AudioSource for BothMeasures<'_> {
     }
 
     fn plugin(&mut self, _: vv_audio::PluginRequest<'_>) -> Option<vv_audio::PluginHandle> {
-        self.live_plugins.then(|| Arc::new(Passthrough) as _)
+        let echo = self.echo;
+        self.live_plugins.then(|| match echo {
+            true => Arc::new(Echo::new(Default::default())) as _,
+            false => Arc::new(Passthrough) as _,
+        })
     }
 
     fn level(&mut self, analysis: LevelAnalysis) -> LevelReading {
         let by_segment = measure_level(&analysis, self.cache).unwrap();
-        let whole = analysis.measure_with(&mut decoded_whole);
+        let whole = analysis.measure_with(&mut Whole {
+            live_plugins: self.live_plugins,
+            echo: self.echo,
+        });
         self.levels.push((by_segment, whole));
         LevelReading::Ready(whole)
+    }
+}
+
+/// The decoded files, and the plugins of `BothMeasures`.
+struct Whole {
+    live_plugins: bool,
+    echo: bool,
+}
+
+impl AudioSource for Whole {
+    fn file(&mut self, path: &Path, stream: usize) -> ClipAudio {
+        decoded_whole(path, stream).map_or(ClipAudio::Missing, ClipAudio::Ready)
+    }
+
+    fn plugin(&mut self, _: vv_audio::PluginRequest<'_>) -> Option<vv_audio::PluginHandle> {
+        let echo = self.echo;
+        self.live_plugins.then(|| match echo {
+            true => Arc::new(Echo::new(Default::default())) as _,
+            false => Arc::new(Passthrough) as _,
+        })
     }
 }
 
@@ -414,6 +443,7 @@ fn both_measures_through(
         cache,
         levels: Vec::new(),
         live_plugins,
+        echo: false,
     };
     MixSnapshot::from_timeline(
         project,
@@ -943,6 +973,81 @@ fn a_tail_rings_through_a_gap_spanning_chunks_and_no_ghost_follows() {
         echoes += (tap != 0.0) as usize;
     }
     assert!(echoes > 0);
+}
+
+/// Two short clips 9 s apart, the 7 s tap of the first one falling in the gap.
+fn echoed_gap(project: &mut Project, name: &str, on_track: bool) -> Timeline {
+    let file = media(project, chirp(name, 48_000, 5), 48_000, 1);
+    let mut track = audio_track(vec![clip(1, file, 0, 25, 0), clip(2, file, 25, 25, 250)]);
+    let mut tl = timeline(Vec::new());
+    if on_track {
+        track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    } else {
+        tl.master.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    }
+    tl.tracks.push(track);
+    tl.master.effects.push(normalize(NormalizeMode::Loudness));
+    tl
+}
+
+fn echo_measures(project: &Project, tl: &Timeline, cache: &mut LevelCache) -> Vec<(f32, f32)> {
+    let mut source = BothMeasures {
+        cache,
+        levels: Vec::new(),
+        live_plugins: true,
+        echo: true,
+    };
+    MixSnapshot::from_timeline(
+        project,
+        tl,
+        PROJECT_SAMPLE_RATE,
+        PROJECT_CHANNELS,
+        &mut source,
+    );
+    source.levels
+}
+
+fn echo_cache() -> LevelCache {
+    let mut cache = fixed_list_cache();
+    cache.plugins = Some(echo_plugins(Default::default()));
+    cache
+}
+
+/// The tail of a plugin rings through the gap in the mix: the measure sees
+/// it, segmented or not.
+#[test]
+fn a_level_after_a_plugin_reads_its_tail_in_the_gaps() {
+    for on_track in [false, true] {
+        let mut project = Project::default();
+        let tl = echoed_gap(&mut project, &format!("tail{on_track}.wav"), on_track);
+        let levels = echo_measures(&project, &tl, &mut echo_cache());
+        let [(by_segment, whole)] = levels[..] else {
+            panic!("{levels:?}");
+        };
+        assert!(
+            db(by_segment, whole).abs() < 0.01,
+            "on track {on_track}: {by_segment} vs {whole}"
+        );
+    }
+}
+
+/// A delay longer than the preroll, an edit two clips before: nothing cached
+/// from before the edit is reused, and a cold cache reads the same.
+#[test]
+fn an_edit_before_a_plugin_tail_measures_the_whole_strip_again() {
+    let mut project = Project::default();
+    let mut tl = echoed_gap(&mut project, "edited-tail.wav", true);
+    let mut cache = echo_cache();
+    let before = echo_measures(&project, &tl, &mut cache);
+    let rendered = cache.rendered;
+    assert_eq!(echo_measures(&project, &tl, &mut cache), before);
+    assert_eq!(cache.rendered, rendered, "measured already");
+
+    tl.tracks[0].clips[0].effects.gain_db = vv_core::Keyframed::constant(-6.0);
+    let warm = echo_measures(&project, &tl, &mut cache);
+    assert!(cache.rendered > rendered);
+    assert_ne!(warm, before);
+    assert_eq!(warm, echo_measures(&project, &tl, &mut echo_cache()));
 }
 
 fn echo_plugins(calls: Arc<std::sync::atomic::AtomicUsize>) -> vv_plugin::Instances {

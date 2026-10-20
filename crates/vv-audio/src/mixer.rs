@@ -20,8 +20,9 @@ use crate::dynamics::{BandActivity, MultibandProcessor};
 use crate::effect::{Effect, PluginEffect, PluginHandle, PluginRequest};
 use crate::eq::EqProcessor;
 use crate::levels::{
-    InputClip, LevelAnalysis, Measured, StableHasher, has_state, hash_channel, hash_inserts,
-    input_clips, inputs_have_state, level_segments, stable_hash, timeline_key,
+    InputClip, LevelAnalysis, Measured, Memory, StableHasher, has_processing_plugin, has_state,
+    hash_channel, hash_inserts, input_clips, inputs_have_state, level_segments, stable_hash,
+    timeline_key,
 };
 use crate::spectrum::SpectrumTap;
 use crate::stretched::{StretchInput, StretchRequest};
@@ -1173,9 +1174,11 @@ fn collect_clips(
                     .collect(),
                 None => track_inputs.clone(),
             };
-            let stateful = has_state(inserts) || inputs_have_state(&input);
-            let segments =
-                level_segments(&input, chain_key(mode, format, inserts), |_| 0, stateful);
+            let memory = Memory::of(
+                has_processing_plugin(inserts),
+                has_state(inserts) || inputs_have_state(&input),
+            );
+            let segments = level_segments(&input, chain_key(mode, format, inserts), |_| 0, memory);
             source.level(LevelAnalysis {
                 slot: slot(channel, inserts.len(), clip.map_or(0, |(i, _)| i)),
                 project,
@@ -1221,6 +1224,11 @@ fn collect_clips(
                 .get(clip.track)
                 .is_some_and(|t| has_state(&t.inserts))
         });
+        let tracks_have_plugin = all.iter().any(|clip| {
+            tracks
+                .get(clip.track)
+                .is_some_and(|t| has_processing_plugin(&t.inserts))
+        });
         let mut plugin_keys = PluginKeys::new(scope, MASTER_STRIPS);
         let plugins = request_plugins(
             &timeline.master,
@@ -1230,7 +1238,10 @@ fn collect_clips(
             sample_rate,
         );
         let analyze = |inserts: &[Insert], _: Option<(usize, ClipId)>, mode| {
-            let stateful = has_state(inserts) || tracks_have_state || inputs_have_state(&all);
+            let memory = Memory::of(
+                has_processing_plugin(inserts) || tracks_have_plugin,
+                has_state(inserts) || tracks_have_state || inputs_have_state(&all),
+            );
             let track_key = |track: usize| {
                 let mut h = StableHasher::default();
                 if let Some(channel) = tracks.get(track) {
@@ -1239,7 +1250,7 @@ fn collect_clips(
                 h.finish()
             };
             let segments =
-                level_segments(&all, chain_key(mode, format, inserts), track_key, stateful);
+                level_segments(&all, chain_key(mode, format, inserts), track_key, memory);
             source.level(LevelAnalysis {
                 slot: slot(MixerChannel::Master, inserts.len(), 0),
                 project,
