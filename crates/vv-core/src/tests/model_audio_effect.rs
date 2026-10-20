@@ -112,3 +112,20 @@ fn plugin_state_and_effect_hashes_do_not_change() {
     assert_eq!(PluginState::new(Vec::new()).hash(), 0xcbf2_9ce4_8422_2325);
     assert_eq!(vst3(bytes).content_hash(), 5_725_312_826_510_906_759);
 }
+
+#[test]
+fn content_hash_ignores_id_name_and_vendor() {
+    let original = vst3(vec![1, 2, 3]);
+    let copy = Vst3Effect {
+        id: EffectId::fresh(),
+        name: "Renamed".into(),
+        vendor: "Other".into(),
+        ..original.clone()
+    };
+    assert_eq!(copy.content_hash(), original.content_hash());
+    let other_version = Vst3Effect {
+        version: "2.0".into(),
+        ..original.clone()
+    };
+    assert_ne!(other_version.content_hash(), original.content_hash());
+}

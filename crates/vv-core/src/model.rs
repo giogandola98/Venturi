@@ -2325,7 +2325,7 @@ pub struct Vst3Effect {
 }
 
 impl Vst3Effect {
-    /// FNV-1a over the ids and the cached state hashes.
+    /// id, name and vendor are left out so a fresh-id copy keeps the same hash (level-cache keys).
     pub fn content_hash(&self) -> u64 {
         let mut hasher = StableHasher::default();
         hasher.write(self.class_id.as_bytes());
