@@ -2006,3 +2006,25 @@ fn a_measure_keys_a_duplicated_plugin_like_the_live_pass() {
         assert_eq!(measuring.keys, [live.keys[track]]);
     }
 }
+
+#[test]
+fn a_disabled_duplicate_keeps_the_panel_and_mixer_keys_in_agreement() {
+    let (project, a, _) = project();
+    let mut track = audio_track(vec![clip_at(a, 0, 0, 5)]);
+    let mut first = vst3(7, b"");
+    first.enabled = false;
+    track.mix.effects = vec![first, vst3(7, b"")];
+    let tl = timeline(vec![track]);
+    let mut source = PluginSource::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    let key = crate::mixer::plugin_key_in(0, &tl, MixerChannel::Track(0), 1).unwrap();
+    assert_eq!(source.keys, [key]);
+}
+
+#[test]
+fn plugin_key_in_is_none_out_of_range() {
+    let (project, a, _) = project();
+    let tl = timeline(vec![audio_track(vec![clip_at(a, 0, 0, 5)])]);
+    assert!(crate::mixer::plugin_key_in(0, &tl, MixerChannel::Track(5), 0).is_none());
+    assert!(crate::mixer::plugin_key_in(0, &tl, MixerChannel::Track(0), 0).is_none());
+}
