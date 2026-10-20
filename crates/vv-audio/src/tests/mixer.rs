@@ -1725,6 +1725,44 @@ fn mixing_without_plugins_skips_nested_plugins_too() {
 }
 
 #[test]
+fn mixing_without_plugins_drops_the_gains_measured_through_them() {
+    let (project, tl) = plugin_timeline(vec![vst3(1, b"")]);
+    let mut source = PluginSource {
+        plugin: Some(FakePlugin::new(0.5)),
+        ..Default::default()
+    };
+    let mut snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    snap.tracks[0].inserts.push(Insert::Gain(4.0));
+    snap.master.inserts.push(Insert::ClipGains(vec![(0, 4.0)]));
+    assert!(mixed(&snap, 40).iter().all(|&s| s == 0.5 * 0.5 * 4.0 * 4.0));
+    assert!(without_plugins(&snap, 40).iter().all(|&s| s == 0.5));
+}
+
+#[test]
+fn mixing_without_plugins_keeps_the_gains_when_there_are_none() {
+    let (project, tl) = plugin_timeline(vec![]);
+    let mut snap =
+        MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut CountingSource::default());
+    snap.tracks[0].inserts.push(Insert::Gain(4.0));
+    assert!(without_plugins(&snap, 40).iter().all(|&s| s == 2.0));
+}
+
+#[test]
+fn mixing_without_plugins_drops_the_gains_after_a_nested_plugin() {
+    let (mut project, compound) = project_with_compound();
+    let nested = project.media_pool[compound].compound.unwrap();
+    project.timelines[nested].tracks[0].mix.effects = vec![vst3(1, b"")];
+    let tl = timeline(vec![audio_track(vec![clip_at(compound, 0, 0, 5)])]);
+    let mut source = PluginSource {
+        plugin: Some(FakePlugin::new(0.5)),
+        ..Default::default()
+    };
+    let mut snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    snap.tracks[0].inserts.push(Insert::Gain(4.0));
+    assert!(without_plugins(&snap, 40).iter().all(|&s| s == 0.5));
+}
+
+#[test]
 fn missing_plugin_passes_through() {
     let (project, tl) = plugin_timeline(vec![vst3(1, b"")]);
     let mut source = PluginSource::default();
