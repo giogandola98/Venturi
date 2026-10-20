@@ -82,6 +82,11 @@ const PROCESS_RESTART_CID: TUID = [
 const REACTIVATE_FAIL_CID: TUID = [
     0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 18,
 ];
+// Reports a latency of 64 once reactivated, and raises restartComponent(kLatencyChanged)
+// from inside setState.
+const SET_STATE_RESTART_CID: TUID = [
+    0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 19,
+];
 const MANY_METERS: u32 = 100;
 const REACTIVATED_LATENCY: u32 = 64;
 const DEFAULT_NORMALIZED: f64 = 0.5;
@@ -142,6 +147,7 @@ struct Gain {
     rejects_setup: bool,
     restarts_on_activation: bool,
     restarts_in_process: bool,
+    restarts_in_set_state: bool,
     fails_state: bool,
     fails_reactivation: bool,
     aux: bool,
@@ -169,6 +175,7 @@ impl Gain {
             rejects_setup: false,
             restarts_on_activation: false,
             restarts_in_process: false,
+            restarts_in_set_state: false,
             fails_state: false,
             fails_reactivation: false,
             aux: false,
@@ -396,7 +403,13 @@ impl IComponentTrait for Gain {
     }
 
     unsafe fn setState(&self, state: *mut IBStream) -> tresult {
-        unsafe { self.read_state(state) }
+        let result = unsafe { self.read_state(state) };
+        if self.restarts_in_set_state
+            && let Some(handler) = self.handler.lock().ok().and_then(|h| h.clone())
+        {
+            unsafe { handler.restartComponent(RestartFlags_::kLatencyChanged) };
+        }
+        result
     }
 
     unsafe fn getState(&self, state: *mut IBStream) -> tresult {
@@ -770,6 +783,11 @@ impl IPluginFactoryTrait for Factory {
             },
             PROCESS_RESTART_CID => Gain {
                 restarts_in_process: true,
+                latency_on_reactivation: true,
+                ..Gain::new(None)
+            },
+            SET_STATE_RESTART_CID => Gain {
+                restarts_in_set_state: true,
                 latency_on_reactivation: true,
                 ..Gain::new(None)
             },

@@ -566,6 +566,28 @@ fn a_restart_request_is_serviced_by_the_pool_without_an_editor() {
 }
 
 #[test]
+fn a_restart_raised_by_set_state_is_applied_in_the_same_pass() {
+    let class_id = "56565445535447414E00000000000013";
+    let e = effect(class_id, &[]);
+    let instance = fixture_instance(&e);
+    let shared = instance.clone();
+    let mut pool = Instances::with_maker(
+        vec![info(class_id)].into(),
+        Box::new(move |_, _, _| Some(shared.clone() as Arc<dyn HostedPlugin>)),
+    );
+    pool.begin_pass();
+    pool.get(request(1, &e)).expect("instance");
+    pool.sweep();
+    assert_eq!(instance.latency(), 0);
+    let changed = effect(class_id, &0.25f32.to_le_bytes());
+    pool.begin_pass();
+    pool.get(request(1, &changed)).expect("instance");
+    assert_eq!(instance.latency(), 64);
+    pool.service_restarts();
+    assert_eq!(instance.latency(), 64);
+}
+
+#[test]
 fn service_restarts_applies_a_request_without_a_pass() {
     use vst3::Steinberg::Vst::{IComponentHandlerTrait, RestartFlags_};
     let class_id = "56565445535447414E00000000000008";
