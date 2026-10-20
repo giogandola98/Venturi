@@ -2297,5 +2297,5 @@ fn the_keys_of_a_plugin_not_installed_do_not_change() {
         vec![vst3(1, b""), normalize(0.0)],
         Some(FakePlugin::new(4.0)),
     );
-    assert_eq!(level, [10009291406131581181]);
+    assert_eq!(level, [5936692045940253641]);
 }

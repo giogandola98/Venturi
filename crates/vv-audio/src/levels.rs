@@ -242,18 +242,52 @@ pub(crate) fn has_state(inserts: &[Insert]) -> bool {
     })
 }
 
+/// How long what is before a measure remembers its input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Memory {
+    /// The compressor and the equalizer settle within a preroll; `true`: one
+    /// is before the measure.
+    Bounded(bool),
+    /// A plugin (delay, reverb, AGC) may remember all of it, and its tails
+    /// ring through the gaps.
+    Unbounded,
+}
+
+impl Memory {
+    pub(crate) fn of(plugin: bool, bounded_state: bool) -> Self {
+        if plugin {
+            Self::Unbounded
+        } else {
+            Self::Bounded(bounded_state)
+        }
+    }
+}
+
+/// Whether one of `inserts` is a plugin that processes.
+pub(crate) fn has_processing_plugin(inserts: &[Insert]) -> bool {
+    inserts
+        .iter()
+        .any(|insert| matches!(insert, Insert::Plugin(plugin) if plugin.handle.is_some()))
+}
+
 /// The segments of `inputs` between their edit points; the silence
 /// between them is not measured. `base`: what every segment shares (the
 /// mode, the format, the chain measured through); `track_key`: what the
-/// track of a clip adds to it before the measure. `stateful`: something
-/// before the measure keeps a state across the edit points, so each
-/// segment is rendered with a preroll and keyed with the one before it.
+/// track of a clip adds to it before the measure. `memory`: what is before
+/// the measure keeps a state across the edit points, so each segment is
+/// rendered with a preroll and keyed with the one before it; or it keeps
+/// all of it, and there is one segment from the start through the gaps,
+/// keyed by every input.
 pub(crate) fn level_segments(
     inputs: &[&InputClip],
     base: u64,
     track_key: impl Fn(usize) -> u64,
-    stateful: bool,
+    memory: Memory,
 ) -> Vec<LevelSegment> {
+    let stateful = match memory {
+        Memory::Unbounded => return continuous_segment(inputs, base, track_key),
+        Memory::Bounded(stateful) => stateful,
+    };
     let mut edges: Vec<u64> = inputs
         .iter()
         .flat_map(|clip| [clip.start, clip.start + clip.len])
@@ -296,6 +330,37 @@ pub(crate) fn level_segments(
         previous = Some(content);
     }
     segments
+}
+
+/// Rendered whole from frame 0, as the export does: any edit anywhere is a
+/// new key.
+fn continuous_segment(
+    inputs: &[&InputClip],
+    base: u64,
+    track_key: impl Fn(usize) -> u64,
+) -> Vec<LevelSegment> {
+    let Some(end) = inputs.iter().map(|clip| clip.start + clip.len).max() else {
+        return Vec::new();
+    };
+    let mut sorted = inputs.to_vec();
+    sorted.sort_by_key(|clip| (clip.track, clip.start, clip.id));
+    let mut h = StableHasher::default();
+    (base, end, "continuous").hash(&mut h);
+    for clip in sorted {
+        (
+            track_key(clip.track),
+            clip.track,
+            clip.start,
+            clip.len,
+            clip.body,
+        )
+            .hash(&mut h);
+    }
+    vec![LevelSegment {
+        frames: 0..end,
+        preroll: 0,
+        key: h.finish(),
+    }]
 }
 
 /// Whether a measure needs a preroll: an effect before it, or a compound
