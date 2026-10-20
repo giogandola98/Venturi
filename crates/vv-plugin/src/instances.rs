@@ -255,6 +255,14 @@ impl Instances {
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+
     pub fn begin_pass(&mut self) {
         self.pass += 1;
         for slot in self.slots.values_mut() {
@@ -272,6 +280,18 @@ impl Instances {
     /// reactivated by their next `get` (their tails are old).
     pub fn sweep_idle(&mut self, keep: usize) {
         let pass = self.pass;
+        if self.slots.len() <= keep {
+            for slot in self.slots.values_mut() {
+                match &mut slot.state {
+                    SlotState::Ready { stale, .. } if !slot.used_this_pass => *stale = true,
+                    _ => {}
+                }
+                if slot.used_this_pass {
+                    slot.last_pass = pass;
+                }
+            }
+            return;
+        }
         let mut idle = Vec::new();
         for (key, slot) in &mut self.slots {
             if slot.used_this_pass {
@@ -280,11 +300,11 @@ impl Instances {
                 if let SlotState::Ready { stale, .. } = &mut slot.state {
                     *stale = true;
                 }
-                idle.push((slot.last_pass, *key));
+                idle.push((std::cmp::Reverse(slot.last_pass), *key));
             }
         }
         if idle.len() > keep {
-            idle.sort_unstable_by_key(|&(pass, _)| std::cmp::Reverse(pass));
+            idle.sort_unstable();
             for (_, key) in &idle[keep..] {
                 self.slots.remove(key);
             }

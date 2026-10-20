@@ -516,10 +516,16 @@ impl LevelCache {
         }
     }
 
-    /// Bounded: a pool per thread of a measure, and one per nesting level.
+    /// Bounded: a pool per thread of a measure and one for the render, and
+    /// `KEPT_INSTANCES` in all; the oldest pools go first.
     fn keep_pool(&mut self, plugins: Instances) {
-        if self.plugins.len() < 2 * self.threads.max(1) {
-            self.plugins.push(plugins);
+        self.plugins.push(plugins);
+        let total = |pools: &[Instances]| pools.iter().map(Instances::len).sum::<usize>();
+        while self.plugins.len() > 1
+            && (self.plugins.len() > self.threads.max(1) + 1
+                || total(&self.plugins) > KEPT_INSTANCES)
+        {
+            self.plugins.remove(0);
         }
     }
 
@@ -747,6 +753,9 @@ impl BytesReader<'_> {
 
 /// Instances an offline pool keeps for placements the chunk did not use.
 const IDLE_INSTANCES: usize = 32;
+
+/// Instances kept between renders by a cache, all its pools together.
+const KEPT_INSTANCES: usize = 32;
 
 type WindowKey = (PathBuf, usize, Range<u64>);
 
