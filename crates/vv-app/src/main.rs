@@ -4011,6 +4011,12 @@ impl eframe::App for VenturiApp {
         }
     }
 
+    // The only hook eframe still calls while the window is minimized,
+    // occluded or on another Space, when the open plugin editors need servicing.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.pump_plugin_editors(ctx);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         // With MCP on, the session lives in a slot shared with the agent's
         // host thread between frames (see `mcp_host`).
@@ -4028,6 +4034,23 @@ impl eframe::App for VenturiApp {
 }
 
 impl VenturiApp {
+    fn pump_plugin_editors(&mut self, ctx: &egui::Context) {
+        let Some(borrowed) = self.mcp_borrow_session() else {
+            return;
+        };
+        self.plugin_editors.update(
+            ctx,
+            &mut self.session.project,
+            &mut self.session.history,
+            self.timeline_id,
+            self.timeline_audio.as_mut(),
+            self.edit_drag_group.is_some() || self.timeline_state.holds_undo_group(),
+        );
+        if borrowed {
+            self.mcp_return_session();
+        }
+    }
+
     fn frame_ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.handle_close_request(&ui.ctx().clone());
         self.poll_pending_dialog(&ui.ctx().clone());
@@ -4552,16 +4575,9 @@ impl VenturiApp {
             if let Some(audio) = &mut self.timeline_audio {
                 self.plugin_editors
                     .open(ui.ctx(), &self.session.project, request, current, audio);
+                ui.ctx().request_repaint();
             }
         }
-        self.plugin_editors.update(
-            ui.ctx(),
-            &mut self.session.project,
-            &mut self.session.history,
-            self.timeline_id,
-            self.timeline_audio.as_mut(),
-            self.edit_drag_group.is_some() || self.timeline_state.holds_undo_group(),
-        );
 
         let mut transport_action = transport::TransportResponse::default();
         let mut viewer_rect = None;

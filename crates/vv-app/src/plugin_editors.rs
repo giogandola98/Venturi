@@ -301,6 +301,11 @@ impl PluginEditors {
         }
     }
 
+    #[cfg(test)]
+    pub fn defer_gesture(&mut self, key: Key, instance: Arc<dyn HostedPlugin>) {
+        self.pending.push((key, instance));
+    }
+
     pub fn close_all(&mut self, project: &mut Project, history: &mut History) {
         self.close_where(project, history, false, |_, _, _| false);
     }
