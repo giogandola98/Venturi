@@ -2440,3 +2440,39 @@ fn a_gap_near_the_settle_time_renders_the_same_whole_or_chunked() {
         assert!(worst < 1e-5, "{second}: {worst}");
     }
 }
+
+#[test]
+fn a_slow_release_restarts_at_the_clip_whether_or_not_a_whole_block_fits_in_the_gap() {
+    let mut comp = vv_core::MultibandCompressor::DEFAULT;
+    comp.crossovers_hz = [100.0, 400.0];
+    for band in &mut comp.bands {
+        band.threshold_db = -40.0;
+        band.ratio = 10.0;
+        band.release_ms = 2000.0;
+    }
+    let effects = vec![vv_core::AudioEffect::new(
+        vv_core::AudioEffectKind::MultibandCompressor(comp),
+    )];
+    // 200 audio frames per timeline frame: the gap is 2 s and 200 samples.
+    let rate = 2000;
+    let frames = 31 * 200;
+    for chunk in [97, 331, 511, 777] {
+        let (project, tl) = gapped_at(26, effects.clone());
+        let snap = MixSnapshot::from_timeline(&project, &tl, rate, 1, &mut buffers);
+        let mut whole = vec![9.0; frames];
+        mix_range_from(&snap, &mut MixState::new(&snap), 0, &mut whole);
+        let mut state = MixState::new(&snap);
+        let mut chunked = vec![9.0; frames];
+        let mut at = 0;
+        for part in chunked.chunks_mut(chunk) {
+            mix_range_from(&snap, &mut state, at, part);
+            at += part.len() as u64;
+        }
+        let worst = whole
+            .iter()
+            .zip(&chunked)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max);
+        assert!(worst < 1e-5, "chunk {chunk}: {worst}");
+    }
+}
