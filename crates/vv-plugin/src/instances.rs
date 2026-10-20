@@ -107,6 +107,15 @@ enum SlotState {
     Failed { hash: u64 },
 }
 
+/// Loads `effect`'s state unless the instance already holds it.
+fn apply_state(instance: &dyn HostedPlugin, effect: &Vst3Effect, hash: u64) -> bool {
+    let changed = instance.state_hash() != hash;
+    if changed {
+        instance.set_state(effect);
+    }
+    changed
+}
+
 /// Instances are torn down on drop, which calls into the plugin: `sweep` and
 /// the drop run on the owner's thread (the UI thread for live). An offline
 /// pool may move between a worker's threads, one at a time, and is dropped
@@ -191,9 +200,7 @@ impl Instances {
             if std::mem::take(stale) {
                 instance.reactivate();
             }
-            if instance.state_hash() != hash {
-                instance.set_state(request.effect);
-            }
+            apply_state(instance.as_ref(), request.effect, hash);
             // After set_state: a restart it raised applies now, before the latency is read.
             instance.service_restart();
             return Some(instance.clone());
@@ -212,6 +219,7 @@ impl Instances {
                 return None;
             }
         }
+        let adopted = held.is_some();
         let Some(instance) =
             held.or_else(|| (self.make)(&path, request.effect, request.sample_rate))
         else {
@@ -225,8 +233,7 @@ impl Instances {
             );
             return None;
         };
-        if self.held.contains_key(&request.key) && instance.state_hash() != hash {
-            instance.set_state(request.effect);
+        if adopted && apply_state(instance.as_ref(), request.effect, hash) {
             instance.service_restart();
         }
         let handle = instance.clone();
