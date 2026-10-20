@@ -401,21 +401,28 @@ impl Vst3Instance {
     }
 
     /// Acts on a restart the plugin asked for: the deactivate/activate cycle
-    /// the spec requires, so it applies a new latency or I/O setup. UI thread only.
+    /// the spec requires. kIoChanged needs nothing more as the buses are fixed
+    /// stereo. UI thread only.
     pub fn service_restart(&self) {
-        let flags = self.shared.restart.swap(0, Ordering::AcqRel);
-        if flags == 0 {
+        if self.shared.restart.load(Ordering::Acquire) == 0 {
             return;
         }
-        let saved = (flags & RestartFlags_::kReloadComponent != 0).then(|| self.get_state());
+        let flags = self.shared.restart.swap(0, Ordering::AcqRel);
         let _audio = self.lock_audio();
+        let saved = (flags & RestartFlags_::kReloadComponent != 0).then(|| self.read_state());
         // SAFETY: a live processor and component, from the UI thread; the busy
         // guard keeps the audio thread out while processing is stopped.
         unsafe {
             self.processor.setProcessing(0);
             self.component.setActive(0);
-            if let Some((component, controller)) = &saved {
-                self.load_state(component, controller);
+            if let Some((component, controller)) = saved {
+                // The state read above already includes any edit queued before it.
+                self.shared
+                    .params
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clear();
+                self.load_state(&PluginState::new(component), &PluginState::new(controller));
             }
             self.component.setActive(1);
             self.processor.setProcessing(1);

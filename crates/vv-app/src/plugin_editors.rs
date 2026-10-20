@@ -117,6 +117,7 @@ fn record_gesture(
     instance: &dyn HostedPlugin,
     group_open: bool,
 ) -> bool {
+    instance.service_restart();
     if group_open {
         return false;
     }
