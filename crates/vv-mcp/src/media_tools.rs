@@ -180,6 +180,9 @@ pub(crate) fn audio_levels(session: &Session, args: AudioLevelsArgs) -> Dispatch
                 Ok(id) => id,
                 Err(e) => return Dispatch::Handled(Err(e)),
             };
+            if session.export_waits_for_scan(timeline, true) {
+                return fail("plugins are being scanned, retry shortly");
+            }
             let fps = project.timelines[timeline].fps;
             let snapshot = project.clone();
             on_worker(session, move || {

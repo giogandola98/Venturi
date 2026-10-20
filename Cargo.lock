@@ -4726,6 +4726,7 @@ dependencies = [
  "tokio",
  "vv-core",
  "vv-media",
+ "vv-plugin",
  "vv-render",
  "vv-session",
 ]
