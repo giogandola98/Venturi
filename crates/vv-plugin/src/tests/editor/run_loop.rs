@@ -123,3 +123,48 @@ fn a_reentrant_mutation_fails_instead_of_panicking() {
     assert_eq!(rl.add_timer(timer(&rl), TICK), kResultFalse);
     assert_eq!(rl.remove_timer(std::ptr::null_mut()), kResultFalse);
 }
+
+#[test]
+fn a_registered_fd_does_not_ask_for_polling() {
+    let rl = Rc::new(RunLoop::default());
+    rl.add_handler(event(&rl), 3);
+    assert!(rl.next_wake().is_none());
+    rl.add_timer(timer(&rl), TICK);
+    assert!(rl.next_wake().is_some_and(|d| d <= TICK));
+    rl.clear();
+}
+
+#[test]
+fn a_registered_fd_wakes_the_app_until_the_pump_rearms() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let count = Arc::new(AtomicUsize::new(0));
+    let c = count.clone();
+    let rl = Rc::new(RunLoop::new(
+        Arc::new(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        }),
+        None,
+    ));
+    let mut fds = [0; 2];
+    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+    rl.add_handler(event(&rl), fds[0]);
+    assert_eq!(unsafe { libc::write(fds[1], [1u8].as_ptr().cast(), 1) }, 1);
+    let end = Instant::now() + Duration::from_secs(5);
+    while count.load(Ordering::SeqCst) == 0 {
+        assert!(Instant::now() < end);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    rl.rearm();
+    while count.load(Ordering::SeqCst) < 2 {
+        assert!(Instant::now() < end);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    rl.clear();
+    unsafe {
+        libc::close(fds[0]);
+        libc::close(fds[1]);
+    }
+}

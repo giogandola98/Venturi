@@ -117,6 +117,12 @@ impl Window {
         })
     }
 
+    /// The X connection's socket, so window events wake the app.
+    pub fn fd(&self) -> std::os::fd::RawFd {
+        use std::os::fd::AsRawFd;
+        self.conn.stream().as_raw_fd()
+    }
+
     /// XEmbed takes the window id as the parent pointer.
     pub fn parent(&self) -> *mut c_void {
         self.id as usize as *mut c_void
