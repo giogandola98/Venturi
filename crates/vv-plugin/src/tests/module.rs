@@ -1,4 +1,4 @@
-use super::{LoadError, Registry, c_str, cached, so_file_name};
+use super::{LoadError, Registry, c_str, cached, linux_binary, sdk_arch_dir, so_file_name};
 use std::ffi::c_char;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -206,4 +206,65 @@ fn the_so_name_keeps_the_stem_bytes() {
     let raw = OsStr::from_bytes(b"Caf\xe9");
     assert_eq!(so_file_name(raw).into_vec(), b"Caf\xe9.so");
     assert_eq!(so_file_name(OsStr::new("Gain")), OsStr::new("Gain.so"));
+}
+
+#[test]
+fn rust_arch_maps_to_the_sdk_folder_name() {
+    for (arch, big, dir) in [
+        ("x86_64", false, "x86_64-linux"),
+        ("x86", false, "i386-linux"),
+        ("aarch64", false, "aarch64-linux"),
+        ("arm", false, "armv7l-linux"),
+        ("powerpc64", false, "ppc64le-linux"),
+        ("powerpc64", true, "powerpc64-linux"),
+        ("riscv64", false, "riscv64-linux"),
+        ("s390x", true, "s390x-linux"),
+    ] {
+        assert_eq!(sdk_arch_dir(arch, big), dir, "{arch} big={big}");
+    }
+}
+
+fn bundle_with(root: &str, files: &[&str]) -> std::path::PathBuf {
+    let bundle = std::env::temp_dir().join(format!("{root}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&bundle);
+    for f in files {
+        let path = bundle.join(f);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"").unwrap();
+    }
+    bundle
+}
+
+#[test]
+fn a_missing_arch_folder_falls_back_to_any_linux_folder_with_the_binary() {
+    let bundle = bundle_with("vv-linux-fallback", &["Contents/i686-linux/Gain.so"]);
+    let stem = std::ffi::OsStr::new("Gain");
+    assert_eq!(
+        linux_binary(&bundle, stem, "i386-linux"),
+        bundle.join("Contents/i686-linux/Gain.so")
+    );
+    let _ = std::fs::remove_dir_all(&bundle);
+}
+
+#[test]
+fn the_mapped_folder_wins_and_a_missing_binary_reports_the_mapped_path() {
+    let bundle = bundle_with(
+        "vv-linux-mapped",
+        &[
+            "Contents/i386-linux/Gain.so",
+            "Contents/i686-linux/Gain.so",
+            "Contents/other-linux/Other.so",
+        ],
+    );
+    let gain = std::ffi::OsStr::new("Gain");
+    assert_eq!(
+        linux_binary(&bundle, gain, "i386-linux"),
+        bundle.join("Contents/i386-linux/Gain.so")
+    );
+    let none = std::ffi::OsStr::new("Missing");
+    assert_eq!(
+        linux_binary(&bundle, none, "i386-linux"),
+        bundle.join("Contents/i386-linux/Missing.so")
+    );
+    let _ = std::fs::remove_dir_all(&bundle);
 }

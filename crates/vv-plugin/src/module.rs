@@ -156,10 +156,38 @@ fn binary_path(bundle: &Path, cf_bundle: &BundleRef) -> Result<PathBuf, String> 
 
 #[cfg(not(target_os = "macos"))]
 fn binary_path(bundle: &Path) -> Result<PathBuf, String> {
-    Ok(bundle
-        .join("Contents")
-        .join(format!("{}-linux", std::env::consts::ARCH))
-        .join(so_file_name(stem(bundle)?)))
+    let arch = sdk_arch_dir(std::env::consts::ARCH, cfg!(target_endian = "big"));
+    Ok(linux_binary(bundle, stem(bundle)?, &arch))
+}
+
+// VST3 bundle folders use `uname -m` names, which differ from Rust's ARCH.
+#[cfg(any(not(target_os = "macos"), test))]
+fn sdk_arch_dir(arch: &str, big_endian: bool) -> String {
+    match (arch, big_endian) {
+        ("x86", _) => "i386-linux".into(),
+        ("arm", _) => "armv7l-linux".into(),
+        ("powerpc64", false) => "ppc64le-linux".into(),
+        _ => format!("{arch}-linux"),
+    }
+}
+
+// Falls back to any `*-linux` folder holding the binary (armv8l, i686, ...).
+#[cfg(any(not(target_os = "macos"), test))]
+fn linux_binary(bundle: &Path, stem: &std::ffi::OsStr, arch_dir: &str) -> PathBuf {
+    let contents = bundle.join("Contents");
+    let file = so_file_name(stem);
+    let mapped = contents.join(arch_dir).join(&file);
+    if mapped.is_file() {
+        return mapped;
+    }
+    std::fs::read_dir(&contents)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with("-linux"))
+        .map(|e| e.path().join(&file))
+        .find(|p| p.is_file())
+        .unwrap_or(mapped)
 }
 
 #[cfg(any(not(target_os = "macos"), test))]
