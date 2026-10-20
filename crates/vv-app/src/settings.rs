@@ -975,8 +975,8 @@ impl Settings {
             .as_deref()
             .and_then(AudioFileFormat::from_id);
         settings.recording_dir = file.recording_dir;
-        settings.compressor_presets = readable_presets(file.compressor_presets);
-        settings.eq_presets = readable_presets(file.eq_presets);
+        settings.compressor_presets = readable_entries(file.compressor_presets);
+        settings.eq_presets = readable_entries(file.eq_presets);
         settings.vst3_scanned = file.vst3_scanned.unwrap_or(!file.vst3_plugins.is_empty());
         settings.vst3_plugins = readable_entries(file.vst3_plugins);
         settings.vst3_blocklist = readable_entries(file.vst3_blocklist);
@@ -1080,11 +1080,11 @@ impl Settings {
                 media_pool_layout: Some(self.panels.media_pool_layout),
                 library_layout: Some(self.panels.library_layout),
             },
-            compressor_presets: preset_values(&self.compressor_presets),
-            eq_presets: preset_values(&self.eq_presets),
-            vst3_plugins: utf8_entries(&self.vst3_plugins, |p| &p.path),
+            compressor_presets: entry_values(&self.compressor_presets),
+            eq_presets: entry_values(&self.eq_presets),
+            vst3_plugins: entry_values(&self.vst3_plugins),
             vst3_scanned: Some(self.vst3_scanned),
-            vst3_blocklist: utf8_entries(&self.vst3_blocklist, |b| &b.path),
+            vst3_blocklist: entry_values(&self.vst3_blocklist),
             input_device: self.input_device.clone(),
             recording_format: self.recording_format.map(|f| f.id().to_owned()),
             recording_dir: self.recording_dir.clone(),
@@ -1098,12 +1098,6 @@ impl Settings {
     }
 }
 
-fn readable_presets<P: serde::de::DeserializeOwned>(
-    values: Vec<serde_json::Value>,
-) -> Vec<Preset<P>> {
-    readable_entries(values)
-}
-
 fn readable_entries<T: serde::de::DeserializeOwned>(values: Vec<serde_json::Value>) -> Vec<T> {
     values
         .into_iter()
@@ -1111,37 +1105,21 @@ fn readable_entries<T: serde::de::DeserializeOwned>(values: Vec<serde_json::Valu
         .collect()
 }
 
-/// Entries whose path is not valid UTF-8 cannot be written as JSON: they are
-/// dropped until the next manual rescan instead of failing the whole save.
-fn utf8_entries<T: Serialize>(
-    entries: &[T],
-    path_of: impl Fn(&T) -> &Path,
-) -> Vec<serde_json::Value> {
-    let mut dropped = 0;
-    let values = entries
+/// Entries that cannot be written as JSON (a path that is not valid UTF-8) are
+/// dropped instead of failing the whole save.
+fn entry_values<T: Serialize>(entries: &[T]) -> Vec<serde_json::Value> {
+    let values: Vec<_> = entries
         .iter()
-        .filter_map(|entry| {
-            let value = path_of(entry)
-                .to_str()
-                .and_then(|_| serde_json::to_value(entry).ok());
-            dropped += usize::from(value.is_none());
-            value
-        })
+        .filter_map(|entry| serde_json::to_value(entry).ok())
         .collect();
+    let dropped = entries.len() - values.len();
     if dropped > 0 {
         static WARNED: std::sync::Once = std::sync::Once::new();
         WARNED.call_once(|| {
-            eprintln!("settings: {dropped} plugin path(s) not valid UTF-8 are not saved");
+            eprintln!("settings: {dropped} entry(ies) that cannot be written are not saved");
         });
     }
     values
-}
-
-fn preset_values<P: Serialize>(presets: &[Preset<P>]) -> Vec<serde_json::Value> {
-    presets
-        .iter()
-        .filter_map(|preset| serde_json::to_value(preset).ok())
-        .collect()
 }
 
 #[cfg(test)]
