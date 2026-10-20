@@ -695,10 +695,31 @@ fn a_new_render_reactivates_each_instance_once_not_per_pass() {
 }
 
 #[test]
-fn a_failing_class_is_reported_once_per_process() {
-    assert!(first_failure("test-class-a"));
-    assert!(!first_failure("test-class-a"));
-    assert!(first_failure("test-class-b"));
+fn a_failing_class_is_reported_once_per_reason() {
+    let mut log = FailureLog::default();
+    assert!(log.first("test-class-a", "offline"));
+    assert!(!log.first("test-class-a", "offline"));
+    assert!(log.first("test-class-a", "main thread only"));
+    assert!(!log.first("test-class-a", "main thread only"));
+    assert!(log.first("test-class-b", "offline"));
+}
+
+#[test]
+fn a_reset_reports_the_same_failures_again() {
+    let mut log = FailureLog::default();
+    assert!(log.first("test-class-a", "offline"));
+    log.reset();
+    assert!(log.first("test-class-a", "offline"));
+}
+
+#[test]
+fn failures_past_the_bound_are_not_reported_and_not_stored() {
+    let mut log = FailureLog::default();
+    for i in 0..FAILURE_LOG_CAP {
+        assert!(log.first("test-class", &i.to_string()));
+    }
+    assert!(!log.first("test-class", "one more"));
+    assert_eq!(log.len(), FAILURE_LOG_CAP);
 }
 
 #[test]
