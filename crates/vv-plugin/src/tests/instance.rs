@@ -960,3 +960,16 @@ fn a_plugin_that_only_accepts_its_main_buses_still_loads() {
     let instance = fixture_instance(&effect_of("56565445535447414E00000000000010", Vec::new()));
     assert_eq!(run(&instance, &ramp(64, 2))[0], 122.0);
 }
+
+#[test]
+fn a_restart_with_no_editor_wakes_the_process_waker() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static WOKEN: AtomicUsize = AtomicUsize::new(0);
+    crate::set_restart_waker(Arc::new(|| {
+        WOKEN.fetch_add(1, Ordering::SeqCst);
+    }));
+    let instance = latency_fixture(Vec::new());
+    let before = WOKEN.load(Ordering::SeqCst);
+    request_restart(&instance, RestartFlags_::kLatencyChanged);
+    assert!(WOKEN.load(Ordering::SeqCst) > before);
+}

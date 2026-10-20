@@ -229,6 +229,15 @@ impl Instances {
         }
     }
 
+    /// Acts on pending restart requests without a snapshot pass.
+    pub fn service_restarts(&self) {
+        for slot in self.slots.values() {
+            if let SlotState::Ready { instance, .. } = &slot.state {
+                instance.service_restart();
+            }
+        }
+    }
+
     pub fn begin_pass(&mut self) {
         for slot in self.slots.values_mut() {
             slot.used_this_pass = false;

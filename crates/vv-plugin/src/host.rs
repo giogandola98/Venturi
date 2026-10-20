@@ -80,6 +80,14 @@ pub(crate) const RESTART_FLAGS: i32 =
 /// Called from any thread when the UI has something to do.
 pub type Waker = std::sync::Arc<dyn Fn() + Send + Sync>;
 
+static RESTART_WAKER: std::sync::OnceLock<Waker> = std::sync::OnceLock::new();
+
+/// Wakes the app whenever a plugin asks for a restart, editor open or not, so
+/// the UI thread services it promptly. Set once; later calls are ignored.
+pub fn set_restart_waker(waker: Waker) {
+    let _ = RESTART_WAKER.set(waker);
+}
+
 /// What the plugin's controller reports back, shared with the instance.
 pub(crate) struct Shared {
     /// Latest value per parameter, coalesced by id. The UI thread may grow it; the
@@ -156,6 +164,9 @@ impl IComponentHandlerTrait for ComponentHandler {
         let wanted = flags & RESTART_FLAGS;
         if wanted != 0 {
             self.0.restart.fetch_or(wanted, Ordering::AcqRel);
+            if let Some(waker) = RESTART_WAKER.get() {
+                waker();
+            }
         }
         self.0.wake();
         kResultOk

@@ -4030,6 +4030,9 @@ impl eframe::App for VenturiApp {
     // occluded or on another Space, when the open plugin editors need servicing.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump_plugin_editors(ctx);
+        if let Some(audio) = &self.timeline_audio {
+            audio.service_plugin_restarts();
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -4965,6 +4968,8 @@ fn main() -> eframe::Result<()> {
             theme::apply(&cc.egui_ctx);
             let mut app = VenturiApp::default();
             let egui_ctx = cc.egui_ctx.clone();
+            let plugin_ctx = egui_ctx.clone();
+            vv_plugin::set_restart_waker(std::sync::Arc::new(move || plugin_ctx.request_repaint()));
             app.session
                 .set_waker(vv_session::Waker::new(move || egui_ctx.request_repaint()));
             app.settings_path = settings_path;
