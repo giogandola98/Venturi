@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use vv_core::canonical_class_id;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PluginInfo {
@@ -260,7 +261,7 @@ pub(crate) fn parse_module_info(json: &str, path: &Path) -> Option<Vec<PluginInf
         .into_iter()
         .filter(|c| is_effect(&c.category, &c.sub_categories))
         .map(|c| PluginInfo {
-            class_id: c.cid,
+            class_id: canonical_class_id(&c.cid),
             name: c.name,
             vendor: c.vendor.unwrap_or_else(|| info.factory.vendor.clone()),
             version: c.version.unwrap_or_else(|| info.version.clone()),

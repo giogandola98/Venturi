@@ -285,3 +285,11 @@ fn the_same_class_id_in_two_bundles_is_listed_once() {
     assert_eq!(infos.len(), 2);
     assert_eq!(infos[0].path, root.join("A.vst3"));
 }
+
+#[test]
+fn a_lowercase_moduleinfo_cid_is_listed_in_the_factory_form() {
+    let json = r#"{"Classes": [{"CID": "56565445535447414e00000000000001", "Category": "Audio Module Class",
+        "Name": "Acme EQ"}]}"#;
+    let infos = parse_module_info(json, Path::new("x.vst3")).unwrap();
+    assert_eq!(infos[0].class_id, "56565445535447414E00000000000001");
+}

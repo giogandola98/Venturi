@@ -932,3 +932,14 @@ fn a_ready_slot_whose_instance_is_inactive_is_reported_failed_until_it_recovers(
     counts.inactive.store(false, Ordering::SeqCst);
     assert!(!pool.failed(7));
 }
+
+#[test]
+fn a_lowercase_project_class_id_finds_the_scanned_plugin() {
+    let counts = Arc::default();
+    let pool = pool(&counts);
+    let mut json = serde_json::to_value(fixture_effect(&[])).unwrap();
+    json["class_id"] = FIXTURE_CLASS_ID.to_ascii_lowercase().into();
+    let loaded: Vst3Effect = serde_json::from_value(json).unwrap();
+    assert!(pool.knows(&loaded));
+    assert!(pool.build(&loaded).is_some());
+}

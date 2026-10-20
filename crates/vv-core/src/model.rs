@@ -2311,11 +2311,22 @@ impl EffectId {
     }
 }
 
+/// The class id as the factory scan writes it: 32 uppercase hex chars of the TUID.
+/// Every identity check compares this form, so all other spellings go through here.
+pub fn canonical_class_id(cid: &str) -> String {
+    cid.to_ascii_uppercase()
+}
+
+fn deserialize_class_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    String::deserialize(d).map(|cid| canonical_class_id(&cid))
+}
+
 /// A VST3 plugin in an insert slot, with the state it was saved with.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Vst3Effect {
     pub id: EffectId,
-    /// 32 uppercase hex chars of the class TUID.
+    /// Canonical form, see `canonical_class_id`.
+    #[serde(deserialize_with = "deserialize_class_id")]
     pub class_id: String,
     pub name: String,
     pub vendor: String,
