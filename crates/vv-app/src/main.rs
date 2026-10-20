@@ -4991,7 +4991,7 @@ fn main() -> eframe::Result<()> {
             app.settings = settings;
             app.settings.language.apply();
             // Seeded even when empty so nothing scans on the UI thread.
-            vv_plugin::set_installed(app.settings.vst3_plugins.clone());
+            vv_plugin::set_installed(app.settings.vst3_plugins.clone().unwrap_or_default());
             if app.settings.needs_plugin_scan() {
                 app.start_plugin_scan(&cc.egui_ctx, false);
             }
@@ -5057,8 +5057,7 @@ fn apply_scan_result(settings: &mut settings::Settings, list: Vec<vv_plugin::Plu
     if !unchanged {
         vv_plugin::set_installed(list.clone());
     }
-    settings.vst3_plugins = list;
-    settings.vst3_scanned = true;
+    settings.vst3_plugins = Some(list);
     unchanged
 }
 
@@ -5067,7 +5066,7 @@ fn apply_scan_result(settings: &mut settings::Settings, list: Vec<vv_plugin::Plu
 fn seed_installed_from_settings(path: Option<&Path>) {
     let plugins = path
         .map(settings::Settings::load)
-        .map(|s| s.vst3_plugins)
+        .and_then(|s| s.vst3_plugins)
         .unwrap_or_default();
     vv_plugin::set_installed(plugins);
 }
