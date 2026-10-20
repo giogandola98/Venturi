@@ -504,11 +504,7 @@ impl Vst3Instance {
                 // Edits queued while inactive were never delivered; the state carries them.
                 // From an active plugin they are still due and flushed by the next block.
                 if !was_active {
-                    self.shared
-                        .params
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .clear();
+                    self.shared.clear_edits();
                 }
                 self.active.store(true, Ordering::Relaxed);
                 self.processor.setProcessing(1);
@@ -579,6 +575,13 @@ impl Vst3Instance {
         let rt = unsafe { &mut *self.rt.get() };
         // Bounded so a plugin that keeps queueing edits from inside `process` cannot spin us.
         let mut slices = None;
+        rt.changes.clear();
+        self.shared
+            .missed
+            .drain(|id, value| rt.changes.push(id, value));
+        if rt.changes.has_any() {
+            self.run_slice(rt, 0);
+        }
         loop {
             rt.changes.clear();
             {
@@ -706,11 +709,7 @@ impl HostedPlugin for Vst3Instance {
     fn set_state(&self, effect: &Vst3Effect) {
         let _audio = self.lock_audio();
         // A stale edit must not override the state just loaded.
-        self.shared
-            .params
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+        self.shared.clear_edits();
         self.load_state(&effect.component_state, &effect.controller_state);
         self.refresh_latency();
         self.mark_state(effect.content_hash());
@@ -749,11 +748,7 @@ impl HostedPlugin for Vst3Instance {
             self.cycle_activation(|| {
                 if let Some((component, controller)) = saved {
                     // The flush above delivered the queued edits; drop what arrived since.
-                    self.shared
-                        .params
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .clear();
+                    self.shared.clear_edits();
                     self.load_state(&PluginState::new(component), &PluginState::new(controller));
                 }
             });
@@ -813,6 +808,9 @@ impl PluginProcessor for Vst3Instance {
             Err(TryLockError::Poisoned(e)) => e.into_inner().clear(),
             Err(TryLockError::WouldBlock) => {}
         }
+        self.shared
+            .missed
+            .drain(|id, value| rt.changes.push(id, value));
         let total = samples.len() / channels;
         for start in (0..total).step_by(MIX_BLOCK_FRAMES) {
             let frames = MIX_BLOCK_FRAMES.min(total - start);

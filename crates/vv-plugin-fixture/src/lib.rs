@@ -91,6 +91,10 @@ const SET_STATE_RESTART_CID: TUID = [
 const SPLIT_PRESET_CID: TUID = [
     0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 20,
 ];
+// Calls performEdit(0, 0.25) from inside process.
+const PROCESS_EDIT_CID: TUID = [
+    0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 21,
+];
 const MANY_METERS: u32 = 100;
 const REACTIVATED_LATENCY: u32 = 64;
 const DEFAULT_NORMALIZED: f64 = 0.5;
@@ -152,6 +156,7 @@ struct Gain {
     restarts_on_activation: bool,
     restarts_in_process: bool,
     restarts_in_set_state: bool,
+    edits_in_process: bool,
     fails_state: bool,
     fails_reactivation: bool,
     aux: bool,
@@ -180,6 +185,7 @@ impl Gain {
             restarts_on_activation: false,
             restarts_in_process: false,
             restarts_in_set_state: false,
+            edits_in_process: false,
             fails_state: false,
             fails_reactivation: false,
             aux: false,
@@ -573,6 +579,11 @@ impl IAudioProcessorTrait for Gain {
         {
             unsafe { handler.restartComponent(RestartFlags_::kLatencyChanged) };
         }
+        if self.edits_in_process
+            && let Some(handler) = self.handler.lock().ok().and_then(|h| h.clone())
+        {
+            unsafe { handler.performEdit(0, 0.25) };
+        }
         if self.writes_meter {
             unsafe { self.write_meter(data) };
         }
@@ -788,6 +799,10 @@ impl IPluginFactoryTrait for Factory {
             PROCESS_RESTART_CID => Gain {
                 restarts_in_process: true,
                 latency_on_reactivation: true,
+                ..Gain::new(None)
+            },
+            PROCESS_EDIT_CID => Gain {
+                edits_in_process: true,
                 ..Gain::new(None)
             },
             SET_STATE_RESTART_CID => Gain {

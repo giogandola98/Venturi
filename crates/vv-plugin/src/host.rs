@@ -2,8 +2,8 @@
 //! plugin code, so none of them may panic.
 use std::cell::Cell;
 use std::ffi::{CStr, CString, c_char, c_void};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Mutex, TryLockError};
 
 use vst3::Steinberg::Vst::{
     IAttributeList, IAttributeList_iid, IAttributeListTrait, IComponentHandler,
@@ -114,11 +114,55 @@ fn next_gesture_seq() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Edits the audio thread could not queue without waiting. Only touched while
+/// holding the instance's busy guard, so Relaxed is enough.
+pub(crate) struct Missed {
+    len: std::sync::atomic::AtomicUsize,
+    ids: [AtomicU32; MAX_PARAMS],
+    values: [AtomicU64; MAX_PARAMS],
+}
+
+impl Missed {
+    pub fn new() -> Self {
+        Self {
+            len: Default::default(),
+            ids: std::array::from_fn(|_| AtomicU32::new(0)),
+            values: std::array::from_fn(|_| AtomicU64::new(0)),
+        }
+    }
+
+    /// False when the table is full and `id` is new.
+    pub fn record(&self, id: ParamID, value: ParamValue) -> bool {
+        let len = self.len.load(Ordering::Relaxed);
+        let at = (0..len)
+            .find(|&i| self.ids[i].load(Ordering::Relaxed) == id)
+            .unwrap_or(len);
+        if at == MAX_PARAMS {
+            return false;
+        }
+        self.ids[at].store(id, Ordering::Relaxed);
+        self.values[at].store(value.to_bits(), Ordering::Relaxed);
+        self.len.store(len.max(at + 1), Ordering::Relaxed);
+        true
+    }
+
+    pub fn drain(&self, mut f: impl FnMut(ParamID, ParamValue)) {
+        let len = self.len.swap(0, Ordering::Relaxed);
+        for i in 0..len {
+            f(
+                self.ids[i].load(Ordering::Relaxed),
+                f64::from_bits(self.values[i].load(Ordering::Relaxed)),
+            );
+        }
+    }
+}
+
 /// What the plugin's controller reports back, shared with the instance.
 pub(crate) struct Shared {
     /// Latest value per parameter, coalesced by id. The UI thread may grow it; the
     /// audio thread takes at most `MAX_PARAMS` per block and leaves the rest queued.
     pub params: Mutex<Vec<(ParamID, ParamValue)>>,
+    pub missed: Missed,
     /// Latest output parameter value per id and whether the UI has not seen it yet.
     pub outputs: Mutex<Vec<(ParamID, ParamValue, bool)>>,
     pub outputs_fresh: AtomicBool,
@@ -134,6 +178,7 @@ impl Shared {
     pub fn new() -> Self {
         Self {
             params: Mutex::new(Vec::with_capacity(MAX_PARAMS)),
+            missed: Missed::new(),
             outputs: Mutex::new(Vec::new()),
             outputs_fresh: AtomicBool::new(false),
             dirty: AtomicBool::new(false),
@@ -148,6 +193,15 @@ impl Shared {
         let mut outputs = self.outputs.lock().unwrap_or_else(|e| e.into_inner());
         let more = capacity.saturating_sub(outputs.len());
         outputs.reserve_exact(more);
+    }
+
+    /// Drops every queued edit; the caller holds the instance's busy guard.
+    pub fn clear_edits(&self) {
+        self.params
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.missed.drain(|_, _| {});
     }
 
     pub fn set_waker(&self, waker: Option<Waker>) {
@@ -177,11 +231,29 @@ impl IComponentHandlerTrait for ComponentHandler {
     }
 
     unsafe fn performEdit(&self, id: ParamID, value: ParamValue) -> tresult {
-        let mut params = self.0.params.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(slot) = params.iter_mut().find(|p| p.0 == id) {
-            slot.1 = value;
-        } else {
-            params.push((id, value));
+        let queue = |params: &mut Vec<(ParamID, ParamValue)>| {
+            if let Some(slot) = params.iter_mut().find(|p| p.0 == id) {
+                slot.1 = value;
+                true
+            } else if !IN_AUDIO.get() || params.len() < params.capacity() {
+                params.push((id, value));
+                true
+            } else {
+                false
+            }
+        };
+        if !IN_AUDIO.get() {
+            queue(&mut self.0.params.lock().unwrap_or_else(|e| e.into_inner()));
+            return kResultOk;
+        }
+        // Realtime: never wait for the UI thread, never grow the queue.
+        let queued = match self.0.params.try_lock() {
+            Ok(mut params) => queue(&mut params),
+            Err(TryLockError::Poisoned(e)) => queue(&mut e.into_inner()),
+            Err(TryLockError::WouldBlock) => false,
+        };
+        if !queued && !self.0.missed.record(id, value) {
+            self.0.dirty.store(true, Ordering::Release);
         }
         kResultOk
     }
@@ -416,6 +488,10 @@ impl ParamChanges {
 
     pub fn clear(&self) {
         self.count.set(0);
+    }
+
+    pub fn has_any(&self) -> bool {
+        self.count.get() > 0
     }
 
     pub fn push(&self, id: ParamID, value: ParamValue) {
