@@ -738,6 +738,7 @@ fn a_slower_clip_interpolates_between_samples() {
 struct FakeStretch {
     ready: bool,
     asked: Vec<(std::ops::Range<u64>, f64)>,
+    keys: Vec<u64>,
     nested: bool,
 }
 
@@ -748,6 +749,7 @@ impl AudioSource for FakeStretch {
 
     fn stretched(&mut self, request: StretchRequest) -> ClipAudio {
         self.asked.push((request.frames.clone(), request.tempo));
+        self.keys.push(request.key);
         self.nested |= matches!(request.input, StretchInput::Nested { .. });
         if self.ready {
             ClipAudio::Ready(mono(Arc::new(vec![0.9; 100])))
@@ -774,6 +776,63 @@ fn a_pitch_corrected_compound_clip_stretches_its_nested_timeline() {
     let mut out = vec![0.0; 20];
     mix_range(&snap, 0, &mut out);
     assert_eq!(out[0], 0.9);
+}
+
+/// Stretch keys of two pitch-corrected copies of `media`, one placement apart.
+fn copy_stretch_keys(project: &Project, media: vv_core::MediaId) -> Vec<u64> {
+    let copies = [0, 10].map(|start| {
+        let mut clip = sped_up_clip(media, Rational::new(2, 1), 2);
+        clip.pitch_correction = true;
+        clip.timeline_start = start;
+        clip
+    });
+    let tl = timeline(vec![audio_track(copies.into())]);
+    let mut source = FakeStretch::default();
+    MixSnapshot::from_timeline(project, &tl, RATE, 1, &mut source);
+    assert_eq!(source.keys.len(), 2);
+    source.keys
+}
+
+#[test]
+fn copies_of_a_pitch_corrected_file_clip_share_the_stretch() {
+    let (project, a, _) = project();
+    let keys = copy_stretch_keys(&project, a);
+    assert_eq!(keys[0], keys[1]);
+}
+
+#[test]
+fn copies_of_a_pitch_corrected_compound_without_plugins_share_the_stretch() {
+    let (project, compound) = project_with_long_compound();
+    let keys = copy_stretch_keys(&project, compound);
+    assert_eq!(keys[0], keys[1]);
+}
+
+#[test]
+fn copies_of_a_pitch_corrected_compound_with_a_plugin_stretch_apart() {
+    let (mut project, compound) = project_with_long_compound();
+    let nested = project.media_pool[compound].compound.unwrap();
+    project.timelines[nested].tracks[0].mix.effects = vec![vst3(1, b"")];
+    let keys = copy_stretch_keys(&project, compound);
+    assert_ne!(keys[0], keys[1]);
+}
+
+#[test]
+fn copies_of_a_compound_holding_a_plugin_compound_stretch_apart() {
+    let (mut project, inner) = project_with_long_compound();
+    let inner_timeline = project.media_pool[inner].compound.unwrap();
+    project.timelines[inner_timeline].tracks[0].mix.effects = vec![vst3(1, b"")];
+    let outer_timeline = project
+        .timelines
+        .insert(timeline(vec![audio_track(vec![clip_at(inner, 0, 0, 60)])]));
+    let outer = project.media_pool.insert(MediaItem {
+        path: PathBuf::from("Compound Clip 2"),
+        meta: project.media_pool[inner].meta.clone(),
+        content_hash: 11,
+        compound: Some(outer_timeline),
+        folder: None,
+    });
+    let keys = copy_stretch_keys(&project, outer);
+    assert_ne!(keys[0], keys[1]);
 }
 
 /// Its audio ends at 600: past it the stretch would be silence.
