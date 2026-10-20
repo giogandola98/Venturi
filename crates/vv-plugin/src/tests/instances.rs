@@ -471,6 +471,48 @@ fn a_failed_key_is_reported_until_it_stops_being_asked() {
     assert!(!pool.failed(7));
 }
 
+#[test]
+fn a_failed_key_adopts_the_held_instance_made_aside() {
+    let counts = Arc::new(Counts::default());
+    let e = effect(CLASS, &[1]);
+    let mut made_aside = pool(&counts);
+    made_aside.begin_pass();
+    made_aside.get(request(99, &e)).unwrap();
+    let aside = made_aside.instance(99).unwrap();
+
+    let mut pool = failing_pool(&counts);
+    pool.begin_pass();
+    assert!(pool.get(request(1, &e)).is_none());
+    assert!(pool.failed(1));
+    pool.set_held(vec![(1, aside.clone())]);
+    pool.sweep();
+    pool.begin_pass();
+    let played = pool.get(request(1, &e)).expect("the held instance");
+    assert!(same(&played, &aside));
+    assert!(same(&pool.instance(1).unwrap(), &aside));
+    assert!(!pool.failed(1));
+    assert_eq!(counts.made.load(Ordering::SeqCst), 2, "no new make");
+}
+
+#[test]
+fn a_failed_key_does_not_adopt_a_held_instance_from_another_bundle() {
+    let counts = Arc::new(Counts::default());
+    let e = effect(CLASS, &[1]);
+    let mut pool = failing_pool(&counts);
+    pool.begin_pass();
+    assert!(pool.get(request(1, &e)).is_none());
+    let moved: Arc<dyn HostedPlugin> = Arc::new(Fake {
+        bundle: Some(PathBuf::from("/elsewhere/Moved.vst3")),
+        hash: AtomicU64::new(e.content_hash()),
+        counts: counts.clone(),
+    });
+    pool.set_held(vec![(1, moved)]);
+    pool.sweep();
+    pool.begin_pass();
+    assert!(pool.get(request(1, &e)).is_none());
+    assert!(pool.instance(1).is_none());
+}
+
 fn same<A: ?Sized, B: ?Sized>(a: &Arc<A>, b: &Arc<B>) -> bool {
     Arc::as_ptr(a).cast::<()>() == Arc::as_ptr(b).cast::<()>()
 }

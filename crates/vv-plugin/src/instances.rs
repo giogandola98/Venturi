@@ -152,17 +152,19 @@ impl Instances {
             return Some(instance.clone());
         }
         let path = self.known.get(&request.effect.class_id)?.path.clone();
-        if let Some(slot) = self.slots.get_mut(&request.key) {
-            slot.used_this_pass = true;
-            if matches!(slot.state, SlotState::Failed { hash: failed } if failed == hash) {
-                return None;
-            }
-        }
         let held = self
             .held
             .get(&request.key)
             .filter(|h| h.bundle().is_none_or(|b| b == path))
             .cloned();
+        if let Some(slot) = self.slots.get_mut(&request.key) {
+            slot.used_this_pass = true;
+            if held.is_none()
+                && matches!(slot.state, SlotState::Failed { hash: failed } if failed == hash)
+            {
+                return None;
+            }
+        }
         let Some(instance) =
             held.or_else(|| (self.make)(&path, request.effect, request.sample_rate))
         else {
