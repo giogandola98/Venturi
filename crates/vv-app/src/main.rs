@@ -5055,6 +5055,13 @@ fn seed_installed_from_settings(path: Option<&Path>) {
 }
 
 fn run_mcp_server(project: Option<PathBuf>) -> ! {
+    let protocol_out = match vv_mcp::protect_stdout() {
+        Ok(out) => out,
+        Err(e) => {
+            eprintln!("cannot protect the MCP output stream: {e}");
+            std::process::exit(1);
+        }
+    };
     seed_installed_from_settings(settings::Settings::default_path().as_deref());
     let mut session = vv_session::Session::default();
     if let Some(path) = project
@@ -5063,7 +5070,7 @@ fn run_mcp_server(project: Option<PathBuf>) -> ! {
         eprintln!("cannot open {}: {e}", path.display());
         std::process::exit(1);
     }
-    match vv_mcp::serve_headless_stdio(session) {
+    match vv_mcp::serve_headless_stdio(session, protocol_out) {
         Ok(()) => std::process::exit(0),
         Err(e) => {
             eprintln!("MCP server: {e}");
