@@ -338,22 +338,10 @@ fn render(
     mix: Mix,
     range: Range<u64>,
     levels: &mut LevelCache,
-    sink: impl FnMut(&[f32]) -> ControlFlow<()>,
+    mut sink: impl FnMut(&[f32]) -> ControlFlow<()>,
 ) -> Result<(), ExportError> {
     levels.refresh_known();
     let plugins = levels.plugins.pop();
-    render_with_plugins(project, mix, range, levels, plugins, sink)
-}
-
-/// `plugins` is for tests; otherwise the pool is made on the first request.
-fn render_with_plugins(
-    project: &Project,
-    mix: Mix,
-    range: Range<u64>,
-    levels: &mut LevelCache,
-    plugins: Option<Instances>,
-    mut sink: impl FnMut(&[f32]) -> ControlFlow<()>,
-) -> Result<(), ExportError> {
     let listed = levels.known.clone();
     let mut audio = StreamingAudio::new(levels);
     audio.plugins = plugins;

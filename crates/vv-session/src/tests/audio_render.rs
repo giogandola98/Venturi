@@ -859,12 +859,13 @@ fn render_creates_plugins_once_per_render() {
     track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
     let (plugins, made) = counting_pool(|| Some(Arc::new(Passthrough)));
     let frames = 2 * CHUNK_FRAMES + 1000;
-    render_with_plugins(
+    let mut levels = LevelCache::default();
+    levels.plugins = vec![plugins];
+    render(
         &project,
         Mix::Timeline(&timeline(vec![track])),
         0..frames,
-        &mut LevelCache::default(),
-        Some(plugins),
+        &mut levels,
         |_| ControlFlow::Continue(()),
     )
     .unwrap();
@@ -953,12 +954,13 @@ fn a_tail_rings_through_a_gap_spanning_chunks_and_no_ghost_follows() {
 
     let (plugins, _) = counting_pool(|| Some(Arc::new(Echo::new(Default::default()))));
     let mut chunked = Vec::new();
-    render_with_plugins(
+    let mut levels = LevelCache::default();
+    levels.plugins = vec![plugins];
+    render(
         &project,
         Mix::Timeline(&echoed),
         range.clone(),
-        &mut LevelCache::default(),
-        Some(plugins),
+        &mut levels,
         |chunk| {
             chunked.extend_from_slice(chunk);
             ControlFlow::Continue(())
@@ -1071,12 +1073,13 @@ fn a_muted_track_with_a_plugin_renders_silence() {
     track.muted = true;
     let tl = timeline(vec![track]);
     let mut out = Vec::new();
-    render_with_plugins(
+    let mut levels = LevelCache::default();
+    levels.plugins = vec![echo_plugins(Default::default())];
+    render(
         &project,
         Mix::Timeline(&tl),
         samples(0..300),
-        &mut LevelCache::default(),
-        Some(echo_plugins(Default::default())),
+        &mut levels,
         |chunk| {
             out.extend_from_slice(chunk);
             ControlFlow::Continue(())
@@ -1094,12 +1097,13 @@ fn a_clipless_track_with_a_plugin_is_not_processed() {
     empty.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
     let tl = timeline(vec![audio_track(vec![clip(1, id, 0, 25, 0)]), empty]);
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    render_with_plugins(
+    let mut levels = LevelCache::default();
+    levels.plugins = vec![echo_plugins(calls.clone())];
+    render(
         &project,
         Mix::Timeline(&tl),
         samples(0..300),
-        &mut LevelCache::default(),
-        Some(echo_plugins(calls.clone())),
+        &mut levels,
         |_| ControlFlow::Continue(()),
     )
     .unwrap();
