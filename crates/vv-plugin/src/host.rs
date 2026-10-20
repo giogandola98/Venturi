@@ -3,7 +3,7 @@
 use std::cell::Cell;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use vst3::Steinberg::Vst::{
     IAttributeList, IAttributeList_iid, IAttributeListTrait, IComponentHandler,
@@ -74,6 +74,9 @@ impl IHostApplicationTrait for HostApp {
     }
 }
 
+pub(crate) const RESTART_FLAGS: i32 =
+    RestartFlags_::kLatencyChanged | RestartFlags_::kIoChanged | RestartFlags_::kReloadComponent;
+
 /// Called from any thread when the UI has something to do.
 pub type Waker = std::sync::Arc<dyn Fn() + Send + Sync>;
 
@@ -86,7 +89,8 @@ pub(crate) struct Shared {
     pub outputs: Mutex<Vec<(ParamID, ParamValue, bool)>>,
     pub outputs_fresh: AtomicBool,
     pub dirty: AtomicBool,
-    pub latency_changed: AtomicBool,
+    /// `RestartFlags` the UI thread still has to act on.
+    pub restart: AtomicI32,
     waker: Mutex<Option<Waker>>,
 }
 
@@ -97,7 +101,7 @@ impl Shared {
             outputs: Mutex::new(Vec::with_capacity(MAX_PARAMS)),
             outputs_fresh: AtomicBool::new(false),
             dirty: AtomicBool::new(false),
-            latency_changed: AtomicBool::new(false),
+            restart: AtomicI32::new(0),
             waker: Mutex::new(None),
         }
     }
@@ -142,8 +146,9 @@ impl IComponentHandlerTrait for ComponentHandler {
     }
 
     unsafe fn restartComponent(&self, flags: int32) -> tresult {
-        if flags & RestartFlags_::kLatencyChanged != 0 {
-            self.0.latency_changed.store(true, Ordering::Release);
+        let wanted = flags & RESTART_FLAGS;
+        if wanted != 0 {
+            self.0.restart.fetch_or(wanted, Ordering::AcqRel);
         }
         self.0.wake();
         kResultOk

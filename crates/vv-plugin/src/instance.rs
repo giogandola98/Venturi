@@ -8,8 +8,8 @@ use std::sync::{Arc, TryLockError};
 use vst3::Steinberg::Vst::{
     AudioBusBuffers, AudioBusBuffers__type0, IAudioProcessor, IAudioProcessorTrait, IComponent,
     IComponentHandler, IComponentTrait, IConnectionPoint, IConnectionPointTrait, IEditController,
-    IEditControllerTrait, IParameterChanges, ProcessContext, ProcessData, ProcessSetup, SpeakerArr,
-    SpeakerArrangement,
+    IEditControllerTrait, IParameterChanges, ProcessContext, ProcessData, ProcessSetup,
+    RestartFlags_, SpeakerArr, SpeakerArrangement,
 };
 use vst3::Steinberg::{FUnknown, IBStream, IPluginBaseTrait, TUID, kResultOk};
 use vst3::{ComPtr, ComWrapper};
@@ -64,7 +64,7 @@ pub struct Vst3Instance {
     // Only a separate controller object is initialized and terminated by us.
     separate_controller: bool,
     connections: Option<(ComPtr<IConnectionPoint>, ComPtr<IConnectionPoint>)>,
-    handler: ComPtr<IComponentHandler>,
+    pub(crate) handler: ComPtr<IComponentHandler>,
     host: ComPtr<FUnknown>,
     shared: Arc<Shared>,
     rt: UnsafeCell<Rt>,
@@ -163,7 +163,7 @@ impl Vst3Instance {
         this.defaults = this.read_state();
         if !effect.component_state.bytes().is_empty() || !effect.controller_state.bytes().is_empty()
         {
-            this.load_state(effect);
+            this.load_state(&effect.component_state, &effect.controller_state);
         }
         // SAFETY: setup is complete; these start the processing the mixer drives.
         unsafe {
@@ -261,7 +261,7 @@ impl Vst3Instance {
     }
 
     // A plugin that rejects a state keeps its defaults: not worth failing the insert.
-    fn load_state(&self, effect: &Vst3Effect) {
+    fn load_state(&self, saved_component: &PluginState, saved_controller: &PluginState) {
         let stream = |bytes: &[u8]| MemStream::new(bytes.to_vec());
         // An empty half is the plugin's defaults, not "leave as is".
         let half = |saved: &PluginState, default: &[u8]| -> Vec<u8> {
@@ -272,8 +272,8 @@ impl Vst3Instance {
                 bytes.to_vec()
             }
         };
-        let component = &half(&effect.component_state, &self.defaults.0);
-        let controller = &half(&effect.controller_state, &self.defaults.1);
+        let component = &half(saved_component, &self.defaults.0);
+        let controller = &half(saved_controller, &self.defaults.1);
         // SAFETY: the streams outlive each call; the plugin copies what it needs.
         unsafe {
             if !component.is_empty() {
@@ -326,7 +326,7 @@ impl Vst3Instance {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clear();
-        self.load_state(effect);
+        self.load_state(&effect.component_state, &effect.controller_state);
         // SAFETY: a live processor.
         self.latency.store(
             unsafe { self.processor.getLatencySamples() },
@@ -397,14 +397,31 @@ impl Vst3Instance {
 
     /// An edit gesture ended since the last call.
     pub fn take_dirty(&self) -> bool {
-        if self.shared.latency_changed.swap(false, Ordering::AcqRel) {
-            // SAFETY: a live processor, from the UI thread as the spec requires.
-            self.latency.store(
-                unsafe { self.processor.getLatencySamples() },
-                Ordering::Relaxed,
-            );
-        }
         self.shared.dirty.swap(false, Ordering::AcqRel)
+    }
+
+    /// Acts on a restart the plugin asked for: the deactivate/activate cycle
+    /// the spec requires, so it applies a new latency or I/O setup. UI thread only.
+    pub fn service_restart(&self) {
+        let flags = self.shared.restart.swap(0, Ordering::AcqRel);
+        if flags == 0 {
+            return;
+        }
+        let saved = (flags & RestartFlags_::kReloadComponent != 0).then(|| self.get_state());
+        let _audio = self.lock_audio();
+        // SAFETY: a live processor and component, from the UI thread; the busy
+        // guard keeps the audio thread out while processing is stopped.
+        unsafe {
+            self.processor.setProcessing(0);
+            self.component.setActive(0);
+            if let Some((component, controller)) = &saved {
+                self.load_state(component, controller);
+            }
+            self.component.setActive(1);
+            self.processor.setProcessing(1);
+            self.latency
+                .store(self.processor.getLatencySamples(), Ordering::Relaxed);
+        }
     }
 
     pub fn state_hash(&self) -> u64 {

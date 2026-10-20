@@ -324,3 +324,30 @@ fn released_instances_are_no_longer_adopted() {
     pool.get(request(1, &e)).unwrap();
     assert_eq!(counts.made.load(Ordering::SeqCst), 2);
 }
+
+#[test]
+fn a_restart_request_is_serviced_by_the_pool_without_an_editor() {
+    use vst3::Steinberg::Vst::{IComponentHandlerTrait, RestartFlags_};
+    let class_id = "56565445535447414E00000000000008";
+    let e = effect(class_id, &[]);
+    let instance = Vst3Instance::new(&fixture_bundle(), &e, 48_000, ProcessMode::Realtime)
+        .expect("latency fixture instance");
+    let shared = instance.clone();
+    let mut pool = Instances::with_maker(
+        vec![info(class_id)],
+        Box::new(move |_, _| Some(shared.clone() as Arc<dyn HostedPlugin>)),
+    );
+    pool.begin_pass();
+    pool.get(request(1, &e)).expect("instance");
+    pool.sweep();
+    assert_eq!(instance.latency(), 0);
+    // SAFETY: the handler is a live COM object owned by the instance.
+    unsafe {
+        instance
+            .handler
+            .restartComponent(RestartFlags_::kLatencyChanged)
+    };
+    pool.begin_pass();
+    pool.get(request(1, &e)).expect("instance");
+    assert_eq!(instance.latency(), 64);
+}

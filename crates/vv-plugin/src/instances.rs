@@ -17,6 +17,8 @@ pub trait HostedPlugin: vv_audio::PluginProcessor {
     fn as_vst3(&self) -> Option<&Vst3Instance> {
         None
     }
+    /// Acts on a restart the plugin asked for; called every pass on the UI thread.
+    fn service_restart(&self) {}
     /// The state to record when an edit gesture ended since the last call.
     fn take_gesture(&self) -> Option<(PluginState, PluginState)> {
         None
@@ -90,6 +92,7 @@ impl Instances {
                 return None;
             }
             entry.used_this_pass = true;
+            entry.instance.service_restart();
             if entry.instance.state_hash() != hash {
                 entry.instance.set_state(request.effect);
                 entry.instance.set_state_hash(hash);
@@ -185,6 +188,10 @@ impl HostedPlugin for Vst3Instance {
 
     fn as_vst3(&self) -> Option<&Vst3Instance> {
         Some(self)
+    }
+
+    fn service_restart(&self) {
+        Vst3Instance::service_restart(self)
     }
 
     fn take_gesture(&self) -> Option<(PluginState, PluginState)> {
