@@ -353,10 +353,6 @@ impl PluginEditors {
             !is_dropped(dropped, editor.instance())
         });
     }
-
-    pub fn close_all(&mut self, project: &mut Project, history: &mut History) {
-        self.close_where(project, history, false, |_, _, _| false);
-    }
 }
 
 #[cfg(test)]
