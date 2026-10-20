@@ -36,17 +36,19 @@ fn first_failure(class_id: &str) -> bool {
     seen.insert(class_id.to_owned())
 }
 
-struct Entry {
-    instance: Arc<dyn HostedPlugin>,
+struct Slot {
     used_this_pass: bool,
-    /// Reactivated by its first `get` of an offline render.
-    stale: bool,
+    state: SlotState,
 }
 
-/// A key whose creation failed: not retried until its state changes.
-struct Failure {
-    hash: u64,
-    used_this_pass: bool,
+enum SlotState {
+    Ready {
+        instance: Arc<dyn HostedPlugin>,
+        /// Reactivated by its first `get` of an offline render.
+        stale: bool,
+    },
+    /// Creation failed: not retried until the effect's state changes.
+    Failed { hash: u64 },
 }
 
 /// Instances are torn down on drop, which calls into the plugin: `sweep` and
@@ -54,8 +56,7 @@ struct Failure {
 /// pool may move between a worker's threads, one at a time, and is dropped
 /// on whichever holds it.
 pub struct Instances {
-    entries: HashMap<u64, Entry>,
-    failed: HashMap<u64, Failure>,
+    slots: HashMap<u64, Slot>,
     known: HashSet<String>,
     make: MakeInstance,
     /// Instances an editor window drives, by the key they stand for.
@@ -96,8 +97,7 @@ impl Instances {
 
     pub fn with_maker(known: Vec<PluginInfo>, make: MakeInstance) -> Self {
         Self {
-            entries: HashMap::new(),
-            failed: HashMap::new(),
+            slots: HashMap::new(),
             known: known.into_iter().map(|i| i.class_id).collect(),
             make,
             held: HashMap::new(),
@@ -106,56 +106,61 @@ impl Instances {
 
     pub fn get(&mut self, request: PluginRequest<'_>) -> Option<PluginHandle> {
         let hash = request.effect.content_hash();
-        if let Some(entry) = self.entries.get_mut(&request.key) {
-            if entry.used_this_pass {
+        if let Some(Slot {
+            used_this_pass,
+            state: SlotState::Ready { instance, stale },
+        }) = self.slots.get_mut(&request.key)
+        {
+            if *used_this_pass {
                 // An analysis shares the pass with the live chain; they run
                 // one after the other, never at once.
-                return Some(entry.instance.clone());
+                return Some(instance.clone());
             }
-            entry.used_this_pass = true;
-            entry.instance.service_restart();
-            if std::mem::take(&mut entry.stale) {
-                entry.instance.reactivate();
+            *used_this_pass = true;
+            instance.service_restart();
+            if std::mem::take(stale) {
+                instance.reactivate();
             }
-            if entry.instance.state_hash() != hash {
-                entry.instance.set_state(request.effect);
-                entry.instance.set_state_hash(hash);
+            if instance.state_hash() != hash {
+                instance.set_state(request.effect);
+                instance.set_state_hash(hash);
             }
-            return Some(entry.instance.clone());
+            return Some(instance.clone());
         }
         if !self.known.contains(&request.effect.class_id) {
             return None;
         }
-        if let Some(failure) = self.failed.get_mut(&request.key) {
-            failure.used_this_pass = true;
-            if failure.hash == hash {
+        if let Some(slot) = self.slots.get_mut(&request.key) {
+            slot.used_this_pass = true;
+            if matches!(slot.state, SlotState::Failed { hash: failed } if failed == hash) {
                 return None;
             }
         }
         let held = self.held.get(&request.key).cloned();
         let Some(instance) = held.or_else(|| (self.make)(request.effect, request.sample_rate))
         else {
-            self.failed.insert(
+            self.slots.insert(
                 request.key,
-                Failure {
-                    hash,
+                Slot {
                     used_this_pass: true,
+                    state: SlotState::Failed { hash },
                 },
             );
             return None;
         };
-        self.failed.remove(&request.key);
         if self.held.contains_key(&request.key) && instance.state_hash() != hash {
             instance.set_state(request.effect);
         }
         instance.set_state_hash(hash);
         let handle = instance.clone();
-        self.entries.insert(
+        self.slots.insert(
             request.key,
-            Entry {
-                instance,
+            Slot {
                 used_this_pass: true,
-                stale: false,
+                state: SlotState::Ready {
+                    instance,
+                    stale: false,
+                },
             },
         );
         Some(handle)
@@ -175,39 +180,50 @@ impl Instances {
 
     /// Whether the last attempt to make the instance under `key` failed.
     pub fn failed(&self, key: u64) -> bool {
-        self.failed.contains_key(&key)
+        matches!(
+            self.slots.get(&key),
+            Some(Slot {
+                state: SlotState::Failed { .. },
+                ..
+            })
+        )
     }
 
     /// An offline pool starts a new render: each instance is reactivated
     /// by its first `get`, as it carries the previous render's tail.
     pub fn begin_render(&mut self) {
-        for entry in self.entries.values_mut() {
-            entry.stale = true;
+        for slot in self.slots.values_mut() {
+            if let SlotState::Ready { stale, .. } = &mut slot.state {
+                *stale = true;
+            }
         }
     }
 
     pub fn begin_pass(&mut self) {
-        for entry in self.entries.values_mut() {
-            entry.used_this_pass = false;
-        }
-        for failure in self.failed.values_mut() {
-            failure.used_this_pass = false;
+        for slot in self.slots.values_mut() {
+            slot.used_this_pass = false;
         }
     }
 
     /// Drops what the last pass did not ask for.
     pub fn sweep(&mut self) {
-        self.entries.retain(|_, e| e.used_this_pass);
-        self.failed.retain(|_, f| f.used_this_pass);
+        self.slots.retain(|_, slot| slot.used_this_pass);
     }
 
     /// Forgets every failure so the next `get` tries again.
     pub fn clear_failures(&mut self) {
-        self.failed.clear();
+        self.slots
+            .retain(|_, slot| matches!(slot.state, SlotState::Ready { .. }));
     }
 
     pub fn instance(&self, key: u64) -> Option<Arc<dyn HostedPlugin>> {
-        self.entries.get(&key).map(|e| e.instance.clone())
+        match self.slots.get(&key) {
+            Some(Slot {
+                state: SlotState::Ready { instance, .. },
+                ..
+            }) => Some(instance.clone()),
+            _ => None,
+        }
     }
 }
 
