@@ -379,11 +379,17 @@ struct BothMeasures<'c> {
     cache: &'c mut LevelCache,
     /// By segments, whole.
     levels: Vec<(f32, f32)>,
+    /// The live pool makes every plugin.
+    live_plugins: bool,
 }
 
 impl AudioSource for BothMeasures<'_> {
     fn file(&mut self, path: &Path, stream: usize) -> ClipAudio {
         decoded_whole(path, stream).map_or(ClipAudio::Missing, ClipAudio::Ready)
+    }
+
+    fn plugin(&mut self, _: vv_audio::PluginRequest<'_>) -> Option<vv_audio::PluginHandle> {
+        self.live_plugins.then(|| Arc::new(Passthrough) as _)
     }
 
     fn level(&mut self, analysis: LevelAnalysis) -> LevelReading {
@@ -395,9 +401,19 @@ impl AudioSource for BothMeasures<'_> {
 }
 
 fn both_measures(project: &Project, tl: &Timeline, cache: &mut LevelCache) -> Vec<(f32, f32)> {
+    both_measures_through(project, tl, cache, false)
+}
+
+fn both_measures_through(
+    project: &Project,
+    tl: &Timeline,
+    cache: &mut LevelCache,
+    live_plugins: bool,
+) -> Vec<(f32, f32)> {
     let mut source = BothMeasures {
         cache,
         levels: Vec::new(),
+        live_plugins,
     };
     MixSnapshot::from_timeline(
         project,
@@ -1105,10 +1121,6 @@ fn normalized_after_plugin(project: &mut Project, nested: bool, name: &str) -> T
     tl
 }
 
-fn measure_once(project: &Project, tl: &Timeline, levels: &mut LevelCache) {
-    both_measures(project, tl, levels);
-}
-
 #[test]
 fn a_level_measured_while_a_plugin_failed_is_not_kept_for_a_working_render() {
     for nested in [false, true] {
@@ -1117,7 +1129,7 @@ fn a_level_measured_while_a_plugin_failed_is_not_kept_for_a_working_render() {
         let (failing, _) = counting_pool(|| None);
         let (mut levels, dir) = disk_cache(&format!("fail{nested}"), failing);
 
-        measure_once(&project, &tl, &mut levels);
+        both_measures_through(&project, &tl, &mut levels, true);
         assert!(levels.degraded, "nested {nested}");
         assert_eq!(level_files(&dir), 0, "nested {nested}");
         let rendered = levels.rendered;
@@ -1126,7 +1138,7 @@ fn a_level_measured_while_a_plugin_failed_is_not_kept_for_a_working_render() {
         let (working, _) = counting_pool(|| Some(Arc::new(Passthrough)));
         levels.plugins = Some(working);
         levels.degraded = false;
-        measure_once(&project, &tl, &mut levels);
+        both_measures_through(&project, &tl, &mut levels, true);
         assert!(
             levels.rendered > rendered,
             "nested {nested}: measured again"
@@ -1135,7 +1147,7 @@ fn a_level_measured_while_a_plugin_failed_is_not_kept_for_a_working_render() {
         assert!(level_files(&dir) > 0, "nested {nested}");
 
         let rendered = levels.rendered;
-        measure_once(&project, &tl, &mut levels);
+        both_measures_through(&project, &tl, &mut levels, true);
         assert_eq!(levels.rendered, rendered, "nested {nested}: found");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1148,7 +1160,59 @@ fn a_bypassed_plugin_does_not_degrade_a_measure() {
     tl.tracks[0].mix.effects[0].enabled = false;
     let (failing, _) = counting_pool(|| None);
     let (mut levels, dir) = disk_cache("bypassed", failing);
-    measure_once(&project, &tl, &mut levels);
+    both_measures_through(&project, &tl, &mut levels, true);
+    assert!(!levels.degraded);
+    assert!(level_files(&dir) > 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Halves the audio.
+struct Halve;
+
+impl vv_audio::PluginProcessor for Halve {
+    fn process(&self, samples: &mut [f32], _: usize) {
+        samples.iter_mut().for_each(|s| *s *= 0.5);
+    }
+    fn reset(&self) {}
+    fn latency(&self) -> u32 {
+        0
+    }
+}
+
+impl vv_plugin::HostedPlugin for Halve {
+    fn set_state(&self, _: &vv_core::Vst3Effect) {}
+    fn state_hash(&self) -> u64 {
+        0
+    }
+    fn mark_state(&self, _: u64) {}
+}
+
+#[test]
+fn a_measure_plays_a_plugin_the_live_pool_did_not_make_as_its_key_says() {
+    let mut project = Project::default();
+    let tl = normalized_after_plugin(&mut project, false, "reverse.wav");
+    // `BothMeasures` keys the segments with no plugin made.
+    let (failing, _) = counting_pool(|| None);
+    let (mut dry, dry_dir) = disk_cache("reverse-dry", failing);
+    let (halving, _) = counting_pool(|| Some(Arc::new(Halve)));
+    let (mut wet, wet_dir) = disk_cache("reverse-wet", halving);
+    let expected = both_measures(&project, &tl, &mut dry)[0].0;
+    let measured = both_measures(&project, &tl, &mut wet)[0].0;
+    assert!(expected > 0.1);
+    assert_eq!(measured, expected);
+    assert!(!wet.degraded);
+    let _ = std::fs::remove_dir_all(dry_dir);
+    let _ = std::fs::remove_dir_all(wet_dir);
+}
+
+#[test]
+fn a_plugin_that_is_not_installed_does_not_degrade_a_measure() {
+    let mut project = Project::default();
+    let mut tl = normalized_after_plugin(&mut project, false, "uninstalled.wav");
+    tl.tracks[0].mix.effects[0] = plugin_effect("00000000000000000000000000000000", &[]);
+    let (pool, _) = counting_pool(|| None);
+    let (mut levels, dir) = disk_cache("uninstalled", pool);
+    both_measures(&project, &tl, &mut levels);
     assert!(!levels.degraded);
     assert!(level_files(&dir) > 0);
     let _ = std::fs::remove_dir_all(&dir);

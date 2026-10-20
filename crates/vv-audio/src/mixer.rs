@@ -1187,6 +1187,7 @@ fn collect_clips(
                 sample_rate,
                 channels,
                 segments,
+                dry: unmade_plugins(inserts),
             })
         };
         let inserts = resolve_chain(
@@ -1249,6 +1250,11 @@ fn collect_clips(
                 sample_rate,
                 channels,
                 segments,
+                dry: tracks
+                    .iter()
+                    .flat_map(|t| unmade_plugins(&t.inserts))
+                    .chain(unmade_plugins(inserts))
+                    .collect(),
             })
         };
         let inserts = resolve_chain(
@@ -1470,6 +1476,17 @@ fn request_plugins(
                     handle,
                 })
             }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The keys of the plugins in `inserts` that process but were not made.
+fn unmade_plugins(inserts: &[Insert]) -> Vec<u64> {
+    inserts
+        .iter()
+        .filter_map(|insert| match insert {
+            Insert::Plugin(plugin) if plugin.handle.is_none() => Some(plugin.key),
             _ => None,
         })
         .collect()
