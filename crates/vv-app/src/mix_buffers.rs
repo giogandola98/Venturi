@@ -87,6 +87,7 @@ struct OwnedAnalysis {
     format: (u32, u16),
     segments: Vec<LevelSegment>,
     dry: Vec<u64>,
+    scope: u64,
 }
 
 impl OwnedAnalysis {
@@ -101,6 +102,7 @@ impl OwnedAnalysis {
             channels: self.format.1,
             segments: self.segments.clone(),
             dry: self.dry.clone(),
+            scope: self.scope,
         }
     }
 }
@@ -245,6 +247,8 @@ pub struct MixBufferCache {
     /// Keys of the levels and stretches rendered while a plugin was not
     /// made: a rescan measures them again.
     degraded: HashSet<u64>,
+    /// Bumped by a rescan: the workers' pools forget their failures.
+    retry: Arc<AtomicU64>,
     /// Stops the level worker's measures when the cache drops.
     closing: Arc<AtomicBool>,
     /// Created on the first plugin asked for, so projects without plugins
@@ -281,10 +285,14 @@ impl MixBufferCache {
         let (stretch_tx, stretch_rx) = mpsc::channel();
         let stretch_busy = Arc::new(AtomicUsize::new(0));
         let worker_stretch_busy = stretch_busy.clone();
+        let retry = Arc::new(AtomicU64::new(0));
+        let stretch_retry = retry.clone();
         let stretch_worker = Worker::spawn(move |jobs: mpsc::Receiver<StretchJob>| {
             let mut cache = worker_levels();
             cache.threads = 1;
+            let mut retried = 0;
             for StretchJob { project, stretch } in jobs {
+                retry_failures(&mut cache, &stretch_retry, &mut retried);
                 cache.cancel = Some(stretch.cancelled.clone());
                 cache.degraded = false;
                 let result = match stretch_offline(&stretch.request(&project), &mut cache) {
@@ -306,12 +314,15 @@ impl MixBufferCache {
         let worker_level_busy = level_busy.clone();
         let closing = Arc::new(AtomicBool::new(false));
         let worker_closing = closing.clone();
+        let level_retry = retry.clone();
         let level_worker = Worker::spawn(move |jobs: mpsc::Receiver<LevelJob>| {
             // Half the cores: the playback's decodes need the rest.
             let mut cache = worker_levels();
             cache.threads = cache.threads.div_ceil(2);
             cache.cancel = Some(worker_closing.clone());
+            let mut retried = 0;
             while let Ok(first) = jobs.recv() {
+                retry_failures(&mut cache, &level_retry, &mut retried);
                 let mut batch = vec![first];
                 // Only the newest job of each slot is worth measuring.
                 while let Ok(job) = jobs.try_recv() {
@@ -379,6 +390,7 @@ impl MixBufferCache {
             level_worker,
             level_rx,
             degraded: HashSet::new(),
+            retry,
             closing,
             plugins: None,
         }
@@ -487,6 +499,7 @@ impl MixBufferCache {
     /// current installed list.
     pub fn reset_plugins(&mut self) {
         self.plugins = None;
+        self.retry.fetch_add(1, Ordering::Relaxed);
         self.remeasure_degraded();
     }
 
@@ -495,6 +508,7 @@ impl MixBufferCache {
         if let Some(plugins) = &mut self.plugins {
             plugins.clear_failures();
         }
+        self.retry.fetch_add(1, Ordering::Relaxed);
         self.remeasure_degraded();
     }
 
@@ -867,6 +881,13 @@ impl MixBufferCache {
 }
 
 /// In memory in this crate's tests: they would fill the user's cache.
+fn retry_failures(cache: &mut LevelCache, retry: &AtomicU64, retried: &mut u64) {
+    let now = retry.load(Ordering::Relaxed);
+    if std::mem::replace(retried, now) != now {
+        cache.clear_plugin_failures();
+    }
+}
+
 fn worker_levels() -> LevelCache {
     if cfg!(test) {
         LevelCache::default()
@@ -965,6 +986,7 @@ impl AudioSource for MixBufferCache {
                     format: (analysis.sample_rate, analysis.channels),
                     segments: analysis.segments,
                     dry: analysis.dry,
+                    scope: analysis.scope,
                 });
                 self.levels.insert(key, None);
                 LevelReading::Pending(last)

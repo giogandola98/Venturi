@@ -489,6 +489,13 @@ impl LevelCache {
         }
     }
 
+    /// Lets the plugins that failed be made again by the next render.
+    pub fn clear_plugin_failures(&mut self) {
+        if let Some(plugins) = &mut self.plugins {
+            plugins.clear_failures();
+        }
+    }
+
     fn refresh_known(&mut self) {
         let now = (self.installed)();
         if self.known.as_ref().is_some_and(|k| !Arc::ptr_eq(k, &now)) {

@@ -712,3 +712,73 @@ fn previewing_a_media_keeps_the_timeline_blocks_and_not_the_previous_media() {
     cache.sweep_unused();
     assert!(blocks_held(&cache, &second).is_empty());
 }
+
+fn analysis<'a>(
+    project: &'a Project,
+    timeline: &'a vv_core::Timeline,
+    key: u64,
+) -> LevelAnalysis<'a> {
+    LevelAnalysis {
+        slot: None,
+        project,
+        timeline,
+        measured: vv_audio::Measured {
+            channel: vv_core::MixerChannel::Master,
+            insert: 0,
+            clip: None,
+        },
+        mode: vv_core::NormalizeMode::SamplePeak,
+        sample_rate: 48_000,
+        channels: 1,
+        segments: vec![LevelSegment {
+            frames: 0..10,
+            preroll: 0,
+            key,
+        }],
+        dry: Vec::new(),
+        scope: 0,
+    }
+}
+
+#[test]
+fn a_rescan_measures_again_what_was_rendered_while_a_plugin_was_not_made() {
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    let (project, timeline) = (
+        Project::default(),
+        vv_core::Timeline {
+            name: String::new(),
+            fps: vv_core::Rational::new(25, 1),
+            resolution: (4, 2),
+            tracks: Vec::new(),
+            markers: Vec::new(),
+            master: Default::default(),
+        },
+    );
+    let (bad, good) = (
+        analysis(&project, &timeline, 1),
+        analysis(&project, &timeline, 2),
+    );
+    let (bad_key, good_key) = (bad.key(), good.key());
+    cache.levels.insert(bad_key, Some(1.0));
+    cache.levels.insert(good_key, Some(2.0));
+    let blocks = SampleBlocks::contiguous(Arc::new(Vec::new()), 0, 1);
+    cache.stretched.insert(10, Stretch::Ready(blocks.clone()));
+    cache.stretched.insert(11, Stretch::Ready(blocks));
+    cache.stretched.insert(12, Stretch::Pending(Arc::default()));
+    cache.degraded.extend([bad_key, 10, 12]);
+
+    cache.clear_plugin_failures();
+
+    assert!(!cache.levels.contains_key(&bad_key));
+    assert_eq!(cache.levels[&good_key], Some(2.0));
+    assert!(!cache.stretched.contains_key(&10));
+    assert!(cache.stretched.contains_key(&11));
+    assert!(matches!(cache.stretched[&12], Stretch::Pending(_)));
+    assert!(cache.degraded.is_empty());
+    assert!(matches!(cache.level(bad), LevelReading::Pending(None)));
+    assert_eq!(cache.queued_levels.len(), 1);
+
+    cache.degraded.extend([bad_key, 99]);
+    cache.sweep_unused();
+    assert_eq!(cache.degraded, HashSet::from([bad_key]));
+}

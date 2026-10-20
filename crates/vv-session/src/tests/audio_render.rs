@@ -1217,3 +1217,34 @@ fn a_plugin_that_is_not_installed_does_not_degrade_a_measure() {
     assert!(level_files(&dir) > 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_measure_inside_a_compound_plays_unmade_plugins_as_its_key_says() {
+    let mut project = Project::default();
+    let file = media(
+        &mut project,
+        chirp("reverse-nested.wav", 48_000, 4),
+        48_000,
+        1,
+    );
+    let mut track = audio_track(vec![clip(1, file, 0, 100, 0)]);
+    track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    let mut inner = timeline(vec![track]);
+    inner.master.effects = vec![normalize(NormalizeMode::SamplePeak)];
+    let inner = project.timelines.insert(inner);
+    let compound = project.media_pool.insert(MediaItem {
+        compound: Some(inner),
+        ..project.media_pool[file].clone()
+    });
+    let tl = timeline(vec![audio_track(vec![clip(2, compound, 0, 100, 0)])]);
+    let (failing, _) = counting_pool(|| None);
+    let (mut dry, dry_dir) = disk_cache("nested-dry", failing);
+    let (halving, _) = counting_pool(|| Some(Arc::new(Halve)));
+    let (mut wet, wet_dir) = disk_cache("nested-wet", halving);
+    let expected = both_measures(&project, &tl, &mut dry)[0].0;
+    let measured = both_measures(&project, &tl, &mut wet)[0].0;
+    assert!(expected > 0.1);
+    assert_eq!(measured, expected);
+    let _ = std::fs::remove_dir_all(dry_dir);
+    let _ = std::fs::remove_dir_all(wet_dir);
+}
