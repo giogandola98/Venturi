@@ -3,13 +3,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use vv_audio::{AudioSource, ClipAudio, MixSnapshot, PluginHandle, PluginProcessor, PluginRequest};
-use vv_core::{EffectId, PluginState, Vst3Effect};
+use vv_core::Vst3Effect;
 
 use super::*;
 use crate::scan;
-use crate::testing::fixture_bundle;
+use crate::testing::{
+    FIXTURE_CLASS_ID, fixture_dir, fixture_effect, fixture_info, fixture_instance,
+};
 
-const CLASS: &str = "56565445535447414E00000000000001";
+const CLASS: &str = FIXTURE_CLASS_ID;
 
 #[derive(Default)]
 struct Counts {
@@ -61,10 +63,7 @@ impl HostedPlugin for Fake {
 fn info(class_id: &str) -> PluginInfo {
     PluginInfo {
         class_id: class_id.into(),
-        name: "Fake".into(),
-        vendor: "Venturi".into(),
-        version: "1.0.0".into(),
-        path: PathBuf::from("/fake.vst3"),
+        ..fixture_info()
     }
 }
 
@@ -84,13 +83,8 @@ fn pool(counts: &Arc<Counts>) -> Instances {
 
 fn effect(class_id: &str, state: &[u8]) -> Vst3Effect {
     Vst3Effect {
-        id: EffectId(1),
         class_id: class_id.into(),
-        name: "Fake".into(),
-        vendor: "Venturi".into(),
-        version: "1.0.0".into(),
-        component_state: PluginState::new(state.to_vec()),
-        controller_state: PluginState::new(Vec::new()),
+        ..fixture_effect(state)
     }
 }
 
@@ -279,7 +273,7 @@ fn default_level_does_not_leave_the_live_chain_dry() {
 
 #[test]
 fn fixture_instance_reused_across_passes() {
-    let infos = scan(&[fixture_bundle().parent().unwrap().to_path_buf()]);
+    let infos = scan(&[fixture_dir()]);
     let class_id = infos.first().expect("fixture is scanned").class_id.clone();
     let e = effect(&class_id, &0.25f32.to_le_bytes());
     let mut pool = Instances::realtime(infos.into());
@@ -428,8 +422,7 @@ fn a_restart_request_is_serviced_by_the_pool_without_an_editor() {
     use vst3::Steinberg::Vst::{IComponentHandlerTrait, RestartFlags_};
     let class_id = "56565445535447414E00000000000008";
     let e = effect(class_id, &[]);
-    let instance = Vst3Instance::new(&fixture_bundle(), &e, 48_000, ProcessMode::Realtime)
-        .expect("latency fixture instance");
+    let instance = fixture_instance(&e);
     let shared = instance.clone();
     let mut pool = Instances::with_maker(
         vec![info(class_id)].into(),

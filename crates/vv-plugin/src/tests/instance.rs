@@ -5,10 +5,10 @@ use vst3::Steinberg::Vst::{IComponentHandlerTrait, RestartFlags_};
 use vst3::Steinberg::kResultOk;
 use vst3::{ComPtr, ComRef, ComWrapper};
 use vv_audio::PluginProcessor;
-use vv_core::{EffectId, PluginState, Vst3Effect};
+use vv_core::Vst3Effect;
 
 use super::*;
-use crate::testing::fixture_bundle;
+use crate::testing::{fixture_bundle, fixture_effect, fixture_instance};
 
 struct CountingAlloc;
 
@@ -183,29 +183,18 @@ fn interleave_maps_mono_and_surround() {
 }
 
 fn effect(state: Vec<u8>) -> Vst3Effect {
-    effect_of("56565445535447414E00000000000001", state)
+    fixture_effect(&state)
 }
 
 fn effect_of(class_id: &str, state: Vec<u8>) -> Vst3Effect {
     Vst3Effect {
-        id: EffectId(1),
         class_id: class_id.into(),
-        name: "Venturi Test Gain".into(),
-        vendor: "Venturi".into(),
-        version: "1.0.0".into(),
-        component_state: PluginState::new(state),
-        controller_state: PluginState::new(Vec::new()),
+        ..fixture_effect(&state)
     }
 }
 
 fn fixture(state: Vec<u8>) -> Arc<Vst3Instance> {
-    Vst3Instance::new(
-        &fixture_bundle(),
-        &effect(state),
-        48_000,
-        ProcessMode::Realtime,
-    )
-    .expect("fixture instance")
+    fixture_instance(&effect(state))
 }
 
 fn run(instance: &Vst3Instance, input: &[f32]) -> Vec<f32> {
@@ -266,9 +255,7 @@ fn fixture_param_change_reaches_processor() {
 }
 
 fn split_fixture() -> Arc<Vst3Instance> {
-    let effect = effect_of("56565445535447414E00000000000002", Vec::new());
-    Vst3Instance::new(&fixture_bundle(), &effect, 48_000, ProcessMode::Realtime)
-        .expect("split fixture instance")
+    fixture_instance(&effect_of("56565445535447414E00000000000002", Vec::new()))
 }
 
 #[test]
@@ -475,9 +462,7 @@ fn set_state_with_an_empty_effect_restores_the_defaults_of_a_split_plugin() {
 const COUNTING_CLASS: &str = "56565445535447414E00000000000006";
 
 fn counting_fixture() -> Arc<Vst3Instance> {
-    let effect = effect_of(COUNTING_CLASS, Vec::new());
-    Vst3Instance::new(&fixture_bundle(), &effect, 48_000, ProcessMode::Realtime)
-        .expect("counting fixture instance")
+    fixture_instance(&effect_of(COUNTING_CLASS, Vec::new()))
 }
 
 fn edit_ids(instance: &Vst3Instance, ids: std::ops::Range<u32>) {
@@ -515,9 +500,7 @@ fn more_edits_than_one_block_holds_are_delivered_over_consecutive_blocks() {
 const METER_CLASS: &str = "56565445535447414E00000000000007";
 
 fn meter_fixture() -> Arc<Vst3Instance> {
-    let effect = effect_of(METER_CLASS, Vec::new());
-    Vst3Instance::new(&fixture_bundle(), &effect, 48_000, ProcessMode::Realtime)
-        .expect("meter fixture instance")
+    fixture_instance(&effect_of(METER_CLASS, Vec::new()))
 }
 
 fn meter_input(peak: f32) -> Vec<f32> {
@@ -620,13 +603,7 @@ fn process_with_output_parameters_does_not_allocate() {
 const LATENCY_CLASS: &str = "56565445535447414E00000000000008";
 
 fn latency_fixture(state: Vec<u8>) -> Arc<Vst3Instance> {
-    Vst3Instance::new(
-        &fixture_bundle(),
-        &effect_of(LATENCY_CLASS, state),
-        48_000,
-        ProcessMode::Realtime,
-    )
-    .expect("latency fixture instance")
+    fixture_instance(&effect_of(LATENCY_CLASS, state))
 }
 
 fn request_restart(instance: &Vst3Instance, flags: i32) {

@@ -1,9 +1,16 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
+
+use vv_core::{EffectId, PluginState, Vst3Effect};
+
+use crate::{HostedPlugin, Instances, PluginInfo, ProcessMode, Vst3Instance};
 
 const BUNDLE: &str = "VenturiTestGain";
+
+/// The gain class of the fixture plugin.
+pub const FIXTURE_CLASS_ID: &str = "56565445535447414E00000000000001";
 
 /// The fixture gain plugin as a `.vst3` bundle, built once per process.
 pub fn fixture_bundle() -> PathBuf {
@@ -11,11 +18,89 @@ pub fn fixture_bundle() -> PathBuf {
     BUNDLE_PATH.get_or_init(build_bundle).clone()
 }
 
-fn build_bundle() -> PathBuf {
-    let workspace_target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
-    let target = std::env::var_os("CARGO_TARGET_DIR")
+/// The directory to scan to find only the fixture bundle.
+pub fn fixture_dir() -> PathBuf {
+    fixture_bundle()
+        .parent()
+        .expect("bundle has a parent")
+        .to_path_buf()
+}
+
+/// What a scan reports for the fixture, pointing at a stand-in path: no bundle is built.
+pub fn fixture_info() -> PluginInfo {
+    PluginInfo {
+        class_id: FIXTURE_CLASS_ID.into(),
+        name: "Venturi Test Gain".into(),
+        vendor: "Venturi".into(),
+        version: "1.0.0".into(),
+        path: PathBuf::from("/fake.vst3"),
+    }
+}
+
+/// The fixture gain with `state` as its component state (the gain is twice its first f32).
+pub fn fixture_effect(state: &[u8]) -> Vst3Effect {
+    let info = fixture_info();
+    Vst3Effect {
+        id: EffectId(1),
+        class_id: info.class_id,
+        name: info.name,
+        vendor: info.vendor,
+        version: info.version,
+        component_state: PluginState::new(state.to_vec()),
+        controller_state: PluginState::new(Vec::new()),
+    }
+}
+
+/// A real instance of the fixture bundle, realtime at 48 kHz.
+pub fn fixture_instance(effect: &Vst3Effect) -> Arc<Vst3Instance> {
+    Vst3Instance::new(&fixture_bundle(), effect, 48_000, ProcessMode::Realtime)
+        .expect("fixture instance")
+}
+
+/// A stand-in that leaves the audio untouched.
+pub struct Passthrough;
+
+impl vv_audio::PluginProcessor for Passthrough {
+    fn process(&self, _: &mut [f32], _: usize) {}
+    fn reset(&self) {}
+    fn latency(&self) -> u32 {
+        0
+    }
+}
+
+impl HostedPlugin for Passthrough {
+    fn set_state(&self, _: &Vst3Effect) {}
+    fn state_hash(&self) -> u64 {
+        0
+    }
+    fn mark_state(&self, _: u64) {}
+}
+
+/// A pool that knows the fixture class and counts the calls to `make`.
+pub fn counting_pool(
+    mut make: impl FnMut() -> Option<Arc<dyn HostedPlugin>> + Send + 'static,
+) -> (Instances, Arc<AtomicUsize>) {
+    let made = Arc::new(AtomicUsize::new(0));
+    let counter = made.clone();
+    let pool = Instances::with_maker(
+        vec![fixture_info()].into(),
+        Box::new(move |_, _, _| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            make()
+        }),
+    );
+    (pool, made)
+}
+
+/// Where the fixture is built: the cargo target dir.
+fn target_dir() -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
-        .unwrap_or(workspace_target);
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"))
+}
+
+fn build_bundle() -> PathBuf {
+    let target = target_dir();
     // Own target dir: the outer cargo holds the lock on the shared one while tests run.
     let output = Command::new(env!("CARGO"))
         .args(["build", "-p", "vv-plugin-fixture", "--message-format=json"])

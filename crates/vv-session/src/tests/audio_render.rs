@@ -766,17 +766,15 @@ fn a_decode_thread_gone_without_an_end_fails_the_render() {
     ));
 }
 
-const FIXTURE_CLASS: &str = "56565445535447414E00000000000001";
+use vv_plugin::testing::{
+    FIXTURE_CLASS_ID as FIXTURE_CLASS, Passthrough, counting_pool, fixture_dir, fixture_effect,
+    fixture_info,
+};
 
 fn plugin_effect(class_id: &str, state: &[u8]) -> AudioEffect {
     AudioEffect::new(AudioEffectKind::Vst3(vv_core::Vst3Effect {
-        id: vv_core::EffectId(7),
         class_id: class_id.into(),
-        name: "Test".into(),
-        vendor: "Venturi".into(),
-        version: "1.0.0".into(),
-        component_state: vv_core::PluginState::new(state.to_vec()),
-        controller_state: Default::default(),
+        ..fixture_effect(state)
     }))
 }
 
@@ -805,44 +803,11 @@ fn render_with_uninstalled_plugin_equals_without() {
     assert_eq!(with, without);
 }
 
-struct Passthrough;
-
-impl vv_audio::PluginProcessor for Passthrough {
-    fn process(&self, _: &mut [f32], _: usize) {}
-    fn reset(&self) {}
-    fn latency(&self) -> u32 {
-        0
-    }
-}
-
-impl vv_plugin::HostedPlugin for Passthrough {
-    fn set_state(&self, _: &vv_core::Vst3Effect) {}
-    fn state_hash(&self) -> u64 {
-        0
-    }
-    fn mark_state(&self, _: u64) {}
-}
-
 #[test]
 fn render_creates_plugins_once_per_render() {
     let (project, mut track) = chirp_project(20);
     track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
-    let made = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let counter = made.clone();
-    let known = vec![vv_plugin::PluginInfo {
-        class_id: FIXTURE_CLASS.into(),
-        name: "Test".into(),
-        vendor: "Venturi".into(),
-        version: "1.0.0".into(),
-        path: PathBuf::from("/fake.vst3"),
-    }];
-    let plugins = vv_plugin::Instances::with_maker(
-        known.into(),
-        Box::new(move |_, _, _| {
-            counter.fetch_add(1, Ordering::SeqCst);
-            Some(Arc::new(Passthrough))
-        }),
-    );
+    let (plugins, made) = counting_pool(|| Some(Arc::new(Passthrough)));
     let frames = 2 * CHUNK_FRAMES + 1000;
     render_with_plugins(
         &project,
@@ -858,11 +823,7 @@ fn render_creates_plugins_once_per_render() {
 
 #[test]
 fn export_applies_fixture_gain() {
-    let dir = vv_plugin::testing::fixture_bundle()
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    let infos = vv_plugin::scan(&[dir]);
+    let infos = vv_plugin::scan(&[fixture_dir()]);
     assert!(infos.iter().any(|i| i.class_id == FIXTURE_CLASS));
     vv_plugin::set_installed(infos);
 
@@ -940,17 +901,7 @@ fn a_tail_rings_through_a_gap_spanning_chunks_and_no_ghost_follows() {
     let range = samples(0..875);
     assert!(range.end - range.start > 6 * CHUNK_FRAMES);
 
-    let known = vec![vv_plugin::PluginInfo {
-        class_id: FIXTURE_CLASS.into(),
-        name: "Test".into(),
-        vendor: "Venturi".into(),
-        version: "1.0.0".into(),
-        path: PathBuf::from("/fake.vst3"),
-    }];
-    let plugins = vv_plugin::Instances::with_maker(
-        known.into(),
-        Box::new(|_, _, _| Some(Arc::new(Echo::new(Default::default())))),
-    );
+    let (plugins, _) = counting_pool(|| Some(Arc::new(Echo::new(Default::default()))));
     let mut chunked = Vec::new();
     render_with_plugins(
         &project,
@@ -979,17 +930,7 @@ fn a_tail_rings_through_a_gap_spanning_chunks_and_no_ghost_follows() {
 }
 
 fn echo_plugins(calls: Arc<std::sync::atomic::AtomicUsize>) -> vv_plugin::Instances {
-    let known = vec![vv_plugin::PluginInfo {
-        class_id: FIXTURE_CLASS.into(),
-        name: "Test".into(),
-        vendor: "Venturi".into(),
-        version: "1.0.0".into(),
-        path: PathBuf::from("/fake.vst3"),
-    }];
-    vv_plugin::Instances::with_maker(
-        known.into(),
-        Box::new(move |_, _, _| Some(Arc::new(Echo::new(calls.clone())))),
-    )
+    counting_pool(move || Some(Arc::new(Echo::new(calls.clone())))).0
 }
 
 #[test]
@@ -1037,13 +978,7 @@ fn a_clipless_track_with_a_plugin_is_not_processed() {
 }
 
 fn fake_known() -> Vec<vv_plugin::PluginInfo> {
-    vec![vv_plugin::PluginInfo {
-        class_id: FIXTURE_CLASS.into(),
-        name: "Test".into(),
-        vendor: "Venturi".into(),
-        version: "1.0.0".into(),
-        path: PathBuf::from("/fake.vst3"),
-    }]
+    vec![fixture_info()]
 }
 
 fn fixed_list_cache() -> LevelCache {
@@ -1077,16 +1012,9 @@ fn consecutive_renders_through_a_cache_reuse_its_plugins() {
     track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
     let tl = timeline(vec![track]);
     let range = samples(0..180);
-    let made = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let counter = made.clone();
     let mut levels = fixed_list_cache();
-    levels.plugins = Some(vv_plugin::Instances::with_maker(
-        fake_known().into(),
-        Box::new(move |_, _, _| {
-            counter.fetch_add(1, Ordering::SeqCst);
-            Some(Arc::new(Echo::new(Default::default())))
-        }),
-    ));
+    let (plugins, made) = counting_pool(|| Some(Arc::new(Echo::new(Default::default()))));
+    levels.plugins = Some(plugins);
     let first = render_to_vec(&project, &tl, range.clone(), &mut levels);
     assert!(first.iter().any(|s| *s != 0.0));
     for _ in 0..3 {
@@ -1105,16 +1033,9 @@ fn a_failing_plugin_is_attempted_once_across_renders() {
     let mut track = audio_track(vec![clip(1, id, 0, 25, 0)]);
     track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
     let tl = timeline(vec![track]);
-    let tried = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let counter = tried.clone();
     let mut levels = fixed_list_cache();
-    levels.plugins = Some(vv_plugin::Instances::with_maker(
-        fake_known().into(),
-        Box::new(move |_, _, _| {
-            counter.fetch_add(1, Ordering::SeqCst);
-            None
-        }),
-    ));
+    let (plugins, tried) = counting_pool(|| None);
+    levels.plugins = Some(plugins);
     for _ in 0..3 {
         render_to_vec(&project, &tl, samples(0..50), &mut levels);
     }
@@ -1135,14 +1056,12 @@ fn a_rescan_drops_the_pools_kept_between_renders() {
     levels.installed = Arc::new(move || source.lock().unwrap().clone());
     let made: Arc<std::sync::Mutex<Vec<Arc<Passthrough>>>> = Arc::default();
     let kept = made.clone();
-    levels.plugins = Some(vv_plugin::Instances::with_maker(
-        fake_known().into(),
-        Box::new(move |_, _, _| {
-            let instance = Arc::new(Passthrough);
-            kept.lock().unwrap().push(instance.clone());
-            Some(instance)
-        }),
-    ));
+    let (plugins, _) = counting_pool(move || {
+        let instance = Arc::new(Passthrough);
+        kept.lock().unwrap().push(instance.clone());
+        Some(instance)
+    });
+    levels.plugins = Some(plugins);
     render_to_vec(&project, &tl, samples(0..50), &mut levels);
     render_to_vec(&project, &tl, samples(0..50), &mut levels);
     assert_eq!(made.lock().unwrap().len(), 1);
