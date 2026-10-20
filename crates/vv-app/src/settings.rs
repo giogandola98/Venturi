@@ -620,10 +620,9 @@ pub struct Settings {
     /// Saved by the user, in the order they were first saved.
     pub compressor_presets: Vec<Preset<vv_core::MultibandCompressor>>,
     pub eq_presets: Vec<Preset<vv_core::Equalizer>>,
-    /// The last VST3 scan; empty until one has run.
-    pub vst3_plugins: Vec<vv_plugin::PluginInfo>,
-    /// A scan has run, so an empty `vst3_plugins` means none were found.
-    pub vst3_scanned: bool,
+    /// The last VST3 scan; `None` until one has run, `Some` empty when it
+    /// found none.
+    pub vst3_plugins: Option<Vec<vv_plugin::PluginInfo>>,
     /// Bundles whose scan crashed; not loaded again until they change on disk.
     pub vst3_blocklist: Vec<Blocked>,
     /// Microphone of the voiceover, by name; `None` is the system's default.
@@ -701,8 +700,7 @@ impl Default for Settings {
             panels: PanelLayout::default(),
             compressor_presets: Vec::new(),
             eq_presets: Vec::new(),
-            vst3_plugins: Vec::new(),
-            vst3_scanned: false,
+            vst3_plugins: None,
             vst3_blocklist: Vec::new(),
             input_device: None,
             recording_format: None,
@@ -901,7 +899,7 @@ impl Settings {
     }
 
     pub fn needs_plugin_scan(&self) -> bool {
-        !self.vst3_scanned
+        self.vst3_plugins.is_none()
     }
 
     pub fn default_path() -> Option<PathBuf> {
@@ -977,8 +975,9 @@ impl Settings {
         settings.recording_dir = file.recording_dir;
         settings.compressor_presets = readable_presets(file.compressor_presets);
         settings.eq_presets = readable_presets(file.eq_presets);
-        settings.vst3_scanned = file.vst3_scanned.unwrap_or(!file.vst3_plugins.is_empty());
-        settings.vst3_plugins = readable_entries(file.vst3_plugins);
+        let scanned = file.vst3_scanned.unwrap_or(!file.vst3_plugins.is_empty());
+        let plugins = readable_entries(file.vst3_plugins);
+        settings.vst3_plugins = (scanned || !plugins.is_empty()).then_some(plugins);
         settings.vst3_blocklist = readable_entries(file.vst3_blocklist);
         settings.mcp_enabled = file.mcp_enabled.unwrap_or(false);
         let defaults = PanelLayout::default();
@@ -1082,8 +1081,10 @@ impl Settings {
             },
             compressor_presets: preset_values(&self.compressor_presets),
             eq_presets: preset_values(&self.eq_presets),
-            vst3_plugins: utf8_entries(&self.vst3_plugins, |p| &p.path),
-            vst3_scanned: Some(self.vst3_scanned),
+            vst3_plugins: utf8_entries(self.vst3_plugins.as_deref().unwrap_or_default(), |p| {
+                &p.path
+            }),
+            vst3_scanned: Some(self.vst3_plugins.is_some()),
             vst3_blocklist: utf8_entries(&self.vst3_blocklist, |b| &b.path),
             input_device: self.input_device.clone(),
             recording_format: self.recording_format.map(|f| f.id().to_owned()),

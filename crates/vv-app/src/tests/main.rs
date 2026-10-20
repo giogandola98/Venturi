@@ -5393,8 +5393,7 @@ fn headless_startup_seeds_the_installed_list_from_the_cached_settings() {
         .join(format!("vv-headless-seed-{}", std::process::id()))
         .join("settings.json");
     let settings = settings::Settings {
-        vst3_plugins: vec![plugin.clone()],
-        vst3_scanned: true,
+        vst3_plugins: Some(vec![plugin.clone()]),
         ..Default::default()
     };
     settings.save(&path).unwrap();
@@ -5418,18 +5417,18 @@ fn a_scan_result_updates_installed_and_the_cache_together() {
     let mut settings = settings::Settings::default();
     vv_plugin::set_installed(vec![plugin("A")]);
     // A stale cache must not decide "unchanged": installed() does.
-    settings.vst3_plugins = vec![plugin("B")];
+    settings.vst3_plugins = Some(vec![plugin("B")]);
 
     assert!(apply_scan_result(&mut settings, vec![plugin("A")]));
-    assert_eq!(settings.vst3_plugins, vec![plugin("A")]);
+    assert_eq!(settings.vst3_plugins, Some(vec![plugin("A")]));
 
     assert!(!apply_scan_result(
         &mut settings,
         vec![plugin("A"), plugin("B")]
     ));
-    assert_eq!(&*vv_plugin::installed(), &settings.vst3_plugins[..]);
-    assert_eq!(settings.vst3_plugins.len(), 2);
-    assert!(settings.vst3_scanned);
+    let scanned = settings.vst3_plugins.as_deref().unwrap();
+    assert_eq!(&*vv_plugin::installed(), scanned);
+    assert_eq!(scanned.len(), 2);
     vv_plugin::set_installed(Vec::new());
 }
 

@@ -299,7 +299,7 @@ fn load_json(tag: &str, json: &str) -> Settings {
 fn a_scan_that_found_nothing_is_not_scanned_again_at_startup() {
     let mut settings = Settings::default();
     assert!(settings.needs_plugin_scan());
-    settings.vst3_scanned = true;
+    settings.vst3_plugins = Some(Vec::new());
     assert!(!settings.needs_plugin_scan());
 
     let path = std::env::temp_dir()
@@ -316,7 +316,7 @@ fn a_scan_that_found_nothing_is_not_scanned_again_at_startup() {
     settings.save(&path).unwrap();
     let loaded = Settings::load(&path);
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
-    assert!(loaded.vst3_plugins.is_empty());
+    assert_eq!(loaded.vst3_plugins, Some(Vec::new()));
     assert!(!loaded.needs_plugin_scan());
     assert_eq!(loaded.vst3_blocklist, settings.vst3_blocklist);
 }
@@ -426,10 +426,10 @@ fn a_non_utf8_plugin_path_does_not_fail_the_save() {
     let bad = PathBuf::from(std::ffi::OsString::from_vec(b"/p/b\xff.vst3".to_vec()));
     let mut settings = Settings::default();
     settings.kinetic_scroll = false;
-    settings.vst3_plugins = vec![
+    settings.vst3_plugins = Some(vec![
         plugin("a", PathBuf::from("/p/a.vst3")),
         plugin("b", bad.clone()),
-    ];
+    ]);
     settings.vst3_blocklist = vec![legacy(bad), legacy("/x/Bad.vst3")];
 
     let path = std::env::temp_dir()
@@ -441,7 +441,7 @@ fn a_non_utf8_plugin_path_does_not_fail_the_save() {
     assert!(!loaded.kinetic_scroll);
     assert_eq!(
         loaded.vst3_plugins,
-        vec![plugin("a", PathBuf::from("/p/a.vst3"))]
+        Some(vec![plugin("a", PathBuf::from("/p/a.vst3"))])
     );
     assert_eq!(loaded.vst3_blocklist, vec![legacy("/x/Bad.vst3")]);
 }
@@ -456,8 +456,62 @@ fn one_malformed_plugin_entry_does_not_reset_the_settings() {
     assert!(!loaded.kinetic_scroll);
     assert_eq!(
         loaded.vst3_plugins,
-        vec![plugin("a", PathBuf::from("/p/a.vst3"))]
+        Some(vec![plugin("a", PathBuf::from("/p/a.vst3"))])
     );
     assert_eq!(loaded.vst3_blocklist, vec![legacy("/x/Bad.vst3")]);
     assert!(!loaded.needs_plugin_scan());
+}
+
+#[test]
+fn the_scanned_state_loads_as_before_from_every_file_shape() {
+    let a = r#"{"class_id":"AA","name":"a","vendor":"v","version":"1","path":"/p/a.vst3"}"#;
+    let list = Some(vec![plugin("a", PathBuf::from("/p/a.vst3"))]);
+    let cases = [
+        ("{}".to_owned(), None),
+        (r#"{"vst3_plugins":[]}"#.to_owned(), None),
+        (format!(r#"{{"vst3_plugins":[{a}]}}"#), list.clone()),
+        (
+            r#"{"vst3_plugins":[],"vst3_scanned":true}"#.to_owned(),
+            Some(Vec::new()),
+        ),
+        (
+            r#"{"vst3_plugins":[],"vst3_scanned":false}"#.to_owned(),
+            None,
+        ),
+        (
+            format!(r#"{{"vst3_plugins":[{a}],"vst3_scanned":true}}"#),
+            list.clone(),
+        ),
+    ];
+    for (i, (json, expected)) in cases.into_iter().enumerate() {
+        let loaded = load_json(&format!("scanned-{i}"), &json);
+        assert_eq!(loaded.vst3_plugins, expected, "{json}");
+        assert_eq!(loaded.needs_plugin_scan(), expected.is_none(), "{json}");
+    }
+}
+
+#[test]
+fn the_scanned_state_is_written_as_before() {
+    let path = std::env::temp_dir()
+        .join(format!("vv-settings-written-{}", std::process::id()))
+        .join("settings.json");
+    let written = |plugins| {
+        let settings = Settings {
+            vst3_plugins: plugins,
+            ..Default::default()
+        };
+        settings.save(&path).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        (json["vst3_plugins"].clone(), json["vst3_scanned"].clone())
+    };
+    assert_eq!(
+        written(None),
+        (serde_json::json!([]), serde_json::json!(false))
+    );
+    assert_eq!(
+        written(Some(Vec::new())),
+        (serde_json::json!([]), serde_json::json!(true))
+    );
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
