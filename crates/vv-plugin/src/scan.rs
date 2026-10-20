@@ -40,14 +40,10 @@ pub fn scan_with_guard(
     marker: &Path,
     blocklist: &[PathBuf],
 ) -> (Vec<PluginInfo>, Vec<PathBuf>) {
-    let mut newly_blocked = Vec::new();
-    if let Ok(crashed) = std::fs::read_to_string(marker) {
-        let crashed = PathBuf::from(crashed.trim());
-        eprintln!("VST3 scan crashed in {}, skipping it", crashed.display());
-        if !blocklist.contains(&crashed) {
-            newly_blocked.push(crashed);
-        }
-    }
+    let newly_blocked: Vec<PathBuf> = take_crashed(marker)
+        .filter(|c| !blocklist.contains(c))
+        .into_iter()
+        .collect();
     let blocked =
         |b: &Path| blocklist.contains(&b.to_path_buf()) || newly_blocked.iter().any(|n| n == b);
     let infos = bundles_in(dirs)
@@ -57,6 +53,38 @@ pub fn scan_with_guard(
         .collect();
     let _ = std::fs::remove_file(marker);
     (infos, newly_blocked)
+}
+
+/// The bundle a previous scan died in, if any; consumes the marker. The app
+/// calls it before scanning to persist the block even if this scan crashes too.
+pub fn take_crashed(marker: &Path) -> Option<PathBuf> {
+    let bytes = std::fs::read(marker).ok()?;
+    let _ = std::fs::remove_file(marker);
+    let crashed = path_from_bytes(bytes);
+    eprintln!("VST3 scan crashed in {}, skipping it", crashed.display());
+    Some(crashed)
+}
+
+#[cfg(unix)]
+fn path_to_bytes(path: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    path.as_os_str().as_bytes().to_vec()
+}
+
+#[cfg(unix)]
+fn path_from_bytes(bytes: Vec<u8>) -> PathBuf {
+    use std::os::unix::ffi::OsStringExt;
+    PathBuf::from(std::ffi::OsString::from_vec(bytes))
+}
+
+#[cfg(not(unix))]
+fn path_to_bytes(path: &Path) -> Vec<u8> {
+    path.to_string_lossy().into_owned().into_bytes()
+}
+
+#[cfg(not(unix))]
+fn path_from_bytes(bytes: Vec<u8>) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn bundles_in(dirs: &[PathBuf]) -> Vec<PathBuf> {
@@ -91,8 +119,11 @@ fn scan_bundle(bundle: &Path, marker: Option<&Path>) -> Vec<PluginInfo> {
     {
         return infos;
     }
-    if let Some(marker) = marker {
-        let _ = std::fs::write(marker, bundle.to_string_lossy().as_bytes());
+    if let Some(marker) = marker
+        && let Err(e) = std::fs::write(marker, path_to_bytes(bundle))
+    {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| eprintln!("VST3 scan crash marker not writable ({e}): unguarded"));
     }
     // A broken plugin must not hide the others.
     let infos = crate::module::module(bundle)
