@@ -12,7 +12,7 @@ mod installed;
 mod instance;
 mod instances;
 pub use editor::Editor;
-pub use host::Waker;
+pub use host::{Waker, set_restart_waker};
 pub use installed::{installed, same_plugins, scanning, set_installed, set_scanning};
 pub use instance::{ProcessMode, Vst3Instance};
 pub use instances::{HostedPlugin, Instances, MakeInstance};

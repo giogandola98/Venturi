@@ -562,6 +562,29 @@ fn a_restart_request_is_serviced_by_the_pool_without_an_editor() {
 }
 
 #[test]
+fn service_restarts_applies_a_request_without_a_pass() {
+    use vst3::Steinberg::Vst::{IComponentHandlerTrait, RestartFlags_};
+    let class_id = "56565445535447414E00000000000008";
+    let e = effect(class_id, &[]);
+    let instance = fixture_instance(&e);
+    let shared = instance.clone();
+    let mut pool = Instances::with_maker(
+        vec![info(class_id)].into(),
+        Box::new(move |_, _, _| Some(shared.clone() as Arc<dyn HostedPlugin>)),
+    );
+    pool.begin_pass();
+    pool.get(request(1, &e)).expect("instance");
+    // SAFETY: the handler is a live COM object owned by the instance.
+    unsafe {
+        instance
+            .handler
+            .restartComponent(RestartFlags_::kLatencyChanged)
+    };
+    pool.service_restarts();
+    assert_eq!(instance.latency(), 64);
+}
+
+#[test]
 fn a_new_render_reactivates_each_instance_once_not_per_pass() {
     let counts = Arc::new(Counts::default());
     let mut pool = pool(&counts);

@@ -610,6 +610,12 @@ impl MixBufferCache {
         }
     }
 
+    pub fn service_plugin_restarts(&self) {
+        if let Some(plugins) = &self.plugins {
+            plugins.service_restarts();
+        }
+    }
+
     pub fn plugin_latency(&self, key: u64) -> Option<u32> {
         self.plugins.as_ref()?.instance(key).map(|p| p.latency())
     }

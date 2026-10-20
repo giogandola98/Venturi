@@ -609,6 +609,10 @@ impl TimelineAudio {
         self.buffers.plugin_instance(live, aside, effect, rate)
     }
 
+    pub fn service_plugin_restarts(&self) {
+        self.buffers.service_plugin_restarts();
+    }
+
     pub fn hold_plugins(&mut self, held: Vec<(u64, std::sync::Arc<dyn vv_plugin::HostedPlugin>)>) {
         self.buffers.hold_plugins(held);
     }
