@@ -540,17 +540,35 @@ impl MixSnapshot {
     }
 
     fn has_plugins(&self) -> bool {
-        let processes = |channel: &Channel| {
+        let (tracks, master) = self.skip_from();
+        master != usize::MAX || tracks.iter().any(|&t| t != usize::MAX)
+    }
+
+    /// Per track and for the master, the insert from which a normalize gain
+    /// was measured through a processing plugin, or `usize::MAX`.
+    fn skip_from(&self) -> (Vec<usize>, usize) {
+        let own = |channel: &Channel| {
             channel
                 .inserts
                 .iter()
-                .any(|i| matches!(i, Insert::Plugin(p) if p.handle.is_some()))
+                .position(|i| matches!(i, Insert::Plugin(p) if p.handle.is_some()))
+                .unwrap_or(usize::MAX)
         };
-        self.tracks.iter().chain([&self.master]).any(processes)
-            || self.clips.iter().any(|clip| match &clip.input {
-                ClipInput::Nested(nested) => nested.mix.has_plugins(),
-                ClipInput::Blocks(_) => false,
-            })
+        let mut tracks: Vec<usize> = self.tracks.iter().map(own).collect();
+        for (track, range) in &self.groups {
+            let nested = self.clips[range.clone()]
+                .iter()
+                .any(|clip| matches!(&clip.input, ClipInput::Nested(n) if n.mix.has_plugins()));
+            if let (true, Some(t)) = (nested, tracks.get_mut(*track)) {
+                *t = 0;
+            }
+        }
+        let master = if tracks.iter().any(|&t| t != usize::MAX) {
+            0
+        } else {
+            own(&self.master)
+        };
+        (tracks, master)
     }
 
     fn track(&self, index: usize) -> &Channel {
@@ -592,9 +610,10 @@ pub struct MixState {
     scratch: Vec<f32>,
     peaks: Vec<[f32; 2]>,
     next: Option<u64>,
-    /// Plugins pass through while the snapshot has some: the normalize
-    /// gains were measured through them, so they are dropped too.
-    skip_gains: bool,
+    /// First insert of each track (and of the master) whose gains were
+    /// measured through a plugin that passes through here: they are dropped.
+    track_skip: Vec<usize>,
+    master_skip: usize,
 }
 
 impl MixState {
@@ -610,7 +629,11 @@ impl MixState {
 
     fn build(snapshot: &MixSnapshot, plugins: bool) -> Self {
         let (rate, channels) = (snapshot.sample_rate, snapshot.channels);
-        let skip_gains = !plugins && snapshot.has_plugins();
+        let (track_skip, master_skip) = if plugins {
+            (vec![usize::MAX; snapshot.tracks.len()], usize::MAX)
+        } else {
+            snapshot.skip_from()
+        };
         let processors = |channel: &Channel| -> Vec<Option<Box<dyn Effect>>> {
             channel
                 .inserts
@@ -631,7 +654,8 @@ impl MixState {
                 .collect(),
             scratch: vec![0.0; MIX_BLOCK_FRAMES * snapshot.channels.max(1) as usize],
             peaks: vec![[0.0; 2]; snapshot.tracks.len()],
-            skip_gains,
+            track_skip,
+            master_skip,
             next: None,
         }
     }
@@ -1748,7 +1772,7 @@ fn mix_into(
                 ch,
                 block_time,
                 meters,
-                state.skip_gains,
+                state.track_skip.get(*track).copied().unwrap_or(usize::MAX),
             );
             let mut peak = [0.0f32; 2];
             for (dst, src) in block.chunks_exact_mut(ch).zip(scratch.chunks_exact(ch)) {
@@ -1772,7 +1796,7 @@ fn mix_into(
             ch,
             block_time,
             meters,
-            state.skip_gains,
+            state.master_skip,
         );
         for frame in block.chunks_exact_mut(ch) {
             for (c, s) in frame.iter_mut().enumerate() {
@@ -1805,12 +1829,12 @@ fn apply_inserts(
     channels: usize,
     time: u64,
     meters: Option<&[InsertMeter]>,
-    skip_gains: bool,
+    skip_from: usize,
 ) {
     for (index, insert) in inserts.iter().enumerate() {
         match insert {
             Insert::Off => {}
-            Insert::Gain(_) | Insert::ClipGains(_) if skip_gains => {}
+            Insert::Gain(_) | Insert::ClipGains(_) if index >= skip_from => {}
             Insert::Gain(gain) => samples.iter_mut().for_each(|s| *s *= gain),
             Insert::ClipGains(gains) => apply_clip_gains(gains, time, samples, channels),
             Insert::Mono => {

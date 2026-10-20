@@ -1733,8 +1733,50 @@ fn mixing_without_plugins_drops_the_gains_measured_through_them() {
     };
     let mut snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
     snap.tracks[0].inserts.push(Insert::Gain(4.0));
-    snap.master.inserts.push(Insert::ClipGains(vec![(0, 4.0)]));
+    snap.tracks[0]
+        .inserts
+        .push(Insert::ClipGains(vec![(0, 4.0)]));
     assert!(mixed(&snap, 40).iter().all(|&s| s == 0.5 * 0.5 * 4.0 * 4.0));
+    assert!(without_plugins(&snap, 40).iter().all(|&s| s == 0.5));
+}
+
+#[test]
+fn mixing_without_plugins_keeps_a_gain_before_the_plugin() {
+    let (project, tl) = plugin_timeline(vec![vst3(1, b"")]);
+    let mut source = PluginSource {
+        plugin: Some(FakePlugin::new(0.5)),
+        ..Default::default()
+    };
+    let mut snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    snap.tracks[0].inserts.insert(0, Insert::Gain(4.0));
+    assert!(without_plugins(&snap, 40).iter().all(|&s| s == 2.0));
+}
+
+#[test]
+fn mixing_without_plugins_keeps_the_gain_of_a_track_without_plugins() {
+    let (project, a, _) = project();
+    let mut plugin_track = audio_track(vec![clip_at(a, 0, 0, 5)]);
+    plugin_track.mix.effects = vec![vst3(1, b"")];
+    let tl = timeline(vec![plugin_track, audio_track(vec![clip_at(a, 0, 0, 5)])]);
+    let mut source = PluginSource {
+        plugin: Some(FakePlugin::new(0.5)),
+        ..Default::default()
+    };
+    let mut snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    snap.tracks[0].inserts.push(Insert::Gain(4.0));
+    snap.tracks[1].inserts.push(Insert::Gain(4.0));
+    assert!(without_plugins(&snap, 40).iter().all(|&s| s == 0.5 + 2.0));
+}
+
+#[test]
+fn mixing_without_plugins_drops_the_master_gain_when_a_track_has_one() {
+    let (project, tl) = plugin_timeline(vec![vst3(1, b"")]);
+    let mut source = PluginSource {
+        plugin: Some(FakePlugin::new(0.5)),
+        ..Default::default()
+    };
+    let mut snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    snap.master.inserts.push(Insert::Gain(4.0));
     assert!(without_plugins(&snap, 40).iter().all(|&s| s == 0.5));
 }
 
