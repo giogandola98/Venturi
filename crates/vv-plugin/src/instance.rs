@@ -575,26 +575,19 @@ impl Vst3Instance {
         let rt = unsafe { &mut *self.rt.get() };
         // Bounded so a plugin that keeps queueing edits from inside `process` cannot spin us.
         let mut slices = None;
-        rt.changes.clear();
-        self.shared
-            .missed
-            .drain(|id, value| rt.changes.push(id, value));
-        if rt.changes.has_any() {
-            self.run_slice(rt, 0);
-        }
         loop {
             rt.changes.clear();
             {
                 let mut params = self.shared.params.lock().unwrap_or_else(|e| e.into_inner());
                 let left = slices.get_or_insert(params.len().div_ceil(MAX_PARAMS) + 1);
-                if params.is_empty() || *left == 0 {
+                if *left == 0 {
                     break;
                 }
                 *left -= 1;
-                let n = params.len().min(MAX_PARAMS);
-                for (id, value) in params.drain(..n) {
-                    rt.changes.push(id, value);
-                }
+                self.shared.fill(&rt.changes, Some(&mut params));
+            }
+            if !rt.changes.has_any() {
+                break;
             }
             self.run_slice(rt, 0);
         }
@@ -799,18 +792,13 @@ impl PluginProcessor for Vst3Instance {
         let rt = unsafe { &mut *self.rt.get() };
         rt.changes.clear();
         match self.shared.params.try_lock() {
-            Ok(mut params) => {
-                let n = params.len().min(MAX_PARAMS);
-                for (id, value) in params.drain(..n) {
-                    rt.changes.push(id, value);
-                }
+            Ok(mut params) => self.shared.fill(&rt.changes, Some(&mut params)),
+            Err(TryLockError::Poisoned(e)) => {
+                e.into_inner().clear();
+                self.shared.fill(&rt.changes, None);
             }
-            Err(TryLockError::Poisoned(e)) => e.into_inner().clear(),
-            Err(TryLockError::WouldBlock) => {}
+            Err(TryLockError::WouldBlock) => self.shared.fill(&rt.changes, None),
         }
-        self.shared
-            .missed
-            .drain(|id, value| rt.changes.push(id, value));
         let total = samples.len() / channels;
         for start in (0..total).step_by(MIX_BLOCK_FRAMES) {
             let frames = MIX_BLOCK_FRAMES.min(total - start);
