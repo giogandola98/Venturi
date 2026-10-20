@@ -140,7 +140,8 @@ fn ramp(frames: usize, channels: usize) -> Vec<f32> {
 }
 
 fn scratch() -> [Vec<f32>; 2] {
-    [vec![9.0; 512], vec![9.0; 512]]
+    let block = vv_audio::MIX_BLOCK_FRAMES;
+    [vec![9.0; block], vec![9.0; block]]
 }
 
 #[test]
