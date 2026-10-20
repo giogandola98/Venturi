@@ -544,3 +544,33 @@ fn a_gesture_shares_the_half_it_did_not_change() {
             .shares_bytes_with(&before.component_state)
     );
 }
+
+#[test]
+fn the_aside_key_is_the_placement_key_under_the_editor_scope() {
+    let (mut project, id, _) = setup();
+    let other = project.timelines.insert(project.timelines[id].clone());
+    let key = |timeline, index| {
+        aside_key(
+            timeline,
+            &project.timelines[timeline],
+            MixerChannel::Master,
+            index,
+        )
+    };
+
+    let live = plugin_key_of(&project.timelines[id], MixerChannel::Master, 1);
+    assert_ne!(key(id, 1), live);
+    assert_ne!(key(id, 1), key(id, 2), "a placement each");
+    assert_ne!(key(id, 1), key(other, 1), "a timeline each");
+    assert_eq!(key(id, 1), key(id, 1));
+    assert_eq!(
+        key(id, 1),
+        vv_audio::plugin_key_in(
+            vv_core::stable_hash(("editor", id.raw())),
+            &project.timelines[id],
+            MixerChannel::Master,
+            1
+        )
+        .unwrap()
+    );
+}

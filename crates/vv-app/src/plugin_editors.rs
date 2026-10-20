@@ -22,8 +22,16 @@ pub(crate) enum Group {
 /// the group, counted like the mixer's placements, so duplicates stay apart.
 type Key = (TimelineId, Group, EffectId, u32);
 
-/// Keeps the editor's own instance clear of the live keys.
-const ASIDE_SALT: u64 = 0x9E37_79B9_7F4A_7C15;
+/// Key of the editor's own instance, in a scope apart from the live keys.
+fn aside_key(
+    timeline_id: TimelineId,
+    timeline: &Timeline,
+    channel: MixerChannel,
+    index: usize,
+) -> u64 {
+    let scope = vv_core::stable_hash(("editor", timeline_id.raw()));
+    vv_audio::plugin_key_in(scope, timeline, channel, index).unwrap_or(0)
+}
 
 #[derive(Default)]
 pub(crate) struct PluginEditors {
@@ -270,7 +278,7 @@ impl PluginEditors {
         self.open.remove(&key);
         let live_key = plugin_key_of(&project.timelines[timeline], channel, index);
         let live = (current == Some(timeline)).then_some(live_key);
-        let aside = live_key ^ timeline.raw().wrapping_add(1).wrapping_mul(ASIDE_SALT);
+        let aside = aside_key(timeline, &project.timelines[timeline], channel, index);
         let Some(instance) = audio.plugin_instance(live, aside, plugin) else {
             eprintln!("vv-plugin: {}: no instance for the editor", plugin.name);
             return;
