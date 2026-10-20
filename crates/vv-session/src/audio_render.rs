@@ -341,7 +341,7 @@ fn render(
     sink: impl FnMut(&[f32]) -> ControlFlow<()>,
 ) -> Result<(), ExportError> {
     levels.refresh_known();
-    let plugins = levels.plugins.take();
+    let plugins = levels.plugins.pop();
     render_with_plugins(project, mix, range, levels, plugins, sink)
 }
 
@@ -362,8 +362,7 @@ fn render_with_plugins(
     }
     let rendered = render_chunks(project, mix, range, &mut audio, &mut sink);
     // Kept for the next render (creating instances is the cost), unless a
-    // nested render moved the list on. A pool a nested render parked yields
-    // to this one: at most one is kept.
+    // nested render moved the list on.
     if let Some(plugins) = audio.plugins.take() {
         let current = match (&listed, &audio.cache.known) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
@@ -371,7 +370,7 @@ fn render_with_plugins(
             _ => false,
         };
         if current {
-            audio.cache.plugins = Some(plugins);
+            audio.cache.keep_pool(plugins);
         }
     }
     rendered
@@ -428,9 +427,11 @@ pub struct LevelCache {
     pub threads: usize,
     /// A measure this render is nested in holds claimed segments.
     holding: bool,
-    /// Kept between renders (at most one, taken by the render using it);
-    /// made from `known`, so dropped when a rescan replaces the list.
-    plugins: Option<Instances>,
+    /// Kept between renders, a render taking the last: a nested render gets
+    /// the one it used before, and each measure thread has its own. Made from
+    /// `known`, so dropped when a rescan replaces the list.
+    plugins: Vec<Instances>,
+    new_pool: Arc<dyn Fn(Arc<[vv_plugin::PluginInfo]>) -> Instances + Send + Sync>,
     known: Option<Arc<[vv_plugin::PluginInfo]>>,
     installed: Arc<dyn Fn() -> Arc<[vv_plugin::PluginInfo]> + Send + Sync>,
     /// Set, the renders through it stop with `ExportError::Cancelled`.
@@ -469,7 +470,8 @@ impl Default for LevelCache {
             reads: HashSet::new(),
             threads: std::thread::available_parallelism().map_or(1, usize::from),
             holding: false,
-            plugins: None,
+            plugins: Vec::new(),
+            new_pool: Arc::new(Instances::offline),
             known: None,
             installed: Arc::new(vv_plugin::installed),
             cancel: None,
@@ -497,7 +499,8 @@ impl LevelCache {
             reads: HashSet::new(),
             threads: 1,
             holding: self.holding,
-            plugins: self.plugins.take(),
+            plugins: self.plugins.pop().into_iter().collect(),
+            new_pool: self.new_pool.clone(),
             known: self.known.clone(),
             installed: self.installed.clone(),
             cancel: self.cancel.clone(),
@@ -508,15 +511,22 @@ impl LevelCache {
 
     /// Lets the plugins that failed be made again by the next render.
     pub fn clear_plugin_failures(&mut self) {
-        if let Some(plugins) = &mut self.plugins {
+        for plugins in &mut self.plugins {
             plugins.clear_failures();
+        }
+    }
+
+    /// Bounded: a pool per thread of a measure, and one per nesting level.
+    fn keep_pool(&mut self, plugins: Instances) {
+        if self.plugins.len() < 2 * self.threads.max(1) {
+            self.plugins.push(plugins);
         }
     }
 
     fn refresh_known(&mut self) {
         let now = (self.installed)();
         if self.known.as_ref().is_some_and(|k| !Arc::ptr_eq(k, &now)) {
-            self.plugins = None;
+            self.plugins.clear();
         }
         self.known = Some(now);
     }
@@ -530,12 +540,17 @@ impl LevelCache {
     fn absorb(&mut self, other: LevelCache) {
         self.streams.extend(other.streams);
         self.reads.extend(other.reads);
+        if self.known.is_none() {
+            self.known = other.known.clone();
+        }
         let same_list = match (&self.known, &other.known) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
             _ => false,
         };
-        if same_list && self.plugins.is_none() {
-            self.plugins = other.plugins;
+        if same_list {
+            for plugins in other.plugins {
+                self.keep_pool(plugins);
+            }
         }
         self.rendered += other.rendered;
         self.degraded |= other.degraded;
@@ -730,6 +745,9 @@ impl BytesReader<'_> {
     }
 }
 
+/// Instances an offline pool keeps for placements the chunk did not use.
+const IDLE_INSTANCES: usize = 32;
+
 type WindowKey = (PathBuf, usize, Range<u64>);
 
 /// The sources of the chunk being rendered, and what the next one may
@@ -753,8 +771,8 @@ impl<'c> StreamingAudio<'c> {
     /// Made on first use, from the list the cache knows.
     fn plugins(&mut self) -> &mut Instances {
         let known = self.cache.known.clone().unwrap_or_else(|| Arc::from([]));
-        self.plugins
-            .get_or_insert_with(|| Instances::offline(known))
+        let make = &self.cache.new_pool;
+        self.plugins.get_or_insert_with(|| make(known))
     }
 
     fn new(cache: &'c mut LevelCache) -> Self {
@@ -802,7 +820,7 @@ impl<'c> StreamingAudio<'c> {
         self.stretched.retain(|key, _| stretched_used.contains(key));
         self.levels.retain(|key, _| levels_used.contains(key));
         if let Some(plugins) = &mut self.plugins {
-            plugins.sweep();
+            plugins.sweep_idle(IDLE_INSTANCES);
         }
         Ok(snapshot)
     }
