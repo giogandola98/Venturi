@@ -483,9 +483,47 @@ fn output_queues_read_back_what_the_plugin_added() {
         for id in 100..163 {
             assert!(!out.addParameterData(&id, &mut index).is_null());
         }
-        assert!(out.addParameterData(&999, &mut index).is_null());
         assert_eq!(out.getParameterCount(), 64);
     }
+}
+
+#[test]
+fn output_ids_beyond_capacity_get_a_discarding_sink() {
+    use vst3::Steinberg::Vst::{IParamValueQueueTrait, IParameterChangesTrait};
+    let changes = crate::host::ParamChanges::output_with_capacity(2);
+    let out = changes
+        .as_com_ref::<vst3::Steinberg::Vst::IParameterChanges>()
+        .unwrap();
+    let mut index = -1;
+    // SAFETY: valid out-pointers on live host objects.
+    unsafe {
+        for id in 10..13 {
+            let queue = ComRef::from_raw(out.addParameterData(&id, &mut index)).unwrap();
+            assert_eq!(queue.addPoint(0, 0.5, &mut index), kResultOk);
+        }
+        assert_eq!(out.getParameterCount(), 2);
+        let mut seen = Vec::new();
+        changes.for_each_value(|id, _| seen.push(id));
+        assert_eq!(seen, [10, 11]);
+        let sink = ComRef::from_raw(out.addParameterData(&99, &mut index)).unwrap();
+        assert_eq!(sink.getPointCount(), 0);
+    }
+}
+
+const MANY_METERS_CLASS: &str = "56565445535447414E0000000000000E";
+
+#[test]
+fn every_declared_output_parameter_is_published() {
+    let instance = fixture_instance(&effect_of(MANY_METERS_CLASS, Vec::new()));
+    let mut audio = meter_input(0.5);
+    instance.process(&mut audio, 1);
+    let outputs = instance.shared.outputs.lock().unwrap().clone();
+    let mut ids: Vec<u32> = outputs.iter().map(|o| o.0).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, (1..=100).collect::<Vec<u32>>());
+    instance.forward_outputs();
+    assert_eq!(controller_value(&instance, 1), 0.5);
+    assert!(!instance.outputs_fresh());
 }
 
 #[test]

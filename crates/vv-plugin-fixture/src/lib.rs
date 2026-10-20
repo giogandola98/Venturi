@@ -61,6 +61,11 @@ const RESTART_CID: TUID = [
 const STATE_FAIL_CID: TUID = [
     0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 13,
 ];
+// Reports MANY_METERS parameters and writes all of them as outputs every block.
+const MANY_METERS_CID: TUID = [
+    0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 14,
+];
+const MANY_METERS: u32 = 100;
 const REACTIVATED_LATENCY: u32 = 64;
 const DEFAULT_NORMALIZED: f64 = 0.5;
 
@@ -113,6 +118,7 @@ struct Gain {
     set_processing_result: tresult,
     counts_params: bool,
     writes_meter: bool,
+    meter_count: u32,
     latency_on_reactivation: bool,
     log_tag: Option<u8>,
     mono_only: bool,
@@ -134,6 +140,7 @@ impl Gain {
             set_processing_result: kResultOk,
             counts_params: false,
             writes_meter: false,
+            meter_count: 1,
             latency_on_reactivation: false,
             log_tag: None,
             mono_only: false,
@@ -201,10 +208,14 @@ impl Gain {
         for n in 0..data.numSamples.max(0) as usize {
             peak = peak.max(unsafe { *src.add(n) }.abs());
         }
-        let (id, mut index) = (1, 0);
-        let queue = unsafe { out.addParameterData(&id, &mut index) };
-        if let Some(queue) = unsafe { ComRef::from_raw(queue) } {
-            unsafe { queue.addPoint(0, f64::from(peak.min(1.0)), &mut index) };
+        for id in 1..=self.meter_count {
+            let mut index = 0;
+            let queue = unsafe { out.addParameterData(&id, &mut index) };
+            // Deliberately unchecked beyond the null test: the host must never hand back null.
+            assert!(!queue.is_null(), "output queue for id {id} is null");
+            if let Some(queue) = unsafe { ComRef::from_raw(queue) } {
+                unsafe { queue.addPoint(0, f64::from(peak.min(1.0)), &mut index) };
+            }
         }
     }
 }
@@ -470,7 +481,7 @@ impl IEditControllerTrait for Gain {
     }
 
     unsafe fn getParameterCount(&self) -> i32 {
-        1
+        self.meter_count.max(1) as i32
     }
 
     unsafe fn getParameterInfo(&self, index: i32, info: *mut ParameterInfo) -> tresult {
@@ -600,6 +611,11 @@ impl IPluginFactoryTrait for Factory {
             },
             METER_CID => Gain {
                 writes_meter: true,
+                ..Gain::new(None)
+            },
+            MANY_METERS_CID => Gain {
+                writes_meter: true,
+                meter_count: MANY_METERS,
                 ..Gain::new(None)
             },
             LATENCY_CID => Gain {
