@@ -204,7 +204,6 @@ impl Instances {
         }
     }
 
-    /// Drops what the last pass did not ask for.
     pub fn sweep(&mut self) {
         self.slots.retain(|_, slot| slot.used_this_pass);
     }
