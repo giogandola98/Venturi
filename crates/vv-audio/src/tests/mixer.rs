@@ -2290,3 +2290,12 @@ impl crate::effect::PluginProcessor for FoldingPlugin {
         0
     }
 }
+
+#[test]
+fn the_keys_of_a_plugin_not_installed_do_not_change() {
+    let level = level_keys(
+        vec![vst3(1, b""), normalize(0.0)],
+        Some(FakePlugin::new(4.0)),
+    );
+    assert_eq!(level, [10009291406131581181]);
+}

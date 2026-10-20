@@ -57,26 +57,10 @@ enum SlotState {
 /// the drop run on the owner's thread (the UI thread for live). An offline
 /// pool may move between a worker's threads, one at a time, and is dropped
 /// on whichever holds it.
-/// Of the module binary, or of the bundle itself when that is a file.
-fn fingerprint(info: &PluginInfo) -> u64 {
-    let file = crate::bundle_binary(&info.path)
-        .filter(|binary| binary.is_file())
-        .unwrap_or_else(|| info.path.clone());
-    let stamp = std::fs::metadata(file).ok().map(|meta| {
-        let modified = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
-        (meta.len(), modified)
-    });
-    vv_core::stable_hash((&info.version, stamp))
-}
-
 pub struct Instances {
     slots: HashMap<u64, Slot>,
-    /// Scanned plugins: the path each class is made from.
+    /// Scanned plugins by class id: the path each is made from and its version.
     known: HashMap<String, PluginInfo>,
-    builds: HashMap<String, u64>,
     make: MakeInstance,
     /// Instances an editor window drives, by the key they stand for.
     held: HashMap<u64, Arc<dyn HostedPlugin>>,
@@ -117,7 +101,6 @@ impl Instances {
                 .iter()
                 .map(|i| (i.class_id.clone(), i.clone()))
                 .collect(),
-            builds: HashMap::new(),
             make,
             held: HashMap::new(),
         }
@@ -204,16 +187,12 @@ impl Instances {
         self.known.contains_key(&effect.class_id)
     }
 
-    /// Fingerprint of the installed module of `effect`'s class (scanned
-    /// version, size and mtime of the binary): `None` if not installed.
-    /// Read once per class.
-    pub fn build(&mut self, effect: &Vst3Effect) -> Option<u64> {
+    /// Fingerprint of the module this process runs for `effect`'s class;
+    /// `None` if not installed. A new build is seen after a restart, the
+    /// only time its code runs.
+    pub fn build(&self, effect: &Vst3Effect) -> Option<u64> {
         let info = self.known.get(&effect.class_id)?;
-        let build = *self
-            .builds
-            .entry(effect.class_id.clone())
-            .or_insert_with(|| fingerprint(info));
-        Some(build)
+        Some(crate::module::build(&info.path, &info.version))
     }
 
     /// Whether the last attempt to make the instance under `key` failed.

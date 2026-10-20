@@ -210,7 +210,11 @@ pub(crate) fn timeline_key(
         format!("{strip:?}").hash(&mut h);
         for effect in &strip.effects {
             if let AudioEffectKind::Vst3(plugin) = &effect.kind {
-                available(plugin).hash(&mut h);
+                let build = available(plugin);
+                build.is_some().hash(&mut h);
+                if let Some(build) = build {
+                    build.hash(&mut h);
+                }
             }
         }
     }
