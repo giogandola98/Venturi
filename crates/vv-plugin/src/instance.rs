@@ -112,8 +112,8 @@ pub struct Vst3Instance {
     separate_controller: bool,
     connections: Option<(ComPtr<IConnectionPoint>, ComPtr<IConnectionPoint>)>,
     // Drop only undoes what succeeded: VST3 forbids deactivating a plugin never activated.
-    active: bool,
-    processing: bool,
+    active: AtomicBool,
+    processing: AtomicBool,
     pub(crate) handler: ComPtr<IComponentHandler>,
     host: ComPtr<FUnknown>,
     shared: Arc<Shared>,
@@ -225,8 +225,8 @@ impl Vst3Instance {
             controller: None,
             separate_controller: false,
             connections: None,
-            active: false,
-            processing: false,
+            active: AtomicBool::new(false),
+            processing: AtomicBool::new(false),
             handler,
             host,
             shared,
@@ -250,10 +250,10 @@ impl Vst3Instance {
         // SAFETY: setup is complete; these start the processing the mixer drives.
         unsafe {
             ok(this.component.setActive(1), "setActive")?;
-            this.active = true;
+            *this.active.get_mut() = true;
             // Informational: the SDK default returns kNotImplemented.
             this.processor.setProcessing(1);
-            this.processing = true;
+            *this.processing.get_mut() = true;
         }
         this.refresh_latency_after_activation();
         Ok(Arc::new(this))
@@ -471,6 +471,30 @@ impl Vst3Instance {
     fn refresh_latency_after_activation(&self) {
         self.shared.restart.store(0, Ordering::Release);
         self.refresh_latency();
+    }
+
+    /// Stops and deactivates (only what is still running), then activates again.
+    /// A refused `setActive(1)` leaves the instance inactive: it plays dry and
+    /// the next call retries.
+    ///
+    /// # Safety
+    /// The caller holds the audio guard.
+    unsafe fn cycle_activation(&self, between: impl FnOnce()) {
+        // SAFETY: a live processor and component, per the caller.
+        unsafe {
+            if self.processing.swap(false, Ordering::Relaxed) {
+                self.processor.setProcessing(0);
+            }
+            if self.active.swap(false, Ordering::Relaxed) {
+                self.component.setActive(0);
+            }
+            between();
+            if self.component.setActive(1) == kResultOk {
+                self.active.store(true, Ordering::Relaxed);
+                self.processor.setProcessing(1);
+                self.processing.store(true, Ordering::Relaxed);
+            }
+        }
     }
 
     fn refresh_latency(&self) {
@@ -695,19 +719,17 @@ impl HostedPlugin for Vst3Instance {
         // SAFETY: a live processor and component, from the UI thread; the busy
         // guard keeps the audio thread out while processing is stopped.
         unsafe {
-            self.processor.setProcessing(0);
-            self.component.setActive(0);
-            if let Some((component, controller)) = saved {
-                // The flush above delivered the queued edits; drop what arrived since.
-                self.shared
-                    .params
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clear();
-                self.load_state(&PluginState::new(component), &PluginState::new(controller));
-            }
-            self.component.setActive(1);
-            self.processor.setProcessing(1);
+            self.cycle_activation(|| {
+                if let Some((component, controller)) = saved {
+                    // The flush above delivered the queued edits; drop what arrived since.
+                    self.shared
+                        .params
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clear();
+                    self.load_state(&PluginState::new(component), &PluginState::new(controller));
+                }
+            });
         }
         self.refresh_latency_after_activation();
     }
@@ -715,12 +737,7 @@ impl HostedPlugin for Vst3Instance {
     fn reactivate(&self) {
         let _audio = self.lock_audio();
         // SAFETY: as in `service_restart`.
-        unsafe {
-            self.processor.setProcessing(0);
-            self.component.setActive(0);
-            self.component.setActive(1);
-            self.processor.setProcessing(1);
-        }
+        unsafe { self.cycle_activation(|| {}) };
         self.refresh_latency_after_activation();
     }
 
@@ -749,6 +766,9 @@ impl PluginProcessor for Vst3Instance {
         let Some(_audio) = self.try_lock_audio() else {
             return;
         };
+        if !self.active.load(Ordering::Relaxed) {
+            return;
+        }
         // SAFETY: `busy` gives this thread exclusive use of `rt`.
         let rt = unsafe { &mut *self.rt.get() };
         rt.changes.clear();
@@ -778,6 +798,9 @@ impl PluginProcessor for Vst3Instance {
         let Some(_audio) = self.try_lock_audio() else {
             return;
         };
+        if !self.processing.load(Ordering::Relaxed) {
+            return;
+        }
         let _scope = crate::host::AudioScope::enter();
         // SAFETY: restarting processing is allowed from the audio thread.
         unsafe {
@@ -795,10 +818,10 @@ impl Drop for Vst3Instance {
     fn drop(&mut self) {
         // SAFETY: tears down in reverse of setup on live interfaces.
         unsafe {
-            if self.processing {
+            if *self.processing.get_mut() {
                 self.processor.setProcessing(0);
             }
-            if self.active {
+            if *self.active.get_mut() {
                 self.component.setActive(0);
             }
             if let Some(c) = &self.controller {

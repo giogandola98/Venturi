@@ -78,6 +78,10 @@ const LEGACY_CID: TUID = [
 const PROCESS_RESTART_CID: TUID = [
     0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 17,
 ];
+// Logged, and refuses every activation after the first.
+const REACTIVATE_FAIL_CID: TUID = [
+    0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 18,
+];
 const MANY_METERS: u32 = 100;
 const REACTIVATED_LATENCY: u32 = 64;
 const DEFAULT_NORMALIZED: f64 = 0.5;
@@ -139,6 +143,7 @@ struct Gain {
     restarts_on_activation: bool,
     restarts_in_process: bool,
     fails_state: bool,
+    fails_reactivation: bool,
     aux: bool,
     legacy: bool,
     stereo_set: AtomicBool,
@@ -165,6 +170,7 @@ impl Gain {
             restarts_on_activation: false,
             restarts_in_process: false,
             fails_state: false,
+            fails_reactivation: false,
             aux: false,
             legacy: false,
             stereo_set: AtomicBool::new(false),
@@ -376,7 +382,10 @@ impl IComponentTrait for Gain {
     unsafe fn setActive(&self, state: TBool) -> tresult {
         self.log(&format!("setActive({state})"));
         if state != 0 {
-            self.activations.fetch_add(1, Ordering::Relaxed);
+            let earlier = self.activations.fetch_add(1, Ordering::Relaxed);
+            if self.fails_reactivation && earlier > 0 {
+                return kResultFalse;
+            }
             if self.restarts_on_activation
                 && let Some(handler) = self.handler.lock().ok().and_then(|h| h.clone())
             {
@@ -759,6 +768,11 @@ impl IPluginFactoryTrait for Factory {
             PROCESS_RESTART_CID => Gain {
                 restarts_in_process: true,
                 latency_on_reactivation: true,
+                ..Gain::new(None)
+            },
+            REACTIVATE_FAIL_CID => Gain {
+                log_tag: Some(18),
+                fails_reactivation: true,
                 ..Gain::new(None)
             },
             STATE_FAIL_CID => Gain {
