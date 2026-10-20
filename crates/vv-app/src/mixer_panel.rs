@@ -350,6 +350,23 @@ pub(crate) struct Vst3View<'a> {
     pub(crate) installed: &'a [PluginInfo],
     pub(crate) scanning: bool,
     pub(crate) latency_ms: &'a dyn Fn(u64) -> Option<f32>,
+    pub(crate) failed: &'a dyn Fn(u64) -> bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Vst3Badge {
+    Missing,
+    Failed,
+}
+
+/// The "!" of an insert that cannot play: not scanned, or scanned but it
+/// failed to load.
+fn vst3_badge(missing: bool, failed: bool) -> Option<Vst3Badge> {
+    if missing {
+        Some(Vst3Badge::Missing)
+    } else {
+        failed.then_some(Vst3Badge::Failed)
+    }
 }
 
 /// Plugins by vendor, then by name.
@@ -672,10 +689,17 @@ fn effects(
         let mut name = effect_name(&effect.kind);
         let mut hover = name.clone();
         if let AudioEffectKind::Vst3(plugin) = &effect.kind {
-            if !vst3.installed.iter().any(|i| i.class_id == plugin.class_id) {
+            let key = plugin_key_of(timeline, channel, index);
+            let missing = !vst3.installed.iter().any(|i| i.class_id == plugin.class_id);
+            let badge = vst3_badge(missing, !missing && (vst3.failed)(key));
+            if let Some(badge) = badge {
                 name.insert_str(0, "! ");
-                hover = t!("mixer.vst3_missing").into_owned();
-            } else if let Some(ms) = (vst3.latency_ms)(plugin_key_of(timeline, channel, index))
+                hover = match badge {
+                    Vst3Badge::Missing => t!("mixer.vst3_missing"),
+                    Vst3Badge::Failed => t!("mixer.vst3_failed"),
+                }
+                .into_owned();
+            } else if let Some(ms) = (vst3.latency_ms)(key)
                 && ms > 0.0
             {
                 name.push_str(&format!(" {ms:.0} ms"));

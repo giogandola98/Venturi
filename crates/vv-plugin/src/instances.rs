@@ -145,6 +145,11 @@ impl Instances {
         self.known.contains(&effect.class_id)
     }
 
+    /// Whether the last attempt to make the instance under `key` failed.
+    pub fn failed(&self, key: u64) -> bool {
+        self.failed.contains_key(&key)
+    }
+
     pub fn begin_pass(&mut self) {
         for entry in self.entries.values_mut() {
             entry.used_this_pass = false;

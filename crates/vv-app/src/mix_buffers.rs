@@ -510,6 +510,10 @@ impl MixBufferCache {
         self.plugins.as_ref()?.instance(key).map(|p| p.latency())
     }
 
+    pub fn plugin_failed(&self, key: u64) -> bool {
+        self.plugins.as_ref().is_some_and(|p| p.failed(key))
+    }
+
     /// Frames `frames` of `stream` of `path`, as far as decoded; for the
     /// preview of a media, so they play at their own position.
     pub fn media_frames(

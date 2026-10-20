@@ -240,6 +240,23 @@ fn failure_is_forgotten_once_its_key_is_not_asked() {
     assert_eq!(counts.made.load(Ordering::SeqCst), 2);
 }
 
+#[test]
+fn a_failed_key_is_reported_until_it_stops_being_asked() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = failing_pool(&counts);
+    let e = effect(CLASS, &[1]);
+    assert!(!pool.failed(7));
+    pool.begin_pass();
+    assert!(pool.get(request(7, &e)).is_none());
+    assert!(pool.failed(7));
+    assert!(!pool.failed(8), "another key");
+    pool.sweep();
+    assert!(pool.failed(7), "still asked");
+    pool.begin_pass();
+    pool.sweep();
+    assert!(!pool.failed(7));
+}
+
 fn same<A: ?Sized, B: ?Sized>(a: &Arc<A>, b: &Arc<B>) -> bool {
     Arc::as_ptr(a).cast::<()>() == Arc::as_ptr(b).cast::<()>()
 }
