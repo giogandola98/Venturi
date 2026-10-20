@@ -178,11 +178,12 @@ impl Editor {
 
     /// When `idle` is next needed besides the waker's calls; `None` to sleep.
     pub fn next_wake(&self) -> Option<std::time::Duration> {
-        // Meters driven by output parameters have no other reason to wake the app.
+        // Playback already repaints; this only keeps a meter moving when a plugin's output changes
+        // while nothing else wakes the app.
         let meters = self
             .instance
             .as_vst3()
-            .is_some_and(|v| v.has_outputs())
+            .is_some_and(|v| v.outputs_fresh())
             .then_some(METER_POLL);
         #[cfg(target_os = "linux")]
         return match (meters, self.frame.run_loop.next_wake()) {
