@@ -22,6 +22,8 @@ pub(crate) struct PluginEditors {
     checked: u64,
     /// The pool was handed instances that must be taken back.
     holding: bool,
+    /// Gestures of editors closed while an undo group was open.
+    pending: Vec<(Key, Arc<dyn HostedPlugin>)>,
 }
 
 /// The live key each editor's instance stands for, so the pool reuses it
@@ -110,6 +112,21 @@ fn record_gesture(
     true
 }
 
+/// Records the gestures of closed editors once no group is open.
+fn drain_pending(
+    pending: &mut Vec<(Key, Arc<dyn HostedPlugin>)>,
+    project: &mut Project,
+    history: &mut History,
+    group_open: bool,
+) {
+    if group_open {
+        return;
+    }
+    for (key, instance) in std::mem::take(pending) {
+        record_gesture(project, history, key, &*instance, false);
+    }
+}
+
 impl PluginEditors {
     /// Closes the editors `keep` rejects. A gesture that ended before the
     /// window went away (or inside its `removed`) is recorded while the
@@ -118,6 +135,7 @@ impl PluginEditors {
         &mut self,
         project: &mut Project,
         history: &mut History,
+        group_open: bool,
         keep: impl Fn(&Project, &Key, &Editor) -> bool,
     ) {
         let gone: Vec<Key> = self
@@ -132,7 +150,11 @@ impl PluginEditors {
             };
             let instance = editor.instance().clone();
             drop(editor);
-            record_gesture(project, history, key, &*instance, false);
+            if group_open {
+                self.pending.push((key, instance));
+            } else {
+                record_gesture(project, history, key, &*instance, false);
+            }
         }
     }
 
@@ -188,10 +210,11 @@ impl PluginEditors {
         audio: Option<&mut TimelineAudio>,
         group_open: bool,
     ) {
-        if self.open.is_empty() && !self.holding {
+        if self.open.is_empty() && !self.holding && self.pending.is_empty() {
             return;
         }
-        self.close_where(project, history, |project, key, editor| {
+        drain_pending(&mut self.pending, project, history, group_open);
+        self.close_where(project, history, group_open, |project, key, editor| {
             Some(key.0) == current && find(project, *key).is_some() && editor.is_open()
         });
         if let Some(audio) = audio {
@@ -215,7 +238,8 @@ impl PluginEditors {
                 continue;
             };
             // The sync below would overwrite a gesture still pending.
-            if group_open || record_gesture(project, history, *key, instance, false) {
+            let consumed = record_gesture(project, history, *key, instance, group_open);
+            if group_open || consumed {
                 continue;
             }
             if changed
@@ -237,7 +261,7 @@ impl PluginEditors {
     }
 
     pub fn close_all(&mut self, project: &mut Project, history: &mut History) {
-        self.close_where(project, history, |_, _, _| false);
+        self.close_where(project, history, false, |_, _, _| false);
     }
 }
 

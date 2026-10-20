@@ -221,3 +221,24 @@ fn a_gesture_during_an_undo_group_is_its_own_step_after_it() {
     history.undo(&mut project);
     assert_eq!(state_of(&project, id, 1), [1]);
 }
+
+#[test]
+fn a_closed_editors_gesture_waits_for_the_group_then_is_its_own_step() {
+    let (mut project, id, key) = setup();
+    let mut history = History::default();
+    let fake: Arc<dyn HostedPlugin> = Arc::new(Fake::with_gesture(vec![9]));
+    let mut pending = vec![(key, fake)];
+
+    let mark = history.begin_group();
+    drain_pending(&mut pending, &mut project, &mut history, true);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(history.labels().count(), 0);
+    history.end_group(mark);
+
+    drain_pending(&mut pending, &mut project, &mut history, false);
+    assert!(pending.is_empty());
+    assert_eq!(state_of(&project, id, 1), [9]);
+    assert_eq!(history.labels().count(), 1);
+    history.undo(&mut project);
+    assert_eq!(state_of(&project, id, 1), [1]);
+}
