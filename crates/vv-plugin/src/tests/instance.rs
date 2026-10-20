@@ -579,6 +579,33 @@ fn a_reload_restart_keeps_the_state_and_keeps_processing() {
     assert_scaled(&run(&instance, &input), &input, 0.5);
 }
 
+#[test]
+fn a_reload_restart_keeps_an_edit_queued_before_it() {
+    let instance = split_fixture();
+    // SAFETY: the handler is a live COM object owned by the instance.
+    unsafe {
+        instance.handler.beginEdit(0);
+        instance.handler.performEdit(0, 0.25);
+        instance.handler.endEdit(0);
+    }
+    request_restart(&instance, RestartFlags_::kReloadComponent);
+    instance.service_restart();
+    let (component, _) = instance.take_gesture().expect("the gesture is kept");
+    assert_eq!(component.bytes(), 0.25f32.to_le_bytes());
+    let input = ramp(64, 2);
+    assert_scaled(&run(&instance, &input), &input, 0.5);
+}
+
+#[test]
+fn a_reload_restart_keeps_more_queued_edits_than_one_block_holds() {
+    let instance = counting_fixture();
+    edit_ids(&instance, 1..101);
+    request_restart(&instance, RestartFlags_::kReloadComponent);
+    instance.service_restart();
+    assert!(instance.shared.params.lock().unwrap().is_empty());
+    assert_eq!(received(&instance), 100);
+}
+
 // Mirrors the fixture's log path: it is loaded into this process.
 fn lifecycle_log_path(tag: u8) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(

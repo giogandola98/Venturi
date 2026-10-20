@@ -385,8 +385,12 @@ impl Vst3Instance {
     }
 
     fn flush_params(&self) {
-        let _audio = self.lock_audio();
-        // SAFETY: `busy` gives this thread exclusive use of `rt`.
+        let audio = self.lock_audio();
+        self.flush_params_locked(&audio);
+    }
+
+    fn flush_params_locked(&self, _audio: &AudioGuard<'_>) {
+        // SAFETY: the guard gives this thread exclusive use of `rt`.
         let rt = unsafe { &mut *self.rt.get() };
         // Bounded so a plugin that keeps queueing edits from inside `process` cannot spin us.
         let mut slices = None;
@@ -555,15 +559,18 @@ impl HostedPlugin for Vst3Instance {
             return;
         }
         let flags = self.shared.restart.swap(0, Ordering::AcqRel);
-        let _audio = self.lock_audio();
-        let saved = (flags & RestartFlags_::kReloadComponent != 0).then(|| self.read_state());
+        let audio = self.lock_audio();
+        let saved = (flags & RestartFlags_::kReloadComponent != 0).then(|| {
+            self.flush_params_locked(&audio);
+            self.read_state()
+        });
         // SAFETY: a live processor and component, from the UI thread; the busy
         // guard keeps the audio thread out while processing is stopped.
         unsafe {
             self.processor.setProcessing(0);
             self.component.setActive(0);
             if let Some((component, controller)) = saved {
-                // The state read above already includes any edit queued before it.
+                // The flush above delivered the queued edits; drop what arrived since.
                 self.shared
                     .params
                     .lock()
