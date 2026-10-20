@@ -17,3 +17,33 @@ fn editor_open_fails_cleanly_without_view() {
     };
     assert_eq!(err.as_deref(), Some(expected));
 }
+
+#[test]
+fn a_refused_constrained_size_is_requested_once_then_the_window_size_is_accepted() {
+    let mut refused = None;
+    let first = resize_decision((1000, 700), (900, 700), &mut refused);
+    assert_eq!(first.request, Some((900, 700)));
+    assert_eq!(first.notify, (900, 700));
+    let again = resize_decision((1000, 700), (900, 700), &mut refused);
+    assert_eq!(again.request, None);
+    assert_eq!(again.notify, (1000, 700));
+}
+
+#[test]
+fn a_honoured_request_forgets_the_refusal() {
+    let mut refused = None;
+    resize_decision((1000, 700), (900, 700), &mut refused);
+    let honoured = resize_decision((900, 700), (900, 700), &mut refused);
+    assert_eq!(honoured.request, None);
+    assert_eq!(refused, None);
+    let later = resize_decision((1000, 700), (900, 700), &mut refused);
+    assert_eq!(later.request, Some((900, 700)));
+}
+
+#[test]
+fn a_different_window_size_after_a_refusal_is_constrained_again() {
+    let mut refused = None;
+    resize_decision((1000, 700), (900, 700), &mut refused);
+    let other = resize_decision((1200, 700), (900, 700), &mut refused);
+    assert_eq!(other.request, Some((900, 700)));
+}
