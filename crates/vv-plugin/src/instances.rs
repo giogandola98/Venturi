@@ -36,6 +36,10 @@ pub trait HostedPlugin: vv_audio::PluginProcessor {
     fn take_gesture(&self) -> Option<(PluginState, PluginState)> {
         None
     }
+    /// When the last gesture ended, as a process-wide counter; 0 for none.
+    fn gesture_seq(&self) -> u64 {
+        0
+    }
 }
 
 /// Whether `class_id` has not failed yet in this process: pools are per

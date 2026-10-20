@@ -2499,6 +2499,7 @@ impl VenturiApp {
         self.settings
             .vst3_blocklist
             .extend(newly_blocked.into_iter().map(settings::Blocked::new));
+        let group_open = self.undo_group_open();
         if let Some(audio) = &mut self.timeline_audio {
             if unchanged {
                 audio.plugins_rescan_unchanged();
@@ -2508,6 +2509,7 @@ impl VenturiApp {
                     &mut self.session.project,
                     &mut self.session.history,
                     &dropped,
+                    group_open,
                 );
             }
         }
@@ -4058,17 +4060,22 @@ impl eframe::App for VenturiApp {
 }
 
 impl VenturiApp {
+    fn undo_group_open(&self) -> bool {
+        self.edit_drag_group.is_some() || self.timeline_state.holds_undo_group()
+    }
+
     fn pump_plugin_editors(&mut self, ctx: &egui::Context) {
         let Some(borrowed) = self.mcp_borrow_session() else {
             return;
         };
+        let group_open = self.undo_group_open();
         self.plugin_editors.update(
             ctx,
             &mut self.session.project,
             &mut self.session.history,
             self.timeline_id,
             self.timeline_audio.as_mut(),
-            self.edit_drag_group.is_some() || self.timeline_state.holds_undo_group(),
+            group_open,
         );
         if borrowed {
             self.mcp_return_session();
