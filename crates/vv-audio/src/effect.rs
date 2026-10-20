@@ -51,6 +51,14 @@ pub(crate) struct PluginEffect {
 impl Effect for PluginEffect {
     fn process(&mut self, samples: &mut [f32]) -> Option<BandActivity> {
         self.handle.process(samples, self.channels);
+        // The plugin has a stereo bus; the upmix filled channel `c` from `c % 2`.
+        if self.channels > 2 {
+            for frame in samples.chunks_exact_mut(self.channels) {
+                for c in 2..frame.len() {
+                    frame[c] = frame[c % 2];
+                }
+            }
+        }
         None
     }
 

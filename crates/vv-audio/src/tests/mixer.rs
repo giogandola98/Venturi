@@ -2087,3 +2087,57 @@ fn plugin_key_in_is_none_out_of_range() {
     assert!(crate::mixer::plugin_key_in(0, &tl, MixerChannel::Track(5), 0).is_none());
     assert!(crate::mixer::plugin_key_in(0, &tl, MixerChannel::Track(0), 0).is_none());
 }
+
+/// Like a hosted instance: only channels 0 and 1 are read and written.
+struct StereoOnlyPlugin(f32);
+
+impl crate::effect::PluginProcessor for StereoOnlyPlugin {
+    fn process(&self, samples: &mut [f32], channels: usize) {
+        for frame in samples.chunks_exact_mut(channels) {
+            frame[0] *= self.0;
+            frame[1] *= self.0;
+        }
+    }
+
+    fn reset(&self) {}
+
+    fn latency(&self) -> u32 {
+        0
+    }
+}
+
+fn plugin_mix_on_six_channels(effects: Vec<vv_core::AudioEffect>) -> Vec<f32> {
+    let (project, tl) = plugin_timeline(effects);
+    struct Source;
+    impl AudioSource for Source {
+        fn file(&mut self, path: &Path, _: usize) -> ClipAudio {
+            let left_right = [0.8f32, 0.4].repeat(500);
+            if path.to_str() == Some("a.wav") {
+                ClipAudio::Ready(SampleBlocks::contiguous(Arc::new(left_right), 0, 2))
+            } else {
+                ClipAudio::Missing
+            }
+        }
+
+        fn plugin(&mut self, _: crate::effect::PluginRequest<'_>) -> Option<PluginHandle> {
+            Some(Arc::new(StereoOnlyPlugin(0.5)))
+        }
+    }
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 6, &mut Source);
+    let mut out = vec![9.0; 12];
+    mix_range(&snap, 0, &mut out);
+    out
+}
+
+#[test]
+fn a_plugin_insert_processes_every_channel_of_a_wide_device() {
+    let out = plugin_mix_on_six_channels(vec![vst3(1, b"")]);
+    assert_eq!(out, [0.4, 0.2, 0.4, 0.2, 0.4, 0.2].repeat(2));
+}
+
+#[test]
+fn a_mono_after_a_plugin_does_not_mix_dry_channels_in() {
+    let mono = vv_core::AudioEffect::new(vv_core::AudioEffectKind::Mono);
+    let out = plugin_mix_on_six_channels(vec![vst3(1, b""), mono]);
+    assert!(out.iter().all(|&s| (s - 0.3).abs() < 1e-6), "{out:?}");
+}
