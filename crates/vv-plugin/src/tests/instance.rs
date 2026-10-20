@@ -981,3 +981,63 @@ fn a_restart_wakes_the_process_waker_except_from_the_audio_thread() {
     instance.service_restart();
     assert_eq!(instance.latency(), 64);
 }
+
+const REACTIVATE_FAIL_CLASS: &str = "56565445535447414E00000000000012";
+
+fn reactivate_fail_fixture() -> Arc<Vst3Instance> {
+    fixture_instance(&effect_of(
+        REACTIVATE_FAIL_CLASS,
+        0.25f32.to_le_bytes().to_vec(),
+    ))
+}
+
+fn is_dry(instance: &Vst3Instance) -> bool {
+    let input = ramp(256, 2);
+    run(instance, &input) == input
+}
+
+#[test]
+fn a_failed_reactivation_does_not_restart_processing_and_plays_dry() {
+    let log = FixtureLog::new(18);
+    let instance = reactivate_fail_fixture();
+    assert!(!is_dry(&instance));
+    instance.reactivate();
+    assert_eq!(
+        log.calls(),
+        [
+            "setActive(1)",
+            "setProcessing(1)",
+            "setProcessing(0)",
+            "setActive(0)",
+            "setActive(1)"
+        ]
+    );
+    assert!(is_dry(&instance));
+}
+
+#[test]
+fn a_failed_restart_reload_plays_dry() {
+    let instance = reactivate_fail_fixture();
+    request_restart(&instance, RestartFlags_::kReloadComponent);
+    instance.service_restart();
+    assert!(is_dry(&instance));
+}
+
+#[test]
+fn a_failed_reactivation_is_not_deactivated_again_on_drop() {
+    let log = FixtureLog::new(18);
+    let instance = reactivate_fail_fixture();
+    instance.reactivate();
+    let before = log.calls().len();
+    drop(instance);
+    assert_eq!(log.calls()[before..], ["terminate"]);
+}
+
+#[test]
+fn an_inactive_instance_retries_activation_without_a_second_deactivate() {
+    let log = FixtureLog::new(18);
+    let instance = reactivate_fail_fixture();
+    instance.reactivate();
+    instance.reactivate();
+    assert_eq!(log.calls()[5..], ["setActive(1)"]);
+}
