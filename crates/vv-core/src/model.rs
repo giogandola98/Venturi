@@ -2351,9 +2351,10 @@ impl std::fmt::Debug for Vst3Effect {
 
 /// Opaque plugin state. Stored as base64 and printed as its length and hash.
 /// Shared bytes and a hash computed once: copies and comparisons stay cheap.
+/// An `Arc<Vec>` so `new` moves the buffer instead of copying it.
 #[derive(Clone)]
 pub struct PluginState {
-    bytes: Arc<[u8]>,
+    bytes: Arc<Vec<u8>>,
     hash: u64,
 }
 
@@ -2363,7 +2364,7 @@ impl PluginState {
         hasher.write(&bytes);
         let hash = hasher.finish();
         Self {
-            bytes: bytes.into(),
+            bytes: Arc::new(bytes),
             hash,
         }
     }
@@ -2374,6 +2375,10 @@ impl PluginState {
 
     pub fn hash(&self) -> u64 {
         self.hash
+    }
+
+    pub fn shares_bytes_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.bytes, &other.bytes)
     }
 }
 
@@ -2404,7 +2409,7 @@ impl std::fmt::Debug for PluginState {
 
 impl Serialize for PluginState {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&BASE64.encode(&self.bytes))
+        serializer.serialize_str(&BASE64.encode(self.bytes.as_slice()))
     }
 }
 

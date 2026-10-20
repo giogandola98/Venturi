@@ -145,9 +145,18 @@ fn record_edit(
     if old.component_state == component && old.controller_state == controller {
         return None;
     }
+    // An unchanged half keeps the live effect's bytes instead of a second copy.
     let new = Vst3Effect {
-        component_state: component,
-        controller_state: controller,
+        component_state: if old.component_state == component {
+            old.component_state.clone()
+        } else {
+            component
+        },
+        controller_state: if old.controller_state == controller {
+            old.controller_state.clone()
+        } else {
+            controller
+        },
         ..old.clone()
     };
     let hash = new.content_hash();
