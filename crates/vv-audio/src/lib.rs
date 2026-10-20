@@ -20,8 +20,8 @@ pub use effect::{PluginHandle, PluginProcessor, PluginRequest};
 pub use levels::{LevelAnalysis, LevelSegment, Measured};
 pub use mixer::{
     AnalysisSlot, AudioSource, BandMeter, ClipAudio, ClipInput, LevelReading, MIX_BLOCK_FRAMES,
-    MixSnapshot, Mixer, MixerState, StretchedWindow, mix_range_without_plugins, plugin_key,
-    plugin_key_in,
+    MixSnapshot, Mixer, MixerState, StretchedWindow, StripKeys, mix_range_without_plugins,
+    plugin_key, plugin_key_in, plugin_keys_in,
 };
 pub use stretch::{Stretcher, stretch_samples};
 pub use stretched::{StretchInput, StretchRequest};

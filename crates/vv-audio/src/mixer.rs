@@ -1488,7 +1488,47 @@ pub fn plugin_key_in(
     Some(keys.next(this))
 }
 
+/// The keys of every plugin of a timeline's strips, computed in one pass.
+pub struct StripKeys {
+    tracks: Vec<Vec<Option<u64>>>,
+    master: Vec<Option<u64>>,
+}
+
+impl StripKeys {
+    /// What `plugin_key_in` gives, without walking the preceding strips again.
+    pub fn get(&self, channel: MixerChannel, index: usize) -> Option<u64> {
+        let strip = match channel {
+            MixerChannel::Track(i) => self.tracks.get(i)?,
+            MixerChannel::Master => &self.master,
+        };
+        strip.get(index).copied().flatten()
+    }
+}
+
+/// The keys of all the strips of `timeline`: for a panel that asks one per row.
+pub fn plugin_keys_in(scope: u64, timeline: &Timeline) -> StripKeys {
+    let mut keys = PluginKeys::new(scope, TRACK_STRIPS);
+    let tracks = timeline
+        .tracks
+        .iter()
+        .map(|track| keys.strip_keys(&track.mix))
+        .collect();
+    let master = PluginKeys::new(scope, MASTER_STRIPS).strip_keys(&timeline.master);
+    StripKeys { tracks, master }
+}
+
 impl PluginKeys {
+    fn strip_keys(&mut self, strip: &ChannelStrip) -> Vec<Option<u64>> {
+        strip
+            .effects
+            .iter()
+            .map(|effect| match &effect.kind {
+                AudioEffectKind::Vst3(plugin) => Some(self.next(plugin)),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn new(scope: u64, group: u64) -> Self {
         Self {
             scope,

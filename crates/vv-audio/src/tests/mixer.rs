@@ -2495,3 +2495,31 @@ fn a_slow_release_restarts_at_the_clip_whether_or_not_a_whole_block_fits_in_the_
         assert!(worst < 1e-5, "chunk {chunk}: {worst}");
     }
 }
+
+#[test]
+fn strip_keys_match_plugin_key_in_for_every_effect() {
+    let (_, a, _) = project();
+    let strip = |effects| {
+        let mut track = audio_track(vec![clip_at(a, 0, 0, 5)]);
+        track.mix.effects = effects;
+        track
+    };
+    let mut tl = timeline(vec![
+        strip(vec![vst3(7, b""), normalize(0.0), vst3(7, b"")]),
+        strip(vec![normalize(0.0)]),
+        strip(vec![vst3(7, b""), vst3(8, b"")]),
+    ]);
+    tl.master.effects = vec![vst3(9, b""), vst3(7, b""), vst3(7, b"")];
+    let keys = crate::mixer::plugin_keys_in(0, &tl);
+    let mut channels: Vec<_> = (0..3).map(MixerChannel::Track).collect();
+    channels.push(MixerChannel::Master);
+    let mut checked = 0;
+    for channel in channels {
+        for index in 0..4 {
+            let expected = crate::mixer::plugin_key_in(0, &tl, channel, index);
+            assert_eq!(keys.get(channel, index), expected, "{channel:?} {index}");
+            checked += usize::from(expected.is_some());
+        }
+    }
+    assert_eq!(checked, 7);
+}
