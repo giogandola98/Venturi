@@ -20,6 +20,16 @@ struct Timer {
 /// Used only when no watcher thread could be started.
 const FD_POLL: Duration = Duration::from_millis(16);
 
+/// The earliest of the next timer deadline and, when fds need polling, `now + FD_POLL`.
+fn wake_after(timer: Option<Instant>, poll_fds: bool, now: Instant) -> Option<Duration> {
+    let timer = timer.map(|t| t.saturating_duration_since(now));
+    let poll = poll_fds.then_some(FD_POLL);
+    match (timer, poll) {
+        (Some(t), Some(p)) => Some(t.min(p)),
+        (t, p) => t.or(p),
+    }
+}
+
 /// What the plugin asked of the host's event loop.
 ///
 /// Dropping a handler may run the plugin's destructor, which can unregister
@@ -141,13 +151,10 @@ impl RunLoop {
 
     /// The next timer deadline; fds wake the app through the watcher (polled if it failed).
     pub fn next_wake(&self) -> Option<Duration> {
-        if self.poll_fallback && !self.handlers.try_borrow().ok()?.is_empty() {
-            return Some(FD_POLL);
-        }
-        let now = Instant::now();
-        let timers = self.timers.try_borrow().ok()?;
-        let next = timers.iter().map(|t| t.next).min()?;
-        Some(next.saturating_duration_since(now))
+        let poll_fds = self.poll_fallback
+            && (self.extra_fd.is_some() || !self.handlers.try_borrow().ok()?.is_empty());
+        let next = self.timers.try_borrow().ok()?.iter().map(|t| t.next).min();
+        wake_after(next, poll_fds, Instant::now())
     }
 
     /// Clones, so the callbacks run with no borrow held.
