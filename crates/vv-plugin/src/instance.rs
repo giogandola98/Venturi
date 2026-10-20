@@ -1,7 +1,7 @@
 //! A hosted VST3 effect, driven with the mixer's interleaved blocks.
 use std::cell::UnsafeCell;
 use std::ffi::c_char;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, TryLockError};
 
@@ -79,6 +79,7 @@ pub struct Vst3Instance {
     rt: UnsafeCell<Rt>,
     busy: AtomicBool,
     mode: ProcessMode,
+    bundle: PathBuf,
     state_hash: AtomicU64,
     latency: AtomicU32,
     // Read before any state is loaded: what an empty saved state means.
@@ -171,6 +172,7 @@ impl Vst3Instance {
         ok(unsafe { component.initialize(host.as_ptr()) }, "initialize")?;
         // From here Drop undoes whatever was done, error or not.
         let mut this = Self {
+            bundle: info_path.to_path_buf(),
             _module: module.clone(),
             component,
             processor,
@@ -528,6 +530,10 @@ impl Vst3Instance {
 impl HostedPlugin for Vst3Instance {
     fn into_vst3(self: Arc<Self>) -> Option<Arc<Vst3Instance>> {
         Some(self)
+    }
+
+    fn bundle(&self) -> Option<&Path> {
+        Some(&self.bundle)
     }
 
     /// Waits for the audio thread to leave `process`; UI thread only.

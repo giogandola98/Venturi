@@ -23,6 +23,7 @@ struct Counts {
 }
 
 struct Fake {
+    bundle: Option<PathBuf>,
     hash: AtomicU64,
     counts: Arc<Counts>,
 }
@@ -45,6 +46,9 @@ impl PluginProcessor for Fake {
 }
 
 impl HostedPlugin for Fake {
+    fn bundle(&self) -> Option<&std::path::Path> {
+        self.bundle.as_deref()
+    }
     fn reactivate(&self) {
         self.counts.reactivated.fetch_add(1, Ordering::SeqCst);
     }
@@ -71,9 +75,10 @@ fn pool(counts: &Arc<Counts>) -> Instances {
     let counts = counts.clone();
     Instances::with_maker(
         vec![info(CLASS)].into(),
-        Box::new(move |_, effect, _| {
+        Box::new(move |path, effect, _| {
             counts.made.fetch_add(1, Ordering::SeqCst);
             Some(Arc::new(Fake {
+                bundle: Some(path.to_path_buf()),
                 hash: AtomicU64::new(effect.content_hash()),
                 counts: counts.clone(),
             }))
@@ -653,9 +658,10 @@ fn a_refresh_drops_only_the_instances_whose_plugin_vanished_or_moved() {
         .into(),
         {
             let counts = counts.clone();
-            Box::new(move |_, effect, _| {
+            Box::new(move |path, effect, _| {
                 counts.made.fetch_add(1, Ordering::SeqCst);
                 Some(Arc::new(Fake {
+                    bundle: Some(path.to_path_buf()),
                     hash: AtomicU64::new(effect.content_hash()),
                     counts: counts.clone(),
                 }))
@@ -708,6 +714,40 @@ fn a_refresh_lets_a_class_installed_since_be_made() {
     assert!(pool.knows(&late));
     pool.begin_pass();
     assert!(pool.get(request(1, &late)).is_some());
+}
+
+#[test]
+fn a_dropped_instance_that_is_held_is_not_adopted_again_from_the_new_bundle() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = pool(&counts);
+    let e = effect(CLASS, &[1]);
+    pool.begin_pass();
+    pool.get(request(7, &e)).unwrap();
+    let old: Arc<dyn HostedPlugin> = pool.instance(7).unwrap();
+    pool.set_held(vec![(7, old.clone())]);
+    let dropped = pool.refresh(vec![at(CLASS, "/moved.vst3")].into());
+    assert!(dropped.iter().any(|d| same(d, &old)));
+    pool.begin_pass();
+    let fresh = pool.get(request(7, &e)).unwrap();
+    assert!(!same(&fresh, &old));
+    assert_eq!(counts.made.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_held_instance_of_a_disabled_effect_is_dropped_when_its_bundle_is_unlisted() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = pool(&counts);
+    let e = effect(CLASS, &[1]);
+    pool.begin_pass();
+    pool.get(request(7, &e)).unwrap();
+    let held: Arc<dyn HostedPlugin> = pool.instance(7).unwrap();
+    pool.begin_pass();
+    pool.get(bypassed(7, &e));
+    pool.sweep();
+    pool.set_held(vec![(7, held.clone())]);
+    let dropped = pool.refresh(vec![at(CLASS, "/moved.vst3")].into());
+    assert!(dropped.iter().any(|d| same(d, &held)));
+    assert_eq!(dropped.len(), 1);
 }
 
 fn module_file(dir: &std::path::Path, body: &[u8]) -> PathBuf {
