@@ -1382,21 +1382,43 @@ fn timeline_with_plugin(enabled: bool, audio_clip: bool) -> Timeline {
     timeline
 }
 
+fn project_with(timeline: Timeline) -> (Project, TimelineId) {
+    let mut project = Project::default();
+    let id = project.timelines.insert(timeline);
+    (project, id)
+}
+
 #[test]
 fn a_scan_blocks_only_an_audio_export_that_plays_an_enabled_plugin() {
-    let playing = timeline_with_plugin(true, true);
-    assert!(scan_blocks_export(true, &playing, true));
-    assert!(!scan_blocks_export(false, &playing, true));
-    assert!(!scan_blocks_export(true, &playing, false));
-    assert!(!scan_blocks_export(
-        true,
-        &timeline_with_plugin(false, true),
-        true
+    let blocks = |timeline, audio| {
+        let (project, id) = project_with(timeline);
+        scan_blocks_export(true, &project, id, audio)
+    };
+    let (playing, id) = project_with(timeline_with_plugin(true, true));
+    assert!(scan_blocks_export(true, &playing, id, true));
+    assert!(!scan_blocks_export(false, &playing, id, true));
+    assert!(!blocks(timeline_with_plugin(true, true), false));
+    assert!(!blocks(timeline_with_plugin(false, true), true));
+    assert!(!blocks(timeline_with_plugin(true, false), true));
+    assert!(!blocks(timeline_with(vec![]), true));
+}
+
+#[test]
+fn a_scan_blocks_an_export_whose_compound_holds_an_enabled_plugin() {
+    let (mut project, inner) = project_with(timeline_with_plugin(true, true));
+    let item = project.timeline_item(inner, &project.timelines[inner].clone(), None);
+    let media = project.media_pool.insert(item);
+    let mut audio = Track::new(TrackKind::Audio);
+    audio.clips.push(Clip::from_source_range(
+        ClipId(2),
+        ClipSource::Media(media),
+        0,
+        10,
+        0,
+        vv_core::Rational::one(),
     ));
-    assert!(!scan_blocks_export(
-        true,
-        &timeline_with_plugin(true, false),
-        true
-    ));
-    assert!(!scan_blocks_export(true, &timeline_with(vec![]), true));
+    let outer = project.timelines.insert(timeline_with(vec![audio]));
+
+    assert!(scan_blocks_export(true, &project, outer, true));
+    assert!(!scan_blocks_export(false, &project, outer, true));
 }

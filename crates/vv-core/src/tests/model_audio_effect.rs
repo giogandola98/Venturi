@@ -81,7 +81,8 @@ fn with_fresh_ids_changes_only_vst3() {
 }
 
 #[test]
-fn uses_enabled_plugins_sees_an_enabled_vst3_on_any_strip_of_the_timeline() {
+fn timeline_uses_enabled_plugins_sees_an_enabled_vst3_on_any_strip() {
+    let mut project = Project::default();
     let mut timeline = Timeline {
         name: "t".into(),
         fps: Rational::new(30, 1),
@@ -90,18 +91,21 @@ fn uses_enabled_plugins_sees_an_enabled_vst3_on_any_strip_of_the_timeline() {
         markers: Vec::new(),
         master: Default::default(),
     };
-    assert!(!timeline.uses_enabled_plugins());
+    let id = project.timelines.insert(timeline.clone());
+    assert!(!project.timeline_uses_enabled_plugins(id));
 
     let mut bypassed = AudioEffect::new(AudioEffectKind::Vst3(vst3(vec![1])));
     bypassed.enabled = false;
     timeline.master.effects.push(bypassed);
-    assert!(!timeline.uses_enabled_plugins());
+    project.timelines[id] = timeline.clone();
+    assert!(!project.timeline_uses_enabled_plugins(id));
 
     timeline.tracks[0]
         .mix
         .effects
         .push(AudioEffect::new(AudioEffectKind::Vst3(vst3(vec![1]))));
-    assert!(timeline.uses_enabled_plugins());
+    project.timelines[id] = timeline;
+    assert!(project.timeline_uses_enabled_plugins(id));
 }
 
 #[test]
