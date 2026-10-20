@@ -141,13 +141,14 @@ impl Instances {
                 return Some(instance.clone());
             }
             *used_this_pass = true;
-            instance.service_restart();
             if std::mem::take(stale) {
                 instance.reactivate();
             }
             if instance.state_hash() != hash {
                 instance.set_state(request.effect);
             }
+            // After set_state: a restart it raised applies now, before the latency is read.
+            instance.service_restart();
             return Some(instance.clone());
         }
         let path = self.known.get(&request.effect.class_id)?.path.clone();
@@ -176,6 +177,7 @@ impl Instances {
         };
         if self.held.contains_key(&request.key) && instance.state_hash() != hash {
             instance.set_state(request.effect);
+            instance.service_restart();
         }
         let handle = instance.clone();
         self.slots.insert(
