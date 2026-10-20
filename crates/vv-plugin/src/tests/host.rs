@@ -129,3 +129,71 @@ fn stream_write_far_past_the_end_is_refused_without_allocating() {
     }
     assert!(stream.take().is_empty());
 }
+
+#[test]
+fn missed_edits_coalesce_by_id_and_drain_once() {
+    let missed = Missed::new();
+    assert!(missed.record(3, 0.1));
+    assert!(missed.record(4, 0.2));
+    assert!(missed.record(3, 0.9));
+    let mut got = Vec::new();
+    missed.drain(|id, v| got.push((id, v)));
+    assert_eq!(got, [(3, 0.9), (4, 0.2)]);
+    missed.drain(|_, _| panic!("drained twice"));
+}
+
+#[test]
+fn a_full_missed_table_refuses_new_ids_but_updates_known_ones() {
+    let missed = Missed::new();
+    for id in 0..MAX_PARAMS as u32 {
+        assert!(missed.record(id, 0.5));
+    }
+    assert!(!missed.record(1000, 0.5));
+    assert!(missed.record(7, 0.6));
+}
+
+#[test]
+fn an_audio_thread_edit_never_waits_for_the_params_lock() {
+    let shared = std::sync::Arc::new(Shared::new());
+    let handler = ComponentHandler(shared.clone());
+    let held = shared.params.lock().unwrap();
+    let _scope = AudioScope::enter();
+    // SAFETY: plain calls on a live handler.
+    unsafe { handler.performEdit(5, 0.75) };
+    drop(_scope);
+    drop(held);
+    assert!(shared.params.lock().unwrap().is_empty());
+    let mut got = Vec::new();
+    shared.missed.drain(|id, v| got.push((id, v)));
+    assert_eq!(got, [(5, 0.75)]);
+}
+
+#[test]
+fn an_edit_outside_the_audio_thread_is_queued_as_before() {
+    let shared = std::sync::Arc::new(Shared::new());
+    let handler = ComponentHandler(shared.clone());
+    // SAFETY: plain call on a live handler.
+    unsafe { handler.performEdit(5, 0.75) };
+    assert_eq!(*shared.params.lock().unwrap(), [(5, 0.75)]);
+}
+
+#[test]
+fn an_audio_thread_edit_does_not_grow_a_full_params_queue() {
+    let shared = std::sync::Arc::new(Shared::new());
+    let handler = ComponentHandler(shared.clone());
+    let cap = {
+        let mut params = shared.params.lock().unwrap();
+        let cap = params.capacity();
+        for id in 0..cap as u32 {
+            params.push((id, 0.0));
+        }
+        cap
+    };
+    let _scope = AudioScope::enter();
+    // SAFETY: plain call on a live handler.
+    unsafe { handler.performEdit(10_000, 0.5) };
+    assert_eq!(shared.params.lock().unwrap().capacity(), cap);
+    let mut got = Vec::new();
+    shared.missed.drain(|id, v| got.push((id, v)));
+    assert_eq!(got, [(10_000, 0.5)]);
+}

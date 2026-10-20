@@ -1096,3 +1096,24 @@ fn an_inactive_instance_is_not_processed_to_read_its_state_or_flush_edits() {
     assert!(!log.calls()[before..].contains(&"process".to_owned()));
     assert!(!instance.is_active());
 }
+
+const PROCESS_EDIT_CLASS: &str = "56565445535447414E00000000000015";
+
+#[test]
+fn a_plugin_edit_from_process_never_blocks_on_the_ui_and_is_applied_later() {
+    let instance = fixture_instance(&effect_of(PROCESS_EDIT_CLASS, Vec::new()));
+    let input = ramp(64, 2);
+    let held = instance.shared.params.lock().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = {
+        let (instance, input) = (instance.clone(), input.clone());
+        std::thread::spawn(move || tx.send(run(&instance, &input)).unwrap())
+    };
+    let first = rx.recv_timeout(std::time::Duration::from_secs(2));
+    drop(held);
+    worker.join().unwrap();
+    let first = first.expect("process blocked on the params lock");
+    assert_scaled(&first, &input, 1.0);
+    // The edit made while the UI held the lock must reach the plugin on the next block.
+    assert_scaled(&run(&instance, &input), &input, 0.5);
+}
