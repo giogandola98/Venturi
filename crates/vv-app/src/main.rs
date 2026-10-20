@@ -2442,7 +2442,7 @@ impl VenturiApp {
     /// from the Settings window and periodically/on close (see
     /// `eframe::App::save`).
     /// Scans off the UI thread: loading each bundle can take seconds.
-    fn start_plugin_scan(&mut self, ctx: &egui::Context, manual: bool) {
+    fn start_plugin_scan(&mut self, ctx: &egui::Context) {
         if self.plugin_scan_rx.is_some() {
             return;
         }
@@ -2453,7 +2453,7 @@ impl VenturiApp {
             .as_ref()
             .map(|p| p.with_file_name("vst3-scan.marker"))
             .unwrap_or_else(|| std::env::temp_dir().join("venturi-vst3-scan.marker"));
-        self.settings.prepare_plugin_scan(manual, &marker);
+        self.settings.prepare_plugin_scan(&marker);
         self.persist_settings();
         let blocklist = self.settings.vst3_blocklist.clone();
         std::thread::spawn(move || {
@@ -4475,7 +4475,7 @@ impl VenturiApp {
                 },
             ));
             if std::mem::take(&mut self.mixer_panel.rescan_requested) {
-                self.start_plugin_scan(ui.ctx(), true);
+                self.start_plugin_scan(ui.ctx());
             }
             // Saved at once: a preset must not wait for the periodic save.
             if (&self.settings.compressor_presets, &self.settings.eq_presets)
@@ -4937,7 +4937,7 @@ fn main() -> eframe::Result<()> {
             // Seeded even when empty so nothing scans on the UI thread.
             vv_plugin::set_installed(app.settings.vst3_plugins.clone());
             if app.settings.needs_plugin_scan() {
-                app.start_plugin_scan(&cc.egui_ctx, false);
+                app.start_plugin_scan(&cc.egui_ctx);
             }
             vv_media::hw::set_budget_bytes(app.settings.hw_decode_budget_bytes());
             hw_decode::start(app.settings.hw_decode);

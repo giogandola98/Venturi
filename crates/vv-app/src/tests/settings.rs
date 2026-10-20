@@ -324,24 +324,23 @@ fn settings_from_before_the_flag_count_as_scanned_only_with_a_cached_list() {
 }
 
 #[test]
-fn a_manual_rescan_clears_the_blocklist_but_startup_keeps_it() {
+fn crashing_rescans_accumulate_the_blocklist() {
     let dir = std::env::temp_dir().join(format!("vv-settings-rescan-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let marker = dir.join("scan.marker");
+    let (x, y) = (PathBuf::from("/x/X.vst3"), PathBuf::from("/x/Y.vst3"));
     let mut settings = Settings::default();
-    settings.vst3_blocklist = vec![PathBuf::from("/x/Old.vst3")];
 
-    settings.prepare_plugin_scan(false, &marker);
-    assert_eq!(settings.vst3_blocklist, vec![PathBuf::from("/x/Old.vst3")]);
-
-    std::fs::write(&marker, b"/x/New.vst3").unwrap();
-    settings.prepare_plugin_scan(false, &marker);
-    assert_eq!(settings.vst3_blocklist.len(), 2);
+    std::fs::write(&marker, b"/x/X.vst3").unwrap();
+    settings.prepare_plugin_scan(&marker);
+    assert_eq!(settings.vst3_blocklist, vec![x.clone()]);
     assert!(!marker.exists());
 
-    settings.prepare_plugin_scan(true, &marker);
+    std::fs::write(&marker, b"/x/Y.vst3").unwrap();
+    settings.prepare_plugin_scan(&marker);
+    settings.prepare_plugin_scan(&marker);
     let _ = std::fs::remove_dir_all(&dir);
-    assert!(settings.vst3_blocklist.is_empty());
+    assert_eq!(settings.vst3_blocklist, vec![x, y]);
 }
 
 fn plugin(name: &str, path: PathBuf) -> vv_plugin::PluginInfo {

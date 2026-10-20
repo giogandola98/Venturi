@@ -57,7 +57,7 @@ All `unsafe` and all COM code live here.
   and threads make `dlclose` unsafe). Bundles with `moduleinfo.json` are
   never loaded by the scan. Before loading such a bundle the scan writes its
   path to a marker file; if the process dies, the next launch blocks that
-  bundle (a manual rescan retries it). A hang is not caught. The result is
+  bundle for good (a rescan does not retry it). A hang is not caught. The result is
   cached in the settings and not rescanned at launch.
   Default folders: `/Library/Audio/Plug-Ins/VST3` and the user one on
   macOS; `~/.vst3`, `/usr/lib/vst3`, `/usr/lib64/vst3`,
