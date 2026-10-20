@@ -4988,7 +4988,18 @@ fn run_mcp_command(args: &[String]) -> ! {
     run_mcp_server(args.first().map(PathBuf::from))
 }
 
+/// Headless processes never scan: they reuse the list the GUI cached, empty
+/// until one GUI scan or rescan has run.
+fn seed_installed_from_settings(path: Option<&Path>) {
+    let plugins = path
+        .map(settings::Settings::load)
+        .map(|s| s.vst3_plugins)
+        .unwrap_or_default();
+    vv_plugin::set_installed(plugins);
+}
+
 fn run_mcp_server(project: Option<PathBuf>) -> ! {
+    seed_installed_from_settings(settings::Settings::default_path().as_deref());
     let mut session = vv_session::Session::default();
     if let Some(path) = project
         && let Err(e) = session.open(&path)
