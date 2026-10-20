@@ -62,7 +62,8 @@ fn set_state_discards_pending_edits() {
     // SAFETY: the handler is a live COM object owned by the instance.
     unsafe { instance.handler.performEdit(0, 0.25) };
     instance.set_state(&effect(Vec::new()));
-    assert_eq!(run(&instance, &ramp(64, 2))[0], 122.0);
+    let input = ramp(64, 2);
+    assert_scaled(&run(&instance, &input), &input, 1.0);
 }
 
 fn ramp(frames: usize, channels: usize) -> Vec<f32> {
