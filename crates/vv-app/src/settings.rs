@@ -1048,7 +1048,7 @@ fn readable_entries<T: serde::de::DeserializeOwned>(values: Vec<serde_json::Valu
 }
 
 /// Entries whose path is not valid UTF-8 cannot be written as JSON: they are
-/// dropped (the plugins are rescanned) instead of failing the whole save.
+/// dropped until the next manual rescan instead of failing the whole save.
 fn utf8_entries<T: Serialize>(
     entries: &[T],
     path_of: impl Fn(&T) -> &Path,
@@ -1065,7 +1065,10 @@ fn utf8_entries<T: Serialize>(
         })
         .collect();
     if dropped > 0 {
-        eprintln!("settings: {dropped} plugin path(s) not valid UTF-8 are not saved");
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            eprintln!("settings: {dropped} plugin path(s) not valid UTF-8 are not saved");
+        });
     }
     values
 }
