@@ -1200,31 +1200,77 @@ fn counting_pools() -> (NewPool, Count, Count) {
     (new_pool, made, pools)
 }
 
+/// A pool holding `n` instances, counted in `made`.
+fn pool_of(n: u64, made: &Count) -> Instances {
+    let (new_pool, ..) = counting_pools();
+    let mut pool = new_pool(Arc::from(fake_known()));
+    let effect = fixture_effect(&[]);
+    pool.begin_pass();
+    for key in 0..n {
+        pool.get(vv_audio::PluginRequest {
+            key,
+            effect: &effect,
+            sample_rate: 48_000,
+            process: true,
+        })
+        .unwrap();
+    }
+    made.fetch_add(n as usize, Ordering::SeqCst);
+    pool
+}
+
 #[test]
-fn a_parallel_measure_keeps_the_pool_of_every_thread() {
-    let mut project = Project::default();
-    let mut tl = edited_timeline(&mut project, "thread_pools.wav");
-    let with_state = |state: &[u8]| {
-        vec![
-            plugin_effect(FIXTURE_CLASS, state),
-            normalize(NormalizeMode::Loudness),
-        ]
+fn each_measure_thread_gets_a_pool_back_and_the_budget_holds() {
+    let made = Count::default();
+    let mut cache = LevelCache {
+        threads: 4,
+        ..LevelCache::default()
     };
-    let (new_pool, made, pools) = counting_pools();
-    let mut cache = fixed_list_cache();
-    cache.threads = 4;
-    cache.new_pool = new_pool;
-    tl.master.effects = with_state(&[1]);
-    both_measures(&project, &tl, &mut cache);
-    let created = pools.load(Ordering::SeqCst);
-    assert_eq!(cache.plugins.len(), created, "a thread's pool was dropped");
-    // Every segment key changes: the measure goes parallel again.
-    tl.master.effects = with_state(&[2]);
-    let rendered = cache.rendered;
-    both_measures(&project, &tl, &mut cache);
-    assert!(cache.rendered > rendered);
-    assert!(pools.load(Ordering::SeqCst) <= cache.threads);
-    assert!(made.load(Ordering::SeqCst) <= cache.threads);
+    let list: Arc<[vv_plugin::PluginInfo]> = Arc::from(fake_known());
+    let mut threads: Vec<LevelCache> = (0..4).map(|_| cache.for_thread()).collect();
+    for thread in &mut threads {
+        thread.plugins.push(pool_of(3, &made));
+        thread.known = Some(list.clone());
+    }
+    for thread in threads {
+        cache.absorb(thread);
+    }
+    assert_eq!(cache.plugins.len(), 4);
+    let mut again: Vec<LevelCache> = (0..4).map(|_| cache.for_thread()).collect();
+    assert!(again.iter().all(|thread| thread.plugins.len() == 1));
+    assert!(cache.plugins.is_empty());
+    assert_eq!(made.load(Ordering::SeqCst), 12);
+
+    // A thread that saw another list: its pool is dropped.
+    let other: Arc<[vv_plugin::PluginInfo]> = Arc::from(fake_known());
+    again[2].known = Some(other);
+    for thread in again {
+        cache.absorb(thread);
+    }
+    assert_eq!(cache.plugins.len(), 3);
+}
+
+#[test]
+fn the_pools_kept_between_renders_stay_within_the_budget() {
+    let made = Count::default();
+    let mut cache = LevelCache {
+        threads: 8,
+        ..LevelCache::default()
+    };
+    for _ in 0..6 {
+        cache.keep_pool(pool_of(10, &made));
+        let kept: usize = cache.plugins.iter().map(Instances::len).sum();
+        assert!(kept <= KEPT_INSTANCES, "{kept}");
+    }
+    assert_eq!(cache.plugins.len(), 3);
+    let mut one = LevelCache {
+        threads: 1,
+        ..LevelCache::default()
+    };
+    for _ in 0..4 {
+        one.keep_pool(pool_of(1, &made));
+    }
+    assert_eq!(one.plugins.len(), 2);
 }
 
 #[test]
