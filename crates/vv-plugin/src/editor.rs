@@ -79,7 +79,41 @@ pub struct Editor {
     frame: ComWrapper<Frame>,
     window: platform::Window,
     resize: Resizer,
+    refused: Option<(i32, i32)>,
     instance: Arc<Vst3Instance>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ResizeDecision {
+    request: Option<(i32, i32)>,
+    notify: (i32, i32),
+}
+
+/// A window manager that keeps `window` after being asked for `constrained` must be obeyed,
+/// or its answer would trigger the same request again forever.
+fn resize_decision(
+    window: (i32, i32),
+    constrained: (i32, i32),
+    refused: &mut Option<(i32, i32)>,
+) -> ResizeDecision {
+    if constrained == window {
+        *refused = None;
+        return ResizeDecision {
+            request: None,
+            notify: constrained,
+        };
+    }
+    if *refused == Some(window) {
+        return ResizeDecision {
+            request: None,
+            notify: window,
+        };
+    }
+    *refused = Some(window);
+    ResizeDecision {
+        request: Some(constrained),
+        notify: constrained,
+    }
 }
 
 fn size_of(rect: &ViewRect) -> (i32, i32) {
@@ -148,6 +182,7 @@ impl Editor {
             frame,
             window,
             resize,
+            refused: None,
             instance,
         })
     }
@@ -174,9 +209,12 @@ impl Editor {
             // SAFETY: the view is live until Drop.
             unsafe {
                 self.view.checkSizeConstraint(&mut rect);
-                if size_of(&rect) != (width, height) {
-                    (self.resize)(rect.right - rect.left, rect.bottom - rect.top);
+                let decision = resize_decision((width, height), size_of(&rect), &mut self.refused);
+                if let Some((w, h)) = decision.request {
+                    (self.resize)(w, h);
                 }
+                rect.right = rect.left + decision.notify.0;
+                rect.bottom = rect.top + decision.notify.1;
                 self.view.onSize(&mut rect);
             }
         }
