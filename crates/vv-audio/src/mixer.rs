@@ -573,6 +573,23 @@ impl MixSnapshot {
         (tracks, master)
     }
 
+    /// Whether the chain of `track` may output something once its input is
+    /// silent: a processing plugin, here or in a compound clip. The
+    /// compressor and the equalizer give silence back within `settle_frames`.
+    fn track_rings(&self, track: usize) -> bool {
+        has_processing_plugin(&self.track(track).inserts)
+            || self.groups.iter().any(|(t, range)| {
+                *t == track
+                    && self.clips[range.clone()].iter().any(
+                        |clip| matches!(&clip.input, ClipInput::Nested(n) if n.mix.has_plugins()),
+                    )
+            })
+    }
+
+    fn settle_frames(&self) -> u64 {
+        2 * self.sample_rate as u64
+    }
+
     fn track(&self, index: usize) -> &Channel {
         static UNITY: Channel = Channel::UNITY;
         self.tracks.get(index).unwrap_or(&UNITY)
@@ -616,6 +633,14 @@ pub struct MixState {
     /// measured through a plugin that passes through here: they are dropped.
     track_skip: Vec<usize>,
     master_skip: usize,
+    /// Per track: frames since a clip last played on it; `u64::MAX` when
+    /// nothing remembers. Unused for the tracks in `rings`.
+    quiet: Vec<u64>,
+    /// Per track: a plugin may ring on after the input stops, so the chain
+    /// runs through the gaps.
+    rings: Vec<bool>,
+    #[cfg(test)]
+    skipped_blocks: usize,
 }
 
 impl MixState {
@@ -643,6 +668,9 @@ impl MixState {
                 .map(|insert| insert.effect(rate, channels, plugins))
                 .collect()
         };
+        let rings = (0..snapshot.tracks.len())
+            .map(|track| snapshot.track_rings(track))
+            .collect();
         Self {
             tracks: snapshot.tracks.iter().map(processors).collect(),
             master: processors(&snapshot.master),
@@ -658,6 +686,10 @@ impl MixState {
             peaks: vec![[0.0; 2]; snapshot.tracks.len()],
             track_skip,
             master_skip,
+            quiet: vec![u64::MAX; snapshot.tracks.len()],
+            rings,
+            #[cfg(test)]
+            skipped_blocks: 0,
             next: None,
         }
     }
@@ -689,6 +721,9 @@ impl MixState {
             }
         }
         self.next = previous.next;
+        for (quiet, old) in self.quiet.iter_mut().zip(&previous.quiet) {
+            *quiet = *old;
+        }
     }
 
     fn reset(&mut self) {
@@ -704,6 +739,7 @@ impl MixState {
         for nested in self.nested.iter_mut().flatten() {
             nested.rendered.clear();
         }
+        self.quiet.fill(u64::MAX);
     }
 }
 
@@ -1807,6 +1843,31 @@ fn mix_into(
         let block = &mut out[block_start * ch..(block_start + len) * ch];
         let block_time = start + block_start as u64;
         for (track, range) in &snapshot.groups {
+            if !state.rings.get(*track).copied().unwrap_or(true) {
+                let end = block_time + len as u64;
+                let plays = snapshot.clips[range.clone()]
+                    .iter()
+                    .any(|clip| clip.start < end && clip.start + clip.len > block_time);
+                let quiet = &mut state.quiet[*track];
+                if plays {
+                    *quiet = 0;
+                } else if *quiet != u64::MAX {
+                    *quiet = quiet.saturating_add(len as u64);
+                    if *quiet >= snapshot.settle_frames() {
+                        *quiet = u64::MAX;
+                        if let Some(chain) = state.tracks.get_mut(*track) {
+                            chain.iter_mut().flatten().for_each(|p| p.reset());
+                        }
+                    }
+                }
+                if !plays && *quiet == u64::MAX {
+                    #[cfg(test)]
+                    {
+                        state.skipped_blocks += 1;
+                    }
+                    continue;
+                }
+            }
             let channel = snapshot.track(*track);
             let scratch = &mut state.scratch[..len * ch];
             scratch.fill(0.0);
