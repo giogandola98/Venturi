@@ -56,7 +56,6 @@ impl From<String> for LoadError {
     }
 }
 
-/// Loaded once per path and kept; a failure after dlopen is kept too.
 pub(crate) fn module(path: &Path) -> Result<Arc<Module>, String> {
     cached(&MODULES, path, || load(path).map(Arc::new))
 }
