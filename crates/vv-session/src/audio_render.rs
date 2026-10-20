@@ -326,7 +326,8 @@ fn render(
     levels: &mut LevelCache,
     sink: impl FnMut(&[f32]) -> ControlFlow<()>,
 ) -> Result<(), ExportError> {
-    render_with_plugins(project, mix, range, levels, None, sink)
+    let plugins = levels.plugins.pop();
+    render_with_plugins(project, mix, range, levels, plugins, sink)
 }
 
 /// `plugins` is for tests; otherwise the pool is made on the first request.
@@ -338,9 +339,24 @@ fn render_with_plugins(
     plugins: Option<Instances>,
     mut sink: impl FnMut(&[f32]) -> ControlFlow<()>,
 ) -> Result<(), ExportError> {
-    let ch = PROJECT_CHANNELS as usize;
     let mut audio = StreamingAudio::new(levels);
     audio.plugins = plugins;
+    let rendered = render_chunks(project, mix, range, &mut audio, &mut sink);
+    // Kept for the next render: creating instances is the cost.
+    if let Some(plugins) = audio.plugins.take() {
+        audio.cache.plugins.push(plugins);
+    }
+    rendered
+}
+
+fn render_chunks(
+    project: &Project,
+    mix: Mix,
+    range: Range<u64>,
+    audio: &mut StreamingAudio,
+    sink: &mut impl FnMut(&[f32]) -> ControlFlow<()>,
+) -> Result<(), ExportError> {
+    let ch = PROJECT_CHANNELS as usize;
     let mut state: Option<MixState> = None;
     let mut out = Vec::new();
     let mut at = range.start;
@@ -380,6 +396,9 @@ pub struct LevelCache {
     pub threads: usize,
     /// A measure this render is nested in holds claimed segments.
     holding: bool,
+    /// Pools kept between renders, one taken by each: instances are used by
+    /// one render at a time, and a render starts them from a reset.
+    plugins: Vec<Instances>,
     /// Set, the renders through it stop with `ExportError::Cancelled`.
     pub cancel: Option<Arc<AtomicBool>>,
     /// Segments rendered, not found.
@@ -409,6 +428,7 @@ impl Default for LevelCache {
             reads: HashSet::new(),
             threads: std::thread::available_parallelism().map_or(1, usize::from),
             holding: false,
+            plugins: Vec::new(),
             cancel: None,
             rendered: 0,
         }
@@ -425,7 +445,7 @@ impl LevelCache {
     }
 
     /// For a thread of a measure: a measure it nests renders on it alone.
-    fn for_thread(&self) -> Self {
+    fn for_thread(&mut self) -> Self {
         Self {
             shared: self.shared.clone(),
             dir: self.dir.clone(),
@@ -433,6 +453,7 @@ impl LevelCache {
             reads: HashSet::new(),
             threads: 1,
             holding: self.holding,
+            plugins: self.plugins.pop().into_iter().collect(),
             cancel: self.cancel.clone(),
             rendered: 0,
         }
@@ -447,6 +468,7 @@ impl LevelCache {
     fn absorb(&mut self, other: LevelCache) {
         self.streams.extend(other.streams);
         self.reads.extend(other.reads);
+        self.plugins.extend(other.plugins);
         self.rendered += other.rendered;
     }
 
