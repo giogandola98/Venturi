@@ -120,6 +120,7 @@ pub(crate) struct Missed {
     len: std::sync::atomic::AtomicUsize,
     ids: [AtomicU32; MAX_PARAMS],
     values: [AtomicU64; MAX_PARAMS],
+    stamps: [AtomicU64; MAX_PARAMS],
 }
 
 impl Missed {
@@ -128,11 +129,12 @@ impl Missed {
             len: Default::default(),
             ids: std::array::from_fn(|_| AtomicU32::new(0)),
             values: std::array::from_fn(|_| AtomicU64::new(0)),
+            stamps: std::array::from_fn(|_| AtomicU64::new(0)),
         }
     }
 
     /// False when the table is full and `id` is new.
-    pub fn record(&self, id: ParamID, value: ParamValue) -> bool {
+    pub fn record(&self, id: ParamID, value: ParamValue, stamp: u64) -> bool {
         let len = self.len.load(Ordering::Relaxed);
         let at = (0..len)
             .find(|&i| self.ids[i].load(Ordering::Relaxed) == id)
@@ -142,16 +144,18 @@ impl Missed {
         }
         self.ids[at].store(id, Ordering::Relaxed);
         self.values[at].store(value.to_bits(), Ordering::Relaxed);
+        self.stamps[at].store(stamp, Ordering::Relaxed);
         self.len.store(len.max(at + 1), Ordering::Relaxed);
         true
     }
 
-    pub fn drain(&self, mut f: impl FnMut(ParamID, ParamValue)) {
+    pub fn drain(&self, mut f: impl FnMut(ParamID, ParamValue, u64)) {
         let len = self.len.swap(0, Ordering::Relaxed);
         for i in 0..len {
             f(
                 self.ids[i].load(Ordering::Relaxed),
                 f64::from_bits(self.values[i].load(Ordering::Relaxed)),
+                self.stamps[i].load(Ordering::Relaxed),
             );
         }
     }
@@ -161,7 +165,8 @@ impl Missed {
 pub(crate) struct Shared {
     /// Latest value per parameter, coalesced by id. The UI thread may grow it; the
     /// audio thread takes at most `MAX_PARAMS` per block and leaves the rest queued.
-    pub params: Mutex<Vec<(ParamID, ParamValue)>>,
+    pub params: Mutex<Vec<(ParamID, ParamValue, u64)>>,
+    edit_seq: AtomicU64,
     pub missed: Missed,
     /// Latest output parameter value per id and whether the UI has not seen it yet.
     pub outputs: Mutex<Vec<(ParamID, ParamValue, bool)>>,
@@ -179,6 +184,7 @@ impl Shared {
         Self {
             params: Mutex::new(Vec::with_capacity(MAX_PARAMS)),
             missed: Missed::new(),
+            edit_seq: AtomicU64::new(1),
             outputs: Mutex::new(Vec::new()),
             outputs_fresh: AtomicBool::new(false),
             dirty: AtomicBool::new(false),
@@ -201,7 +207,21 @@ impl Shared {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clear();
-        self.missed.drain(|_, _| {});
+        self.missed.drain(|_, _, _| {});
+    }
+
+    /// Moves what fits into `changes`, merged by id with the newest edit winning; the
+    /// rest of `params` stays queued. Never allocates.
+    pub fn fill(
+        &self,
+        changes: &ParamChanges,
+        params: Option<&mut Vec<(ParamID, ParamValue, u64)>>,
+    ) {
+        self.missed
+            .drain(|id, value, stamp| _ = changes.merge(id, value, stamp));
+        if let Some(params) = params {
+            params.retain(|&(id, value, stamp)| !changes.merge(id, value, stamp));
+        }
     }
 
     pub fn set_waker(&self, waker: Option<Waker>) {
@@ -231,12 +251,14 @@ impl IComponentHandlerTrait for ComponentHandler {
     }
 
     unsafe fn performEdit(&self, id: ParamID, value: ParamValue) -> tresult {
-        let queue = |params: &mut Vec<(ParamID, ParamValue)>| {
+        let stamp = self.0.edit_seq.fetch_add(1, Ordering::Relaxed);
+        let queue = |params: &mut Vec<(ParamID, ParamValue, u64)>| {
             if let Some(slot) = params.iter_mut().find(|p| p.0 == id) {
                 slot.1 = value;
+                slot.2 = stamp;
                 true
             } else if !IN_AUDIO.get() || params.len() < params.capacity() {
-                params.push((id, value));
+                params.push((id, value, stamp));
                 true
             } else {
                 false
@@ -252,8 +274,10 @@ impl IComponentHandlerTrait for ComponentHandler {
             Err(TryLockError::Poisoned(e)) => queue(&mut e.into_inner()),
             Err(TryLockError::WouldBlock) => false,
         };
-        if !queued && !self.0.missed.record(id, value) {
-            self.0.dirty.store(true, Ordering::Release);
+        // A full table (more than MAX_PARAMS distinct ids while contended) loses the value
+        // for the processor until the plugin's next edit of that id.
+        if !queued {
+            self.0.missed.record(id, value, stamp);
         }
         kResultOk
     }
@@ -388,6 +412,7 @@ impl IBStreamTrait for MemStream {
 struct ParamQueue {
     id: Cell<ParamID>,
     value: Cell<ParamValue>,
+    stamp: Cell<u64>,
     offset: Cell<int32>,
     points: Cell<int32>,
     output: bool,
@@ -399,6 +424,7 @@ impl ParamQueue {
         ComWrapper::new(Self {
             id: Cell::new(0),
             value: Cell::new(0.0),
+            stamp: Cell::new(0),
             offset: Cell::new(0),
             points: Cell::new(0),
             output,
@@ -490,18 +516,29 @@ impl ParamChanges {
         self.count.set(0);
     }
 
-    pub fn has_any(&self) -> bool {
-        self.count.get() > 0
+    /// One entry per id, the newest stamp wins. False when `id` is new and there is no room.
+    pub fn merge(&self, id: ParamID, value: ParamValue, stamp: u64) -> bool {
+        let n = self.count.get();
+        if let Some(q) = self.queues[..n].iter().find(|q| q.id.get() == id) {
+            if stamp > q.stamp.get() {
+                q.value.set(value);
+                q.stamp.set(stamp);
+            }
+            return true;
+        }
+        let Some(q) = self.queues.get(n) else {
+            return false;
+        };
+        q.id.set(id);
+        q.value.set(value);
+        q.stamp.set(stamp);
+        q.points.set(1);
+        self.count.set(n + 1);
+        true
     }
 
-    pub fn push(&self, id: ParamID, value: ParamValue) {
-        let n = self.count.get();
-        if let Some(q) = self.queues.get(n) {
-            q.id.set(id);
-            q.value.set(value);
-            q.points.set(1);
-            self.count.set(n + 1);
-        }
+    pub fn has_any(&self) -> bool {
+        self.count.get() > 0
     }
 
     /// The last point of every queue that has one.

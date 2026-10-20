@@ -133,23 +133,29 @@ fn stream_write_far_past_the_end_is_refused_without_allocating() {
 #[test]
 fn missed_edits_coalesce_by_id_and_drain_once() {
     let missed = Missed::new();
-    assert!(missed.record(3, 0.1));
-    assert!(missed.record(4, 0.2));
-    assert!(missed.record(3, 0.9));
+    assert!(missed.record(3, 0.1, 1));
+    assert!(missed.record(4, 0.2, 2));
+    assert!(missed.record(3, 0.9, 3));
     let mut got = Vec::new();
-    missed.drain(|id, v| got.push((id, v)));
-    assert_eq!(got, [(3, 0.9), (4, 0.2)]);
-    missed.drain(|_, _| panic!("drained twice"));
+    missed.drain(|id, v, s| got.push((id, v, s)));
+    assert_eq!(got, [(3, 0.9, 3), (4, 0.2, 2)]);
+    missed.drain(|_, _, _| panic!("drained twice"));
 }
 
 #[test]
 fn a_full_missed_table_refuses_new_ids_but_updates_known_ones() {
     let missed = Missed::new();
     for id in 0..MAX_PARAMS as u32 {
-        assert!(missed.record(id, 0.5));
+        assert!(missed.record(id, 0.5, 1));
     }
-    assert!(!missed.record(1000, 0.5));
-    assert!(missed.record(7, 0.6));
+    assert!(!missed.record(1000, 0.5, 2));
+    assert!(missed.record(7, 0.6, 3));
+}
+
+fn values(changes: &ParamChanges) -> Vec<(ParamID, ParamValue)> {
+    let mut got = Vec::new();
+    changes.for_each_value(|id, v| got.push((id, v)));
+    got
 }
 
 #[test]
@@ -163,9 +169,9 @@ fn an_audio_thread_edit_never_waits_for_the_params_lock() {
     drop(_scope);
     drop(held);
     assert!(shared.params.lock().unwrap().is_empty());
-    let mut got = Vec::new();
-    shared.missed.drain(|id, v| got.push((id, v)));
-    assert_eq!(got, [(5, 0.75)]);
+    let changes = ParamChanges::input();
+    shared.fill(&changes, None);
+    assert_eq!(values(&changes), [(5, 0.75)]);
 }
 
 #[test]
@@ -174,7 +180,8 @@ fn an_edit_outside_the_audio_thread_is_queued_as_before() {
     let handler = ComponentHandler(shared.clone());
     // SAFETY: plain call on a live handler.
     unsafe { handler.performEdit(5, 0.75) };
-    assert_eq!(*shared.params.lock().unwrap(), [(5, 0.75)]);
+    let params = shared.params.lock().unwrap();
+    assert_eq!((params[0].0, params[0].1), (5, 0.75));
 }
 
 #[test]
@@ -185,7 +192,7 @@ fn an_audio_thread_edit_does_not_grow_a_full_params_queue() {
         let mut params = shared.params.lock().unwrap();
         let cap = params.capacity();
         for id in 0..cap as u32 {
-            params.push((id, 0.0));
+            params.push((id, 0.0, 0));
         }
         cap
     };
@@ -193,7 +200,56 @@ fn an_audio_thread_edit_does_not_grow_a_full_params_queue() {
     // SAFETY: plain call on a live handler.
     unsafe { handler.performEdit(10_000, 0.5) };
     assert_eq!(shared.params.lock().unwrap().capacity(), cap);
-    let mut got = Vec::new();
-    shared.missed.drain(|id, v| got.push((id, v)));
-    assert_eq!(got, [(10_000, 0.5)]);
+    let changes = ParamChanges::input();
+    shared.missed.drain(|id, v, _| _ = changes.merge(id, v, 1));
+    assert_eq!(values(&changes), [(10_000, 0.5)]);
+}
+
+fn edit(handler: &ComponentHandler, id: ParamID, value: ParamValue, audio: bool) {
+    let _scope = audio.then(AudioScope::enter);
+    // SAFETY: plain call on a live handler.
+    unsafe { handler.performEdit(id, value) };
+}
+
+#[test]
+fn a_later_queued_edit_beats_an_earlier_missed_one_of_the_same_id() {
+    let shared = std::sync::Arc::new(Shared::new());
+    let handler = ComponentHandler(shared.clone());
+    let held = shared.params.lock().unwrap();
+    edit(&handler, 5, 0.1, true);
+    drop(held);
+    edit(&handler, 5, 0.9, false);
+    let changes = ParamChanges::input();
+    shared.fill(&changes, Some(&mut shared.params.lock().unwrap()));
+    assert_eq!(values(&changes), [(5, 0.9)]);
+}
+
+#[test]
+fn a_later_missed_edit_beats_an_earlier_queued_one_of_the_same_id() {
+    let shared = std::sync::Arc::new(Shared::new());
+    let handler = ComponentHandler(shared.clone());
+    edit(&handler, 5, 0.1, false);
+    let held = shared.params.lock().unwrap();
+    edit(&handler, 5, 0.9, true);
+    drop(held);
+    let changes = ParamChanges::input();
+    shared.fill(&changes, Some(&mut shared.params.lock().unwrap()));
+    assert_eq!(values(&changes), [(5, 0.9)]);
+    assert!(shared.params.lock().unwrap().is_empty());
+}
+
+#[test]
+fn missed_edits_are_never_crowded_out_by_a_full_params_queue() {
+    let shared = std::sync::Arc::new(Shared::new());
+    let handler = ComponentHandler(shared.clone());
+    for id in 0..2 * MAX_PARAMS as u32 {
+        edit(&handler, id, 0.5, false);
+    }
+    let held = shared.params.lock().unwrap();
+    edit(&handler, 1000, 0.25, true);
+    drop(held);
+    let changes = ParamChanges::input();
+    shared.fill(&changes, Some(&mut shared.params.lock().unwrap()));
+    assert!(values(&changes).contains(&(1000, 0.25)));
+    assert_eq!(shared.params.lock().unwrap().len(), MAX_PARAMS + 1);
 }
