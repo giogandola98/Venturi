@@ -2023,7 +2023,7 @@ fn a_disabled_duplicate_keeps_the_panel_and_mixer_keys_in_agreement() {
 
 #[test]
 fn plugin_key_in_is_none_out_of_range() {
-    let (project, a, _) = project();
+    let (_, a, _) = project();
     let tl = timeline(vec![audio_track(vec![clip_at(a, 0, 0, 5)])]);
     assert!(crate::mixer::plugin_key_in(0, &tl, MixerChannel::Track(5), 0).is_none());
     assert!(crate::mixer::plugin_key_in(0, &tl, MixerChannel::Track(0), 0).is_none());
