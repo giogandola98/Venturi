@@ -76,6 +76,10 @@ All `unsafe` and all COM code live here.
   and reused: at each render every instance is reactivated and its state is
   set from the saved effect if it differs. A failed creation is not retried
   until the effect's state changes.
+  A cache keeps at most one offline pool, made from its current plugin list:
+  a render puts its pool back only if the list is unchanged since it began
+  (a nested render's rescan drops it), and then replaces any pool a nested
+  render parked.
 - **`installed()` / `set_installed()`:** `installed()` never scans. The app
   seeds the list from its settings cache and replaces it after each scan; a
   headless process (MCP) reads only that cache.

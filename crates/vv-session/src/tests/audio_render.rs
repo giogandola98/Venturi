@@ -1088,6 +1088,67 @@ fn a_rescan_drops_the_pools_kept_between_renders() {
     assert_eq!(Arc::strong_count(&made.lock().unwrap()[0]), 1);
 }
 
+type Made = Arc<std::sync::Mutex<Vec<Arc<Passthrough>>>>;
+
+/// A track with a plugin and a normalization, in `plugin_first` order, and a
+/// cache whose pool is `P1` with its one instance.
+fn pool_race(plugin_first: bool, name: &str) -> (Project, Timeline, LevelCache, Made) {
+    let mut project = Project::default();
+    let id = media(&mut project, chirp(name, 48_000, 2), 48_000, 1);
+    let mut track = audio_track(vec![clip(1, id, 0, 25, 0)]);
+    let plugin = plugin_effect(FIXTURE_CLASS, &[]);
+    let normalized = normalize(NormalizeMode::SamplePeak);
+    track.mix.effects = if plugin_first {
+        vec![plugin, normalized]
+    } else {
+        vec![normalized, plugin]
+    };
+    let tl = timeline(vec![track]);
+    let (first, second): (Arc<[_]>, Arc<[_]>) = (Arc::from(fake_known()), Arc::from(fake_known()));
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let mut levels = LevelCache {
+        threads: 1,
+        ..LevelCache::default()
+    };
+    levels.installed = Arc::new(move || {
+        if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            first.clone()
+        } else {
+            second.clone()
+        }
+    });
+    let made: Arc<std::sync::Mutex<Vec<Arc<Passthrough>>>> = Arc::default();
+    let kept = made.clone();
+    let (pool, _) = counting_pool(move || {
+        let instance = Arc::new(Passthrough);
+        kept.lock().unwrap().push(instance.clone());
+        Some(instance)
+    });
+    levels.plugins = Some(pool);
+    (project, tl, levels, made)
+}
+
+#[test]
+fn a_pool_from_a_list_a_nested_render_replaced_is_dropped() {
+    let (project, tl, mut levels, made) = pool_race(false, "stale_pool.wav");
+    render_to_vec(&project, &tl, samples(0..50), &mut levels);
+    let made = made.lock().unwrap();
+    assert_eq!(made.len(), 1);
+    assert_eq!(Arc::strong_count(&made[0]), 1, "the stale pool was kept");
+    assert!(levels.plugins.is_none());
+}
+
+#[test]
+fn a_nested_render_does_not_discard_the_outer_pool() {
+    let (project, tl, mut levels, made) = pool_race(true, "outer_pool.wav");
+    let list: Arc<[vv_plugin::PluginInfo]> = Arc::from(fake_known());
+    levels.installed = Arc::new(move || list.clone());
+    render_to_vec(&project, &tl, samples(0..50), &mut levels);
+    let made = made.lock().unwrap();
+    assert_eq!(made.len(), 1);
+    assert_eq!(Arc::strong_count(&made[0]), 2, "the outer pool was dropped");
+}
+
 fn level_files(dir: &Path) -> usize {
     std::fs::read_dir(dir).map_or(0, |entries| entries.count())
 }

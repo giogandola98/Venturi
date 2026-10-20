@@ -351,15 +351,25 @@ fn render_with_plugins(
     plugins: Option<Instances>,
     mut sink: impl FnMut(&[f32]) -> ControlFlow<()>,
 ) -> Result<(), ExportError> {
+    let listed = levels.known.clone();
     let mut audio = StreamingAudio::new(levels);
     audio.plugins = plugins;
     if let Some(plugins) = &mut audio.plugins {
         plugins.begin_render();
     }
     let rendered = render_chunks(project, mix, range, &mut audio, &mut sink);
-    // Kept for the next render: creating instances is the cost.
+    // Kept for the next render (creating instances is the cost), unless a
+    // nested render moved the list on. A pool a nested render parked yields
+    // to this one: at most one is kept.
     if let Some(plugins) = audio.plugins.take() {
-        audio.cache.plugins.get_or_insert(plugins);
+        let current = match (&listed, &audio.cache.known) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if current {
+            audio.cache.plugins = Some(plugins);
+        }
     }
     rendered
 }
