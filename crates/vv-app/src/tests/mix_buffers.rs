@@ -782,3 +782,38 @@ fn a_rescan_measures_again_what_was_rendered_while_a_plugin_was_not_made() {
     cache.sweep_unused();
     assert_eq!(cache.degraded, HashSet::from([bad_key]));
 }
+
+#[test]
+fn a_degraded_result_from_before_a_rescan_is_asked_again() {
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    let (level_tx, level_rx) = mpsc::channel();
+    let (stretch_tx, stretch_rx) = mpsc::channel();
+    cache.level_rx = level_rx;
+    cache.stretch_rx = stretch_rx;
+    cache.clear_plugin_failures();
+    let generation = cache.retry.load(Ordering::Relaxed);
+    for key in [1, 2] {
+        cache.levels.insert(key, None);
+    }
+    cache.stretched.insert(3, Stretch::Pending(Arc::default()));
+    cache.stretched.insert(4, Stretch::Pending(Arc::default()));
+    let blocks = SampleBlocks::contiguous(Arc::new(Vec::new()), 0, 1);
+    level_tx
+        .send((1, None, Some(1.0), Some(generation - 1)))
+        .unwrap();
+    level_tx
+        .send((2, None, Some(1.0), Some(generation)))
+        .unwrap();
+    stretch_tx
+        .send((3, Ok(blocks.clone()), Some(generation - 1)))
+        .unwrap();
+    stretch_tx.send((4, Ok(blocks), Some(generation))).unwrap();
+
+    cache.poll();
+
+    assert!(!cache.levels.contains_key(&1));
+    assert_eq!(cache.levels[&2], Some(1.0));
+    assert!(!cache.stretched.contains_key(&3));
+    assert!(matches!(cache.stretched[&4], Stretch::Ready(_)));
+    assert_eq!(cache.degraded, HashSet::from([2, 4]));
+}

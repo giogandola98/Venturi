@@ -113,8 +113,8 @@ struct LevelJob {
 }
 
 /// `None`: dropped for a newer job of the same slot. Last: measured while
-/// an installed plugin was not made.
-type LevelResult = (u64, Option<AnalysisSlot>, Option<f32>, bool);
+/// an installed plugin was not made, with the `retry` generation it ran under.
+type LevelResult = (u64, Option<AnalysisSlot>, Option<f32>, Option<u64>);
 
 /// Blocks kept on each side of what the clips read: a trim into them
 /// decodes nothing.
@@ -235,7 +235,7 @@ pub struct MixBufferCache {
     /// every frame.
     stretch_busy: Arc<AtomicUsize>,
     stretch_worker: Worker<StretchJob>,
-    stretch_rx: mpsc::Receiver<(u64, Result<SampleBlocks, String>, bool)>,
+    stretch_rx: mpsc::Receiver<(u64, Result<SampleBlocks, String>, Option<u64>)>,
     /// Normalization levels by `LevelAnalysis::key`; `None` while measuring.
     levels: HashMap<u64, Option<f32>>,
     last_level: HashMap<AnalysisSlot, f32>,
@@ -302,7 +302,7 @@ impl MixBufferCache {
                 worker_stretch_busy.fetch_sub(1, Ordering::Relaxed);
                 if let Some(result) = result
                     && stretch_tx
-                        .send((stretch.key, result, cache.degraded))
+                        .send((stretch.key, result, cache.degraded.then_some(retried)))
                         .is_err()
                 {
                     break;
@@ -332,7 +332,7 @@ impl MixBufferCache {
                     if let Some(older) = older {
                         let dropped = std::mem::replace(&mut batch[older], job).analysis;
                         worker_level_busy.fetch_sub(1, Ordering::Relaxed);
-                        if level_tx.send((dropped.key, slot, None, false)).is_err() {
+                        if level_tx.send((dropped.key, slot, None, None)).is_err() {
                             return;
                         }
                     } else {
@@ -352,7 +352,12 @@ impl MixBufferCache {
                         0.0
                     });
                     if level_tx
-                        .send((analysis.key, analysis.slot, Some(level), cache.degraded))
+                        .send((
+                            analysis.key,
+                            analysis.slot,
+                            Some(level),
+                            cache.degraded.then_some(retried),
+                        ))
                         .is_err()
                     {
                         return;
@@ -799,7 +804,13 @@ impl MixBufferCache {
         }
         while let Ok((key, result, degraded)) = self.stretch_rx.try_recv() {
             if let Some(entry) = self.stretched.get_mut(&key) {
-                if degraded {
+                if let Some(started) = degraded {
+                    if started != self.retry.load(Ordering::Relaxed) {
+                        // Rendered on the pool a rescan replaced: asked again.
+                        self.stretched.remove(&key);
+                        changed = true;
+                        continue;
+                    }
                     self.degraded.insert(key);
                 }
                 *entry = match result {
@@ -815,9 +826,12 @@ impl MixBufferCache {
         while let Ok((key, slot, level, degraded)) = self.level_rx.try_recv() {
             match level {
                 Some(level) => {
-                    if let Some(entry) = self.levels.get_mut(&key) {
+                    let stale = degraded.is_some_and(|s| s != self.retry.load(Ordering::Relaxed));
+                    if stale {
+                        self.levels.remove(&key);
+                    } else if let Some(entry) = self.levels.get_mut(&key) {
                         *entry = Some(level);
-                        if degraded {
+                        if degraded.is_some() {
                             self.degraded.insert(key);
                         }
                         changed = true;
