@@ -740,3 +740,22 @@ fn new_and_set_state_record_the_hash_of_the_loaded_state() {
     instance.set_state(&second);
     assert_eq!(instance.state_hash(), second.content_hash());
 }
+
+#[test]
+fn a_restart_raised_while_activating_is_not_serviced_again() {
+    let log = FixtureLog::new(12);
+    let instance = lifecycle_build("56565445535447414E0000000000000C").unwrap();
+    instance.service_restart();
+    assert_eq!(log.calls(), ["setActive(1)", "setProcessing(1)"]);
+}
+
+#[test]
+fn a_plugin_raising_a_restart_on_every_activation_is_not_reactivated_in_a_loop() {
+    let log = FixtureLog::new(12);
+    let instance = lifecycle_build("56565445535447414E0000000000000C").unwrap();
+    instance.reactivate();
+    instance.service_restart();
+    let before = log.calls().len();
+    instance.service_restart();
+    assert_eq!(log.calls().len(), before);
+}

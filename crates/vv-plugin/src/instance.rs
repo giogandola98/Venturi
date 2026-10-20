@@ -204,7 +204,7 @@ impl Vst3Instance {
             this.processor.setProcessing(1);
             this.processing = true;
         }
-        this.refresh_latency();
+        this.refresh_latency_after_activation();
         Ok(Arc::new(this))
     }
 
@@ -340,6 +340,13 @@ impl Vst3Instance {
             }
             std::thread::yield_now();
         }
+    }
+
+    /// A restart raised by the plugin while activating is already honoured by the
+    /// latency read here; keeping it pending would reactivate a running instance.
+    fn refresh_latency_after_activation(&self) {
+        self.shared.restart.store(0, Ordering::Release);
+        self.refresh_latency();
     }
 
     fn refresh_latency(&self) {
@@ -566,7 +573,7 @@ impl HostedPlugin for Vst3Instance {
             self.component.setActive(1);
             self.processor.setProcessing(1);
         }
-        self.refresh_latency();
+        self.refresh_latency_after_activation();
     }
 
     fn reactivate(&self) {
@@ -578,7 +585,7 @@ impl HostedPlugin for Vst3Instance {
             self.component.setActive(1);
             self.processor.setProcessing(1);
         }
-        self.refresh_latency();
+        self.refresh_latency_after_activation();
     }
 
     fn take_gesture(&self) -> Option<(PluginState, PluginState)> {
