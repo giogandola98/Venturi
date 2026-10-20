@@ -510,3 +510,89 @@ fn more_edits_than_one_block_holds_are_delivered_over_consecutive_blocks() {
     assert!(instance.shared.params.lock().unwrap().is_empty());
     assert_eq!(received(&instance), 100);
 }
+
+const METER_CLASS: &str = "56565445535447414E00000000000007";
+
+fn meter_fixture() -> Arc<Vst3Instance> {
+    let effect = effect_of(METER_CLASS, Vec::new());
+    Vst3Instance::new(&fixture_bundle(), &effect, 48_000, ProcessMode::Realtime)
+        .expect("meter fixture instance")
+}
+
+fn meter_input(peak: f32) -> Vec<f32> {
+    let mut audio = vec![0.0; 128];
+    audio[10] = peak;
+    audio
+}
+
+fn controller_value(instance: &Vst3Instance, id: u32) -> f64 {
+    // SAFETY: a live controller owned by the instance.
+    unsafe { instance.controller().unwrap().getParamNormalized(id) }
+}
+
+#[test]
+fn output_queues_read_back_what_the_plugin_added() {
+    use vst3::Steinberg::Vst::{IParamValueQueueTrait, IParameterChangesTrait};
+    let changes = crate::host::ParamChanges::output();
+    let out = changes
+        .as_com_ref::<vst3::Steinberg::Vst::IParameterChanges>()
+        .unwrap();
+    let mut index = -1;
+    // SAFETY: valid out-pointers on live host objects.
+    unsafe {
+        let queue = ComRef::from_raw(out.addParameterData(&7, &mut index)).unwrap();
+        assert_eq!((index, out.getParameterCount()), (0, 1));
+        assert_eq!(queue.getPointCount(), 0);
+        assert_eq!(queue.addPoint(3, 0.25, &mut index), kResultOk);
+        assert_eq!(queue.addPoint(5, 0.75, &mut index), kResultOk);
+        assert_eq!(out.getParameterCount(), 1);
+        let back = ComRef::from_raw(out.getParameterData(0)).unwrap();
+        assert_eq!((back.getParameterId(), back.getPointCount()), (7, 1));
+        let (mut offset, mut value) = (-1, -1.0);
+        assert_eq!(back.getPoint(0, &mut offset, &mut value), kResultOk);
+        assert_eq!((offset, value), (5, 0.75));
+        out.addParameterData(&7, &mut index);
+        assert_eq!((index, out.getParameterCount()), (0, 1));
+        for id in 100..163 {
+            assert!(!out.addParameterData(&id, &mut index).is_null());
+        }
+        assert!(out.addParameterData(&999, &mut index).is_null());
+        assert_eq!(out.getParameterCount(), 64);
+    }
+}
+
+#[test]
+fn process_publishes_the_latest_output_parameter_value() {
+    let instance = meter_fixture();
+    let mut audio = meter_input(0.5);
+    instance.process(&mut audio, 1);
+    audio = meter_input(0.25);
+    instance.process(&mut audio, 1);
+    let outputs = instance.shared.outputs.lock().unwrap().clone();
+    assert_eq!(outputs, vec![(1, 0.25)]);
+}
+
+#[test]
+fn output_parameters_reach_the_controller() {
+    let instance = meter_fixture();
+    assert_eq!(controller_value(&instance, 1), 0.0);
+    let mut audio = meter_input(0.5);
+    instance.process(&mut audio, 1);
+    assert_eq!(controller_value(&instance, 1), 0.0);
+    instance.forward_outputs();
+    assert_eq!(controller_value(&instance, 1), 0.5);
+    assert!(instance.shared.outputs.lock().unwrap().is_empty());
+}
+
+#[test]
+fn process_with_output_parameters_does_not_allocate() {
+    let instance = meter_fixture();
+    let mut audio = ramp(1300, 2);
+    instance.process(&mut audio, 2);
+    instance.forward_outputs();
+    let before = ALLOCS.with(|c| c.get());
+    for _ in 0..8 {
+        instance.process(&mut audio, 2);
+    }
+    assert_eq!(ALLOCS.with(|c| c.get()) - before, 0);
+}

@@ -33,6 +33,10 @@ const FALSE_CID: TUID = [
 const COUNTING_CID: TUID = [
     0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 6,
 ];
+// Single component that writes its input peak to output parameter 1 every block.
+const METER_CID: TUID = [
+    0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 7,
+];
 const DEFAULT_NORMALIZED: f64 = 0.5;
 
 fn copy_cstring(src: &str, dst: &mut [c_char]) {
@@ -69,6 +73,9 @@ struct Gain {
     controller_cid: Option<TUID>,
     set_processing_result: tresult,
     counts_params: bool,
+    writes_meter: bool,
+    // Output parameter 1 as the controller last received it.
+    meter: AtomicU64,
     seen: [AtomicU64; 2],
 }
 
@@ -79,6 +86,8 @@ impl Gain {
             controller_cid,
             set_processing_result: kResultOk,
             counts_params: false,
+            writes_meter: false,
+            meter: AtomicU64::new(0),
             seen: [AtomicU64::new(0), AtomicU64::new(0)],
         }
     }
@@ -104,6 +113,32 @@ impl Gain {
         }
         self.set(f64::from(f32::from_le_bytes(buf)));
         kResultOk
+    }
+}
+
+impl Gain {
+    unsafe fn write_meter(&self, data: &ProcessData) {
+        let Some(out) = (unsafe { ComRef::from_raw(data.outputParameterChanges) }) else {
+            return;
+        };
+        if data.numInputs < 1 || data.inputs.is_null() {
+            return;
+        }
+        let input = unsafe { &*data.inputs };
+        let ins = unsafe { input.__field0.channelBuffers32 };
+        if ins.is_null() || input.numChannels < 1 {
+            return;
+        }
+        let src = unsafe { *ins };
+        let mut peak = 0.0f32;
+        for n in 0..data.numSamples.max(0) as usize {
+            peak = peak.max(unsafe { *src.add(n) }.abs());
+        }
+        let (id, mut index) = (1, 0);
+        let queue = unsafe { out.addParameterData(&id, &mut index) };
+        if let Some(queue) = unsafe { ComRef::from_raw(queue) } {
+            unsafe { queue.addPoint(0, f64::from(peak.min(1.0)), &mut index) };
+        }
     }
 }
 
@@ -303,6 +338,9 @@ impl IAudioProcessorTrait for Gain {
             return kResultOk;
         }
         let g = gain(self.get());
+        if self.writes_meter {
+            unsafe { self.write_meter(data) };
+        }
         for c in 0..channels {
             // Raw pointers: hosts may process in place, where &/&mut slices would alias.
             let (src, dst) = unsafe { (*ins.add(c), *outs.add(c)) };
@@ -377,14 +415,19 @@ impl IEditControllerTrait for Gain {
     }
 
     unsafe fn getParamNormalized(&self, id: u32) -> f64 {
-        if id == 0 { self.get() } else { 0.0 }
+        match id {
+            0 => self.get(),
+            1 => f64::from_bits(self.meter.load(Ordering::Relaxed)),
+            _ => 0.0,
+        }
     }
 
     unsafe fn setParamNormalized(&self, id: u32, value: f64) -> tresult {
-        if id != 0 {
-            return kInvalidArgument;
+        match id {
+            0 => self.set(value),
+            1 => self.meter.store(value.to_bits(), Ordering::Relaxed),
+            _ => return kInvalidArgument,
         }
-        self.set(value);
         kResultOk
     }
 
@@ -453,6 +496,10 @@ impl IPluginFactoryTrait for Factory {
             },
             COUNTING_CID => Gain {
                 counts_params: true,
+                ..Gain::new(None)
+            },
+            METER_CID => Gain {
+                writes_meter: true,
                 ..Gain::new(None)
             },
             SPLIT_CID => Gain::new(Some(SPLIT_CONTROLLER_CID)),

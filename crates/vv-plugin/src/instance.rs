@@ -50,7 +50,8 @@ struct Rt {
     out: [Vec<f32>; 2],
     changes: ComWrapper<ParamChanges>,
     changes_ptr: ComPtr<IParameterChanges>,
-    sink_ptr: ComPtr<IParameterChanges>,
+    outputs: ComWrapper<ParamChanges>,
+    outputs_ptr: ComPtr<IParameterChanges>,
     context: ProcessContext,
 }
 
@@ -125,13 +126,13 @@ impl Vst3Instance {
             .to_com_ptr::<IComponentHandler>()
             .ok_or("component handler")?;
         let changes = ParamChanges::input();
+        let outputs = ParamChanges::output();
         let rt = Rt {
             inp: [vec![0.0; BLOCK_FRAMES], vec![0.0; BLOCK_FRAMES]],
             out: [vec![0.0; BLOCK_FRAMES], vec![0.0; BLOCK_FRAMES]],
             changes_ptr: changes.to_com_ptr().ok_or("parameter changes")?,
-            sink_ptr: ParamChanges::output_sink()
-                .to_com_ptr()
-                .ok_or("parameter changes")?,
+            outputs_ptr: outputs.to_com_ptr().ok_or("parameter changes")?,
+            outputs,
             changes,
             // SAFETY: a plain C struct; zero is a valid empty state.
             context: unsafe { std::mem::zeroed() },
@@ -414,6 +415,44 @@ impl Vst3Instance {
         self.state_hash.store(hash, Ordering::Relaxed);
     }
 
+    /// Audio thread: never blocks, a contended block is skipped.
+    fn publish_outputs(&self, outputs: &ParamChanges) {
+        let Ok(mut latest) = self.shared.outputs.try_lock() else {
+            return;
+        };
+        outputs.for_each_value(|id, value| {
+            if let Some(slot) = latest.iter_mut().find(|p| p.0 == id) {
+                slot.1 = value;
+            } else if latest.len() < MAX_PARAMS {
+                latest.push((id, value));
+            }
+            self.shared.has_outputs.store(true, Ordering::Relaxed);
+        });
+    }
+
+    /// Hands the plugin's output parameters to its controller; UI thread only.
+    pub(crate) fn forward_outputs(&self) {
+        let Some(controller) = &self.controller else {
+            return;
+        };
+        let latest: Vec<_> = self
+            .shared
+            .outputs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+            .collect();
+        for (id, value) in latest {
+            // SAFETY: a live controller, called from the UI thread.
+            unsafe { controller.setParamNormalized(id, value) };
+        }
+    }
+
+    /// The plugin has written output parameters, so an open editor needs polling.
+    pub(crate) fn has_outputs(&self) -> bool {
+        self.shared.has_outputs.load(Ordering::Relaxed)
+    }
+
     fn run_slice(&self, rt: &mut Rt, frames: usize) {
         let mut ins = [rt.inp[0].as_mut_ptr(), rt.inp[1].as_mut_ptr()];
         let mut outs = [rt.out[0].as_mut_ptr(), rt.out[1].as_mut_ptr()];
@@ -443,13 +482,15 @@ impl Vst3Instance {
             inputs: &mut input,
             outputs: &mut output,
             inputParameterChanges: rt.changes_ptr.as_ptr(),
-            outputParameterChanges: rt.sink_ptr.as_ptr(),
+            outputParameterChanges: rt.outputs_ptr.as_ptr(),
             inputEvents: std::ptr::null_mut(),
             outputEvents: std::ptr::null_mut(),
             processContext: &mut rt.context,
         };
+        rt.outputs.clear();
         // SAFETY: buffers hold `frames` samples each; `data` lives for the call.
         let res = unsafe { self.processor.process(&mut data) };
+        self.publish_outputs(&rt.outputs);
         if res != kResultOk {
             for c in 0..2 {
                 rt.out[c][..frames].copy_from_slice(&rt.inp[c][..frames]);
