@@ -531,7 +531,7 @@ impl Drop for Vst3Instance {
     }
 }
 
-/// Mono feeds both plugin inputs; more than two channels: only the first two.
+/// Mono feeds both plugin inputs; more than two channels: only the first two (the mixer refills the rest).
 pub(crate) fn deinterleave(
     samples: &[f32],
     channels: usize,
