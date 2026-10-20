@@ -441,3 +441,30 @@ fn a_stretch_result_with_receiver_is_delivered() {
     drop(rx.try_recv().expect("delivered"));
     assert_eq!(Arc::strong_count(&mix), 1);
 }
+
+fn after_a_rescan(rescan: impl Fn(&mut TimelineAudio)) {
+    let mut audio = TimelineAudio::new();
+    audio.synced = Some((<TimelineId as vv_core::Id>::from_raw(1), 3));
+    rescan(&mut audio);
+    assert_eq!(
+        audio.synced, None,
+        "the next sync rebuilds the timeline mix"
+    );
+
+    let media = PathBuf::from("/preview.wav");
+    audio.synced_media = Some(media.clone());
+    rescan(&mut audio);
+    assert_eq!(
+        audio.synced_media,
+        Some(media),
+        "the plugin-free media mix is not rebuilt"
+    );
+}
+
+#[test]
+fn a_rescan_forces_a_timeline_rebuild_and_keeps_a_media_preview() {
+    after_a_rescan(TimelineAudio::plugins_rescan_unchanged);
+    after_a_rescan(|audio| {
+        audio.plugins_rescanned();
+    });
+}
