@@ -32,7 +32,7 @@ fn setup() -> (Project, TimelineId, Key) {
         off,
     ];
     let id = project.timelines.insert(timeline);
-    (project, id, (id, MixerChannel::Master, EffectId(7)))
+    (project, id, (id, MixerChannel::Master, EffectId(7), 0))
 }
 
 fn state_of(project: &Project, id: TimelineId, index: usize) -> Vec<u8> {
@@ -90,7 +90,7 @@ fn a_gesture_that_changed_nothing_leaves_no_undo_step() {
 fn a_gesture_of_a_removed_effect_is_dropped() {
     let (mut project, id, _) = setup();
     let mut history = History::default();
-    let gone = (id, MixerChannel::Master, EffectId(99));
+    let gone = (id, MixerChannel::Master, EffectId(99), 0);
     let state = PluginState::new(vec![5]);
     assert_eq!(
         record_edit(
@@ -161,7 +161,7 @@ fn an_editor_instance_is_held_under_the_key_the_mix_asks() {
     let again = held_instances(&project, [(key, instance)].into_iter());
     assert_eq!(again[0].0, held[0].0);
 
-    let gone = (id, MixerChannel::Master, EffectId(99));
+    let gone = (id, MixerChannel::Master, EffectId(99), 0);
     assert!(
         held_instances(
             &project,
@@ -189,7 +189,7 @@ fn a_gesture_pending_at_close_is_recorded_once() {
 fn the_gesture_of_a_removed_effect_is_consumed_not_recorded() {
     let (mut project, id, _) = setup();
     let mut history = History::default();
-    let gone = (id, MixerChannel::Master, EffectId(99));
+    let gone = (id, MixerChannel::Master, EffectId(99), 0);
     let fake = Fake::with_gesture(vec![9]);
     record_gesture(&mut project, &mut history, gone, &fake, false);
     assert_eq!(history.labels().count(), 0);
@@ -291,4 +291,61 @@ fn an_open_editor_instance_is_serviced_for_restarts_even_in_an_undo_group() {
     record_gesture(&mut project, &mut history, key, &fake, false);
     record_gesture(&mut project, &mut history, key, &fake, true);
     assert_eq!(fake.serviced.load(std::sync::atomic::Ordering::Relaxed), 2);
+}
+
+/// Master strip `[X(off), X]`: the same id twice, the first disabled.
+fn duplicate_strip() -> (Project, TimelineId) {
+    let (mut project, id, _) = setup();
+    let mut off = AudioEffect::new(AudioEffectKind::Vst3(plugin_effect(&[10])));
+    off.enabled = false;
+    let on = AudioEffect::new(AudioEffectKind::Vst3(plugin_effect(&[20])));
+    project.timelines[id].master.effects = vec![off, on];
+    (project, id)
+}
+
+#[test]
+fn duplicate_ids_on_a_strip_get_distinct_editor_keys() {
+    let (project, id) = duplicate_strip();
+    let strip = channel_strip(&project.timelines[id], MixerChannel::Master).unwrap();
+    let key = |index| key_at(id, MixerChannel::Master, strip, index);
+    assert_eq!(key(0), Some((id, MixerChannel::Master, EffectId(7), 0)));
+    assert_eq!(key(1), Some((id, MixerChannel::Master, EffectId(7), 1)));
+}
+
+#[test]
+fn a_gesture_is_recorded_into_the_duplicate_whose_editor_is_open() {
+    let (mut project, id) = duplicate_strip();
+    let mut history = History::default();
+    let second = (id, MixerChannel::Master, EffectId(7), 1);
+    record_edit(
+        &mut project,
+        &mut history,
+        second,
+        PluginState::new(vec![9]),
+        PluginState::default(),
+    );
+    assert_eq!(state_of(&project, id, 0), [10]);
+    assert_eq!(state_of(&project, id, 1), [9]);
+    let first = (id, MixerChannel::Master, EffectId(7), 0);
+    record_edit(
+        &mut project,
+        &mut history,
+        first,
+        PluginState::new(vec![8]),
+        PluginState::default(),
+    );
+    assert_eq!(state_of(&project, id, 0), [8]);
+    assert_eq!(state_of(&project, id, 1), [9]);
+}
+
+#[test]
+fn each_duplicate_editor_is_held_under_its_own_mix_key() {
+    let (project, id) = duplicate_strip();
+    let instance: Arc<dyn HostedPlugin> = Arc::new(Fake::default());
+    for index in 0..2 {
+        let key = (id, MixerChannel::Master, EffectId(7), index as u32);
+        let held = held_instances(&project, [(key, instance.clone())].into_iter());
+        let expected = plugin_key_of(&project.timelines[id], MixerChannel::Master, index);
+        assert_eq!(held[0].0, expected);
+    }
 }
