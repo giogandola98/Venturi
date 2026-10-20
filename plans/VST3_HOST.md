@@ -50,12 +50,15 @@ All `unsafe` and all COM code live here.
 
 - **Scan:** `moduleinfo.json` inside the bundle first, so the module is not
   loaded; otherwise the module is loaded and its factory read. Vendor
-  sub-folders are searched; a broken bundle does not hide the others.
-  A bundle without a parseable `moduleinfo.json` (VST3 SDK before 3.7.5)
-  is loaded by the scan, instruments included, and stays resident for the
-  session: loaded modules are never unloaded (static init and threads make
-  `dlclose` unsafe). Bundles with `moduleinfo.json` are never loaded by the
-  scan. The result is cached in the settings and not rescanned at launch.
+  sub-folders are searched; a bundle that returns an error does not hide
+  the others. A bundle without a parseable `moduleinfo.json` (VST3 SDK
+  before 3.7.5) is loaded by the scan, instruments included, and stays
+  resident for the session: loaded modules are never unloaded (static init
+  and threads make `dlclose` unsafe). Bundles with `moduleinfo.json` are
+  never loaded by the scan. Before loading such a bundle the scan writes its
+  path to a marker file; if the process dies, the next launch blocks that
+  bundle (a manual rescan retries it). A hang is not caught. The result is
+  cached in the settings and not rescanned at launch.
   Default folders: `/Library/Audio/Plug-Ins/VST3` and the user one on
   macOS; `~/.vst3`, `/usr/lib/vst3`, `/usr/lib64/vst3`,
   `/usr/local/lib/vst3` on Linux.
@@ -67,12 +70,13 @@ All `unsafe` and all COM code live here.
   queue; `IMessage` and `IAttributeList` are implemented for the plugins
   that need them.
 - **`Instances`** pools: *live* instances persist for the preview, one per
-  placement; *offline* instances are made per render, so an export starts
-  from the saved state; a *negative* cache keeps a plugin that failed to
-  load from being retried every pass.
-- **`installed()` / `set_installed()`:** the scan runs on first use, so a
-  headless render works without the app. The app seeds the list from its
-  cache in the settings and replaces it after a rescan.
+  placement. *Offline* pools are kept per worker (export, levels, stretch)
+  and reused: at each render every instance is reactivated and its state is
+  set from the saved effect if it differs. A failed creation is not retried
+  until the effect's state changes.
+- **`installed()` / `set_installed()`:** `installed()` never scans. The app
+  seeds the list from its settings cache and replaces it after each scan; a
+  headless process (MCP) reads only that cache.
 
 ### 2.4 Editors (`vv-plugin`)
 
@@ -83,19 +87,23 @@ All `unsafe` and all COM code live here.
   (`kPlatformTypeX11EmbedWindowID`). On a Wayland session without XWayland,
   opening an editor fails with an error; audio is unaffected.
 - Wake-ups are event-driven: a parameter edit, a `restartComponent`, a
-  resize or a close wakes the app through a `Waker`. There is no periodic
-  repaint on macOS; Linux wakes at the plugin's timer deadlines only.
+  resize or a close wakes the app through a `Waker`. On Linux a watcher
+  thread wakes it when a plugin fd or the X connection is readable, and
+  timer deadlines set the next wake; the 16 ms poll is only a fallback if
+  the watcher cannot start. The one periodic repaint is a 33 ms meter poll
+  while a plugin's outputs change.
 
 ### 2.5 Session and app
 
-- `vv-session`: export and analyses create the offline instances lazily,
-  once per render; a project without plugins makes none.
+- `vv-session`: export and analyses take offline instances lazily from the
+  per-worker pools; a project without plugins makes none.
 - `vv-app`: the "+" menu has a "VST3 plugins" submenu grouped by vendor,
   with Rescan. The scan runs in the background and its result is cached in
   the settings. A row shows a *missing* badge when the plugin is not
   installed, and a *latency* badge with its latency. Clicking a row opens
   the editor. Each gesture (add, remove, move, bypass, a parameter edit in
-  the editor) is one undoable command.
+  the editor) is one undoable command, recorded when the gesture ends and
+  held back while an undo group is open.
 
 ### 2.6 Tests
 
@@ -139,14 +147,13 @@ All `unsafe` and all COM code live here.
    are silent or a limit is hit.
 3. Per-clip effects (take FX).
 4. CLAP, then LV2 and AU, behind the same `PluginProcessor` seam.
-5. Out-of-process hosting, so a crashing plugin does not take the app down.
+5. Out-of-process hosting, so a crashing plugin does not take the app down
+   and a scan that hangs does not keep "Scanning…" up.
 6. Edits that do not go through a parameter gesture (a preset load) are
    recorded at the next gesture, not when they happen.
-7. Linux editors: not tested by hand; a close or resize is noticed at the
-   next repaint when the plugin has no timer. The run loop is pumped by
-   waking a full egui frame at the next timer deadline (every 16 ms while
-   fd handlers exist): a lighter frame that only pumps the run loop would
-   cost less.
+7. Linux editors: not tested by hand. The run loop is pumped by waking a
+   full egui frame at the next timer deadline: a lighter frame that only
+   pumps the run loop would cost less.
 8. OpenFX video plugins, which need the video pipeline and are not on this
    plan.
 9. Offline instances (export, level and stretch workers) are created,
@@ -156,4 +163,14 @@ All `unsafe` and all COM code live here.
    failed creation plays dry and is logged once per plugin class. Running
    them on the UI thread would make a worker wait for a UI frame, which does
    not run while the window is minimized, and the headless MCP has no UI
-   thread.
+   thread. On macOS the UI thread can also wait on a module a worker is
+   loading: if that plugin's initializer dispatch_syncs to the main queue,
+   both deadlock.
+10. A module whose load fails after `dlopen` stays cached as failed until
+    restart: `dlclose` is never called.
+11. Plugins are stereo: a surround source on a plugin track is folded to the
+    processed L/R.
+12. A headless MCP sees plugins only from the settings cache, so none until
+    one GUI scan or rescan has run.
+13. An unchanged rescan clears failures in the live pool only; worker pools
+    keep theirs until the list changes.
