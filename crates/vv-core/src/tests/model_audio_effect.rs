@@ -143,3 +143,12 @@ fn plugin_state_new_takes_the_buffer_without_copying() {
     let state = PluginState::new(bytes);
     assert_eq!(state.bytes().as_ptr(), ptr);
 }
+
+#[test]
+fn a_lowercase_class_id_from_a_saved_project_loads_canonical() {
+    let mut effect = vst3(vec![1]);
+    effect.class_id = effect.class_id.to_ascii_lowercase();
+    let text = ron::ser::to_string(&effect).unwrap();
+    let back: Vst3Effect = ron::from_str(&text).unwrap();
+    assert_eq!(back.class_id, "0123456789ABCDEF0123456789ABCDEF");
+}
