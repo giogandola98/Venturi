@@ -818,3 +818,15 @@ fn process_mode_maps_to_the_sdk_constants() {
     assert_eq!(ProcessMode::Realtime.sdk(), ProcessModes_::kRealtime as i32);
     assert_eq!(ProcessMode::Offline.sdk(), ProcessModes_::kOffline as i32);
 }
+
+#[test]
+fn new_and_set_state_record_the_hash_of_the_loaded_state() {
+    let first = effect(0.25f32.to_le_bytes().to_vec());
+    let instance =
+        Vst3Instance::new(&fixture_bundle(), &first, 48_000, ProcessMode::Realtime).unwrap();
+    assert_eq!(instance.state_hash(), first.content_hash());
+
+    let second = effect(0.75f32.to_le_bytes().to_vec());
+    instance.set_state(&second);
+    assert_eq!(instance.state_hash(), second.content_hash());
+}

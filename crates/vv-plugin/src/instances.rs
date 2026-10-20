@@ -13,7 +13,7 @@ pub type MakeInstance = Box<dyn FnMut(&Vst3Effect, u32) -> Option<Arc<dyn Hosted
 pub trait HostedPlugin: vv_audio::PluginProcessor {
     fn set_state(&self, effect: &Vst3Effect);
     fn state_hash(&self) -> u64;
-    fn set_state_hash(&self, hash: u64);
+    fn mark_state(&self, hash: u64);
     /// The concrete instance, for the editor; `None` for a stand-in.
     fn into_vst3(self: Arc<Self>) -> Option<Arc<Vst3Instance>> {
         None
@@ -124,7 +124,6 @@ impl Instances {
             }
             if instance.state_hash() != hash {
                 instance.set_state(request.effect);
-                instance.set_state_hash(hash);
             }
             return Some(instance.clone());
         }
@@ -152,7 +151,6 @@ impl Instances {
         if self.held.contains_key(&request.key) && instance.state_hash() != hash {
             instance.set_state(request.effect);
         }
-        instance.set_state_hash(hash);
         let handle = instance.clone();
         self.slots.insert(
             request.key,

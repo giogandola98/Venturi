@@ -820,7 +820,7 @@ impl vv_plugin::HostedPlugin for Passthrough {
     fn state_hash(&self) -> u64 {
         0
     }
-    fn set_state_hash(&self, _: u64) {}
+    fn mark_state(&self, _: u64) {}
 }
 
 #[test]
@@ -926,7 +926,7 @@ impl vv_plugin::HostedPlugin for Echo {
     fn state_hash(&self) -> u64 {
         0
     }
-    fn set_state_hash(&self, _: u64) {}
+    fn mark_state(&self, _: u64) {}
 }
 
 #[test]
