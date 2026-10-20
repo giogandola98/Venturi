@@ -85,6 +85,23 @@ pub struct Vst3Instance {
 unsafe impl Send for Vst3Instance {}
 unsafe impl Sync for Vst3Instance {}
 
+/// Exclusive use of `Vst3Instance::rt`; releases `busy` on every exit, panics included.
+struct AudioGuard<'a>(&'a AtomicBool);
+
+impl<'a> AudioGuard<'a> {
+    fn try_acquire(busy: &'a AtomicBool) -> Option<Self> {
+        busy.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| Self(busy))
+    }
+}
+
+impl Drop for AudioGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 fn parse_cid(hex: &str) -> Result<TUID, String> {
     let bad = || format!("bad class id {hex:?}");
     if hex.len() != 32 || !hex.is_ascii() {
@@ -178,9 +195,8 @@ impl Vst3Instance {
             // Informational: the SDK default returns kNotImplemented.
             this.processor.setProcessing(1);
             this.processing = true;
-            this.latency
-                .store(this.processor.getLatencySamples(), Ordering::Relaxed);
         }
+        this.refresh_latency();
         Ok(Arc::new(this))
     }
 
@@ -308,21 +324,23 @@ impl Vst3Instance {
         }
     }
 
-    fn lock_audio(&self) -> impl Drop + '_ {
-        while self
-            .busy
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
+    fn try_lock_audio(&self) -> Option<AudioGuard<'_>> {
+        AudioGuard::try_acquire(&self.busy)
+    }
+
+    fn lock_audio(&self) -> AudioGuard<'_> {
+        loop {
+            if let Some(guard) = self.try_lock_audio() {
+                return guard;
+            }
             std::thread::yield_now();
         }
-        struct Release<'a>(&'a AtomicBool);
-        impl Drop for Release<'_> {
-            fn drop(&mut self) {
-                self.0.store(false, Ordering::Release);
-            }
-        }
-        Release(&self.busy)
+    }
+
+    fn refresh_latency(&self) {
+        // SAFETY: a live processor.
+        let samples = unsafe { self.processor.getLatencySamples() };
+        self.latency.store(samples, Ordering::Relaxed);
     }
 
     /// Waits for the audio thread to leave `process`; UI thread only.
@@ -335,11 +353,7 @@ impl Vst3Instance {
             .unwrap_or_else(|e| e.into_inner())
             .clear();
         self.load_state(&effect.component_state, &effect.controller_state);
-        // SAFETY: a live processor.
-        self.latency.store(
-            unsafe { self.processor.getLatencySamples() },
-            Ordering::Relaxed,
-        );
+        self.refresh_latency();
     }
 
     /// Queued edits reach the processor first (a VST3 parameter flush), so the
@@ -434,9 +448,8 @@ impl Vst3Instance {
             }
             self.component.setActive(1);
             self.processor.setProcessing(1);
-            self.latency
-                .store(self.processor.getLatencySamples(), Ordering::Relaxed);
         }
+        self.refresh_latency();
     }
 
     /// Stops and starts the component, which `reset` does not: a plugin may
@@ -449,9 +462,8 @@ impl Vst3Instance {
             self.component.setActive(0);
             self.component.setActive(1);
             self.processor.setProcessing(1);
-            self.latency
-                .store(self.processor.getLatencySamples(), Ordering::Relaxed);
         }
+        self.refresh_latency();
     }
 
     pub fn state_hash(&self) -> u64 {
@@ -569,13 +581,9 @@ impl PluginProcessor for Vst3Instance {
         if channels == 0 {
             return;
         }
-        if self
-            .busy
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
+        let Some(_audio) = self.try_lock_audio() else {
             return;
-        }
+        };
         // SAFETY: `busy` gives this thread exclusive use of `rt`.
         let rt = unsafe { &mut *self.rt.get() };
         rt.changes.clear();
@@ -599,23 +607,17 @@ impl PluginProcessor for Vst3Instance {
             // Changes go to the first slice only.
             rt.changes.clear();
         }
-        self.busy.store(false, Ordering::Release);
     }
 
     fn reset(&self) {
-        if self
-            .busy
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
+        let Some(_audio) = self.try_lock_audio() else {
             return;
-        }
+        };
         // SAFETY: restarting processing is allowed from the audio thread.
         unsafe {
             self.processor.setProcessing(0);
             self.processor.setProcessing(1);
         }
-        self.busy.store(false, Ordering::Release);
     }
 
     fn latency(&self) -> u32 {

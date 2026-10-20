@@ -776,3 +776,37 @@ fn dropping_instances_leaves_the_module_usable() {
     let again = fixture(Vec::new());
     assert_scaled(&run(&again, &ramp(64, 2)), &ramp(64, 2), 1.0);
 }
+
+#[test]
+fn the_audio_guard_releases_busy_on_drop() {
+    let busy = AtomicBool::new(false);
+    let guard = AudioGuard::try_acquire(&busy).expect("free flag");
+    assert!(busy.load(Ordering::Relaxed));
+    assert!(AudioGuard::try_acquire(&busy).is_none());
+    drop(guard);
+    assert!(!busy.load(Ordering::Relaxed));
+}
+
+#[test]
+fn the_audio_guard_releases_busy_on_early_return() {
+    fn guarded(busy: &AtomicBool) -> Option<u32> {
+        let _guard = AudioGuard::try_acquire(busy)?;
+        None?;
+        Some(1)
+    }
+    let busy = AtomicBool::new(false);
+    assert_eq!(guarded(&busy), None);
+    assert!(!busy.load(Ordering::Relaxed));
+}
+
+#[test]
+fn the_audio_guard_releases_busy_on_panic() {
+    let busy = AtomicBool::new(false);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = AudioGuard::try_acquire(&busy).unwrap();
+        panic!("plugin blew up");
+    }));
+    assert!(result.is_err());
+    assert!(!busy.load(Ordering::Relaxed));
+    assert!(AudioGuard::try_acquire(&busy).is_some());
+}
