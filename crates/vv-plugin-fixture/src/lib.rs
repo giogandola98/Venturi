@@ -87,6 +87,10 @@ const REACTIVATE_FAIL_CID: TUID = [
 const SET_STATE_RESTART_CID: TUID = [
     0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 19,
 ];
+// Split variant whose processor starts at 0.25 while its controller reports 0.5.
+const SPLIT_PRESET_CID: TUID = [
+    0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 20,
+];
 const MANY_METERS: u32 = 100;
 const REACTIVATED_LATENCY: u32 = 64;
 const DEFAULT_NORMALIZED: f64 = 0.5;
@@ -801,6 +805,10 @@ impl IPluginFactoryTrait for Factory {
                 ..Gain::new(None)
             },
             SPLIT_CID => Gain::new(Some(SPLIT_CONTROLLER_CID)),
+            SPLIT_PRESET_CID => Gain {
+                normalized: AtomicU64::new(0.25f64.to_bits()),
+                ..Gain::new(Some(SPLIT_CONTROLLER_CID))
+            },
             SPLIT_CONTROLLER_CID => Gain::new(None),
             _ => return kInvalidArgument,
         };

@@ -243,6 +243,10 @@ impl Vst3Instance {
         this.size_outputs()?;
         this.setup(sample_rate)?;
         this.defaults = this.read_state().unwrap_or_default();
+        this.sync_controller(&this.defaults.0);
+        if this.separate_controller {
+            this.defaults.1 = this.read_state().map(|s| s.1).unwrap_or_default();
+        }
         if !effect.component_state.bytes().is_empty() || !effect.controller_state.bytes().is_empty()
         {
             this.load_state(&effect.component_state, &effect.controller_state);
@@ -412,6 +416,20 @@ impl Vst3Instance {
         rt.outs = outs;
     }
 
+    // A single object already took the state through its component half.
+    fn sync_controller(&self, component_state: &[u8]) {
+        let (Some(c), true) = (&self.controller, self.separate_controller) else {
+            return;
+        };
+        if component_state.is_empty() {
+            return;
+        }
+        if let Some(p) = MemStream::new(component_state.to_vec()).to_com_ptr::<IBStream>() {
+            // SAFETY: the stream outlives the call; the controller copies what it needs.
+            unsafe { c.setComponentState(p.as_ptr()) };
+        }
+    }
+
     // A plugin that rejects a state keeps its defaults: not worth failing the insert.
     fn load_state(&self, saved_component: &PluginState, saved_controller: &PluginState) {
         let stream = |bytes: &[u8]| MemStream::new(bytes.to_vec());
@@ -433,15 +451,7 @@ impl Vst3Instance {
                 if let Some(p) = s.to_com_ptr::<IBStream>() {
                     self.component.setState(p.as_ptr());
                 }
-                // A single object already took the state through its component half.
-                let s = stream(component);
-                if let (Some(c), Some(p), true) = (
-                    &self.controller,
-                    s.to_com_ptr::<IBStream>(),
-                    self.separate_controller,
-                ) {
-                    c.setComponentState(p.as_ptr());
-                }
+                self.sync_controller(component);
             }
             if !controller.is_empty() {
                 let s = stream(controller);
