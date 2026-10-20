@@ -16,7 +16,7 @@ use vst3::{ComPtr, ComWrapper};
 use vv_audio::PluginProcessor;
 use vv_core::{PluginState, Vst3Effect};
 
-use crate::host::{ComponentHandler, HostApp, MemStream, ParamChanges, Shared};
+use crate::host::{ComponentHandler, HostApp, MAX_PARAMS, MemStream, ParamChanges, Shared};
 use crate::module::{Module, module};
 
 /// The mixer's block size; the plugin is set up for it and never gets more.
@@ -365,14 +365,20 @@ impl Vst3Instance {
         let _audio = self.lock_audio();
         // SAFETY: `busy` gives this thread exclusive use of `rt`.
         let rt = unsafe { &mut *self.rt.get() };
-        rt.changes.clear();
-        {
-            let mut params = self.shared.params.lock().unwrap_or_else(|e| e.into_inner());
-            for (id, value) in params.drain(..) {
-                rt.changes.push(id, value);
+        loop {
+            rt.changes.clear();
+            {
+                let mut params = self.shared.params.lock().unwrap_or_else(|e| e.into_inner());
+                if params.is_empty() {
+                    break;
+                }
+                let n = params.len().min(MAX_PARAMS);
+                for (id, value) in params.drain(..n) {
+                    rt.changes.push(id, value);
+                }
             }
+            self.run_slice(rt, 0);
         }
-        self.run_slice(rt, 0);
         rt.changes.clear();
     }
 
@@ -465,7 +471,8 @@ impl PluginProcessor for Vst3Instance {
         rt.changes.clear();
         match self.shared.params.try_lock() {
             Ok(mut params) => {
-                for (id, value) in params.drain(..) {
+                let n = params.len().min(MAX_PARAMS);
+                for (id, value) in params.drain(..n) {
                     rt.changes.push(id, value);
                 }
             }

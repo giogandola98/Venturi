@@ -79,7 +79,8 @@ pub type Waker = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 /// What the plugin's controller reports back, shared with the instance.
 pub(crate) struct Shared {
-    /// Latest value per parameter; coalesced so it never outgrows its capacity.
+    /// Latest value per parameter, coalesced by id. The UI thread may grow it; the
+    /// audio thread takes at most `MAX_PARAMS` per block and leaves the rest queued.
     pub params: Mutex<Vec<(ParamID, ParamValue)>>,
     pub dirty: AtomicBool,
     pub latency_changed: AtomicBool,
@@ -123,7 +124,7 @@ impl IComponentHandlerTrait for ComponentHandler {
         let mut params = self.0.params.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(slot) = params.iter_mut().find(|p| p.0 == id) {
             slot.1 = value;
-        } else if params.len() < MAX_PARAMS {
+        } else {
             params.push((id, value));
         }
         kResultOk
