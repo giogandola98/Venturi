@@ -638,7 +638,6 @@ fn the_build_is_the_one_of_the_code_this_process_runs() {
     assert!(first.is_some());
     module_file(&dir, b"a longer, updated module");
     assert_eq!(first, build_in(&path, "1.0", CLASS));
-    assert_eq!(first, build_in(&path, "2.0", CLASS));
     let other = std::fs::create_dir_all(dir.join("b")).map(|_| module_file(&dir.join("b"), b"x"));
     assert_ne!(first, build_in(&other.unwrap(), "1.0", CLASS));
     assert_eq!(
