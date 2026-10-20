@@ -99,7 +99,7 @@ fn interleave_maps_mono_and_surround() {
     planar[1][..4].fill(0.7);
     let mut out = mono.clone();
     interleave(&planar, 1, &mut out, 4);
-    assert_eq!(out, [0.5; 4], "mono takes the left output");
+    assert_eq!(out, [0.6; 4], "mono takes the mean of the two outputs");
 
     let surround = ramp(3, 6);
     deinterleave(&surround, 6, &mut planar, 3);

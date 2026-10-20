@@ -679,7 +679,7 @@ impl Drop for Vst3Instance {
     }
 }
 
-/// Mono feeds both plugin inputs; more than two channels: only the first two are read (`PluginEffect` refills the rest).
+/// Mono feeds both plugin inputs; more than two channels: only the first two are read and written, the rest stay dry.
 pub(crate) fn deinterleave(
     samples: &[f32],
     channels: usize,
@@ -695,9 +695,11 @@ pub(crate) fn deinterleave(
 
 pub(crate) fn interleave(inp: &[Vec<f32>; 2], channels: usize, samples: &mut [f32], frames: usize) {
     for (n, frame) in samples.chunks_exact_mut(channels).take(frames).enumerate() {
-        frame[0] = inp[0][n];
         if channels > 1 {
+            frame[0] = inp[0][n];
             frame[1] = inp[1][n];
+        } else {
+            frame[0] = (inp[0][n] + inp[1][n]) * 0.5;
         }
     }
 }
