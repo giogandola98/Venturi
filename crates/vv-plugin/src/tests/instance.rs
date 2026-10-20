@@ -43,6 +43,10 @@ fn process_does_not_allocate() {
     instance.process(&mut audio, 2);
     // SAFETY: the handler is a live COM object owned by the instance.
     unsafe { instance.handler.performEdit(0, 0.25) };
+    for id in 1..101 {
+        // SAFETY: as above.
+        unsafe { instance.handler.performEdit(id, 0.5) };
+    }
     let mut mono = ramp(700, 1);
     let before = ALLOCS.with(|c| c.get());
     for _ in 0..8 {
@@ -465,4 +469,44 @@ fn set_state_with_an_empty_effect_restores_the_defaults_of_a_split_plugin() {
     let input = ramp(64, 2);
     assert_scaled(&run(&instance, &input), &input, 1.0);
     assert_eq!(instance.get_state().0.bytes(), defaults.bytes());
+}
+
+const COUNTING_CLASS: &str = "56565445535447414E00000000000006";
+
+fn counting_fixture() -> Arc<Vst3Instance> {
+    let effect = effect_of(COUNTING_CLASS, Vec::new());
+    Vst3Instance::new(&fixture_bundle(), &effect, 48_000, ProcessMode::Realtime)
+        .expect("counting fixture instance")
+}
+
+fn edit_ids(instance: &Vst3Instance, ids: std::ops::Range<u32>) {
+    for id in ids {
+        // SAFETY: the handler is a live COM object owned by the instance.
+        unsafe { instance.handler.performEdit(id, 0.5) };
+    }
+}
+
+fn received(instance: &Vst3Instance) -> u32 {
+    let (component, _) = instance.get_state();
+    u32::from_le_bytes(component.bytes()[4..8].try_into().unwrap())
+}
+
+#[test]
+fn more_edits_than_one_block_holds_all_reach_the_processor_while_paused() {
+    let instance = counting_fixture();
+    edit_ids(&instance, 1..101);
+    assert_eq!(received(&instance), 100);
+    assert!(instance.shared.params.lock().unwrap().is_empty());
+}
+
+#[test]
+fn more_edits_than_one_block_holds_are_delivered_over_consecutive_blocks() {
+    let instance = counting_fixture();
+    edit_ids(&instance, 1..101);
+    let mut audio = ramp(64, 2);
+    instance.process(&mut audio, 2);
+    assert_eq!(instance.shared.params.lock().unwrap().len(), 36);
+    instance.process(&mut audio, 2);
+    assert!(instance.shared.params.lock().unwrap().is_empty());
+    assert_eq!(received(&instance), 100);
 }

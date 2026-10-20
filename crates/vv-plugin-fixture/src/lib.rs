@@ -29,6 +29,10 @@ const NOT_IMPL_CID: TUID = [
 const FALSE_CID: TUID = [
     0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 5,
 ];
+// Single component whose state also reports how many distinct parameter ids (1..128) it received.
+const COUNTING_CID: TUID = [
+    0x56, 0x56, 0x54, 0x45, 0x53, 0x54, 0x47, 0x41, 0x4E, 0, 0, 0, 0, 0, 0, 6,
+];
 const DEFAULT_NORMALIZED: f64 = 0.5;
 
 fn copy_cstring(src: &str, dst: &mut [c_char]) {
@@ -64,6 +68,8 @@ struct Gain {
     normalized: AtomicU64,
     controller_cid: Option<TUID>,
     set_processing_result: tresult,
+    counts_params: bool,
+    seen: [AtomicU64; 2],
 }
 
 impl Gain {
@@ -72,6 +78,8 @@ impl Gain {
             normalized: AtomicU64::new(DEFAULT_NORMALIZED.to_bits()),
             controller_cid,
             set_processing_result: kResultOk,
+            counts_params: false,
+            seen: [AtomicU64::new(0), AtomicU64::new(0)],
         }
     }
 
@@ -182,10 +190,19 @@ impl IComponentTrait for Gain {
         let Some(stream) = (unsafe { ComRef::from_raw(state) }) else {
             return kInvalidArgument;
         };
-        let mut bytes = (self.get() as f32).to_le_bytes();
+        let mut bytes = Vec::from((self.get() as f32).to_le_bytes());
+        if self.counts_params {
+            let n: u32 = self
+                .seen
+                .iter()
+                .map(|w| w.load(Ordering::Relaxed).count_ones())
+                .sum();
+            bytes.extend_from_slice(&n.to_le_bytes());
+        }
+        let len = bytes.len() as i32;
         let mut written = 0;
-        let res = unsafe { stream.write(bytes.as_mut_ptr().cast::<c_void>(), 4, &mut written) };
-        if res == kResultOk && written == 4 {
+        let res = unsafe { stream.write(bytes.as_mut_ptr().cast::<c_void>(), len, &mut written) };
+        if res == kResultOk && written == len {
             kResultOk
         } else {
             kResultFalse
@@ -252,7 +269,11 @@ impl IAudioProcessorTrait for Gain {
                     continue;
                 };
                 let points = unsafe { queue.getPointCount() };
-                if unsafe { queue.getParameterId() } != 0 || points < 1 {
+                let id = unsafe { queue.getParameterId() };
+                if (1..128).contains(&id) {
+                    self.seen[id as usize / 64].fetch_or(1 << (id % 64), Ordering::Relaxed);
+                }
+                if id != 0 || points < 1 {
                     continue;
                 }
                 let (mut offset, mut value) = (0, 0.0);
@@ -428,6 +449,10 @@ impl IPluginFactoryTrait for Factory {
             },
             FALSE_CID => Gain {
                 set_processing_result: kResultFalse,
+                ..Gain::new(None)
+            },
+            COUNTING_CID => Gain {
+                counts_params: true,
                 ..Gain::new(None)
             },
             SPLIT_CID => Gain::new(Some(SPLIT_CONTROLLER_CID)),
