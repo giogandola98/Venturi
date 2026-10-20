@@ -107,6 +107,12 @@ impl Instances {
     }
 
     pub fn get(&mut self, request: PluginRequest<'_>) -> Option<PluginHandle> {
+        if !request.process {
+            if let Some(slot) = self.slots.get_mut(&request.key) {
+                slot.used_this_pass = true;
+            }
+            return None;
+        }
         let hash = request.effect.content_hash();
         if let Some(Slot {
             used_this_pass,

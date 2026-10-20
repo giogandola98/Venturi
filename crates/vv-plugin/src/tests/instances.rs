@@ -93,6 +93,7 @@ fn request(key: u64, effect: &Vst3Effect) -> PluginRequest<'_> {
         key,
         effect,
         sample_rate: 48_000,
+        process: true,
     }
 }
 
@@ -284,6 +285,81 @@ fn fixture_instance_reused_across_passes() {
         pool.sweep();
     }
     assert!(Arc::ptr_eq(&handles[0], &handles[1]));
+}
+
+fn bypassed(key: u64, effect: &Vst3Effect) -> PluginRequest<'_> {
+    PluginRequest {
+        process: false,
+        ..request(key, effect)
+    }
+}
+
+#[test]
+fn a_bypassed_request_keeps_the_instance_alive_without_processing_it() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = pool(&counts);
+    let e = effect(CLASS, &[1]);
+    pool.begin_pass();
+    let first = pool.get(request(1, &e)).unwrap();
+    pool.sweep();
+    for _ in 0..3 {
+        pool.begin_pass();
+        assert!(pool.get(bypassed(1, &e)).is_none());
+        pool.sweep();
+    }
+    pool.begin_pass();
+    let back = pool.get(request(1, &e)).unwrap();
+    assert!(Arc::ptr_eq(&first, &back));
+    assert_eq!(counts.made.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.dropped.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_bypassed_request_never_makes_an_instance() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = pool(&counts);
+    let e = effect(CLASS, &[1]);
+    pool.begin_pass();
+    assert!(pool.get(bypassed(1, &e)).is_none());
+    pool.sweep();
+    assert_eq!(counts.made.load(Ordering::SeqCst), 0);
+    assert!(pool.instance(1).is_none());
+}
+
+#[test]
+fn a_state_changed_while_bypassed_is_loaded_when_it_plays_again() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = pool(&counts);
+    pool.begin_pass();
+    pool.get(request(1, &effect(CLASS, &[1]))).unwrap();
+    pool.sweep();
+    let changed = effect(CLASS, &[2]);
+    pool.begin_pass();
+    pool.get(bypassed(1, &changed));
+    pool.sweep();
+    assert_eq!(counts.loads.load(Ordering::SeqCst), 0);
+    pool.begin_pass();
+    pool.get(request(1, &changed)).unwrap();
+    assert_eq!(counts.loads.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.made.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_bypassed_fixture_plugin_is_the_same_instance_when_enabled_again() {
+    let infos = scan(&[fixture_dir()]);
+    let class_id = infos.first().expect("fixture is scanned").class_id.clone();
+    let e = effect(&class_id, &0.25f32.to_le_bytes());
+    let mut pool = Instances::realtime(infos.into());
+    pool.begin_pass();
+    let first = pool.get(request(1, &e)).expect("fixture instance");
+    pool.sweep();
+    pool.begin_pass();
+    assert!(pool.get(bypassed(1, &e)).is_none());
+    pool.sweep();
+    assert!(pool.instance(1).is_some());
+    pool.begin_pass();
+    let back = pool.get(request(1, &e)).expect("fixture instance");
+    assert!(Arc::ptr_eq(&first, &back));
 }
 
 fn failing_pool(counts: &Arc<Counts>) -> Instances {

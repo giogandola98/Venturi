@@ -506,6 +506,7 @@ impl MixBufferCache {
             key: aside,
             effect,
             sample_rate,
+            process: true,
         });
         plugins.instance(aside)
     }
