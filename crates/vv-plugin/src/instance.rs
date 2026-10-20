@@ -20,6 +20,7 @@ use vv_core::{PluginState, Vst3Effect};
 
 use crate::HostedPlugin;
 use crate::host::{ComponentHandler, HostApp, MAX_PARAMS, MemStream, ParamChanges, Shared};
+use crate::instances::first_failure;
 use crate::module::{Module, module};
 
 // The generated enum constants are u32 on some targets and i32 on others.
@@ -37,6 +38,8 @@ mod ids {
     pub const TIME_SIG_VALID: u32 = ProcessContext_::StatesAndFlags_::kTimeSigValid as u32;
     pub const SAMPLE32: i32 = SymbolicSampleSizes_::kSample32 as i32;
 }
+
+const MAX_STATE_FAILURES: u32 = 3;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ProcessMode {
@@ -84,6 +87,9 @@ pub struct Vst3Instance {
     bundle: PathBuf,
     state_hash: AtomicU64,
     latency: AtomicU32,
+    class_id: String,
+    // Consecutive gestures whose getState failed.
+    state_failures: AtomicU32,
     // Read before any state is loaded: what an empty saved state means.
     defaults: (Vec<u8>, Vec<u8>),
     // Last: fields drop in declaration order, and the plugin objects above
@@ -191,6 +197,8 @@ impl Vst3Instance {
             mode,
             state_hash: AtomicU64::new(effect.content_hash()),
             latency: AtomicU32::new(0),
+            class_id: effect.class_id.clone(),
+            state_failures: AtomicU32::new(0),
             defaults: (Vec::new(), Vec::new()),
         };
         this.attach_controller(&module)?;
@@ -371,6 +379,14 @@ impl Vst3Instance {
     }
 
     fn read_state(&self) -> Option<(Vec<u8>, Vec<u8>)> {
+        let state = self.try_read_state();
+        if state.is_none() && first_failure(&format!("getState:{}", self.class_id)) {
+            eprintln!("vv-plugin: {}: getState failed", self.class_id);
+        }
+        state
+    }
+
+    fn try_read_state(&self) -> Option<(Vec<u8>, Vec<u8>)> {
         let save = |write: &dyn Fn(*mut IBStream) -> tresult| {
             let stream = MemStream::new(Vec::new());
             let p = stream.to_com_ptr::<IBStream>()?;
@@ -615,7 +631,19 @@ impl HostedPlugin for Vst3Instance {
     }
 
     fn take_gesture(&self) -> Option<(PluginState, PluginState)> {
-        self.take_dirty().then(|| self.get_state()).flatten()
+        if !self.take_dirty() {
+            return None;
+        }
+        let state = self.get_state();
+        if state.is_some() {
+            self.state_failures.store(0, Ordering::Relaxed);
+        } else if self.state_failures.fetch_add(1, Ordering::Relaxed) + 1 < MAX_STATE_FAILURES {
+            // Retried on the next poll; given up after a few so a broken plugin cannot loop.
+            self.shared.dirty.store(true, Ordering::Release);
+        } else {
+            self.state_failures.store(0, Ordering::Relaxed);
+        }
+        state
     }
 }
 

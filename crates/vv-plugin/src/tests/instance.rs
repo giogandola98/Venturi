@@ -800,7 +800,8 @@ fn a_plugin_raising_a_restart_on_every_activation_is_not_reactivated_in_a_loop()
 const STATE_FAIL_CLASS: &str = "56565445535447414E0000000000000D";
 
 /// While alive, the `STATE_FAIL_CLASS` fixture's getState fails; the file is
-/// the one the fixture checks (same process, same temp dir).
+/// the one the fixture checks (same process, same temp dir); keep the path
+/// in step with `state_fail_marker()` in the fixture.
 struct StateFailure(std::path::PathBuf);
 
 impl StateFailure {
@@ -844,20 +845,36 @@ fn get_state_reports_a_failing_plugin_and_recovers() {
     assert!(instance.get_state().is_some());
 }
 
-#[test]
-fn a_gesture_is_not_recorded_while_get_state_fails() {
-    let failing = state_fail_fixture(Vec::new());
-    // SAFETY: as above.
+fn edited_state_fail_fixture() -> Arc<Vst3Instance> {
+    let instance = state_fail_fixture(Vec::new());
+    // SAFETY: the handler is a live COM object owned by the instance.
     unsafe {
-        failing.handler.beginEdit(0);
-        failing.handler.performEdit(0, 0.25);
-        failing.handler.endEdit(0);
+        instance.handler.beginEdit(0);
+        instance.handler.performEdit(0, 0.25);
+        instance.handler.endEdit(0);
     }
-    {
-        let _failure = StateFailure::start();
-        assert!(failing.take_gesture().is_none());
+    instance
+}
+
+#[test]
+fn a_gesture_is_retried_once_get_state_works_again() {
+    let instance = edited_state_fail_fixture();
+    let failure = StateFailure::start();
+    assert!(instance.take_gesture().is_none());
+    drop(failure);
+    let (component, _) = instance.take_gesture().expect("retried");
+    assert_eq!(component.bytes(), 0.25f32.to_le_bytes());
+}
+
+#[test]
+fn a_gesture_is_given_up_after_repeated_get_state_failures() {
+    let instance = edited_state_fail_fixture();
+    let failure = StateFailure::start();
+    for _ in 0..3 {
+        assert!(instance.take_gesture().is_none());
     }
-    assert!(failing.take_gesture().is_none(), "the gesture was consumed");
+    drop(failure);
+    assert!(instance.take_gesture().is_none(), "no more retries");
 }
 
 #[test]
