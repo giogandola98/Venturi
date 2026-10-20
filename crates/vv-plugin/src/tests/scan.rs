@@ -293,3 +293,11 @@ fn a_lowercase_moduleinfo_cid_is_listed_in_the_factory_form() {
     let infos = parse_module_info(json, Path::new("x.vst3")).unwrap();
     assert_eq!(infos[0].class_id, "56565445535447414E00000000000001");
 }
+
+#[test]
+fn a_cached_plugin_info_with_a_lowercase_id_loads_canonical() {
+    let json = r#"{"class_id": "56565445535447414e00000000000001", "name": "Acme EQ",
+        "vendor": "Acme", "version": "1.0", "path": "/plugins/Acme.vst3"}"#;
+    let info: PluginInfo = serde_json::from_str(json).unwrap();
+    assert_eq!(info.class_id, "56565445535447414E00000000000001");
+}
