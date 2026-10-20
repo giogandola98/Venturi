@@ -134,11 +134,16 @@ All `unsafe` and all COM code live here.
   test; a `process` that finds the plugin busy passes the audio through.
 - **Editors are event-driven.** A periodic repaint kept the app at a
   constant CPU cost while a plugin window was open. They are pumped from
-  `App::logic`, not `App::ui`: eframe runs only `logic` while the main
-  window is minimized, occluded or on another Space.
+  `App::logic`, not `App::ui`: on macOS and X11 eframe runs only `logic`
+  while the main window is minimized, occluded or on another Space.
 
 ## 4. Known limits
 
+- Wayland: a native Wayland main window gets no frame callbacks while
+  minimized or on another workspace, so neither `ui` nor `logic` runs and
+  the (XWayland) editors pause until it is shown again.
+- macOS and X11: while the main window is minimized eframe throttles to
+  about 10 Hz, so meters and X11 editor timers are choppy, not frozen.
 - Latency is shown as a badge only: tracks are not delay-compensated, so
   a plugin with latency shifts its track against the others.
 - Export has no tail: audio a reverb produces after the timeline end is
