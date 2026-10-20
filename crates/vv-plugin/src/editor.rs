@@ -16,6 +16,7 @@ use crate::{HostedPlugin, Vst3Instance, Waker};
 
 #[cfg(unix)]
 mod fd_watcher;
+#[cfg(unix)]
 mod run_loop;
 
 #[cfg(target_os = "macos")]
@@ -24,6 +25,50 @@ mod platform;
 #[cfg(target_os = "linux")]
 #[path = "editor/x11.rs"]
 mod platform;
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+mod platform {
+    use std::ffi::c_void;
+    use std::rc::Rc;
+
+    use vst3::Steinberg::FIDString;
+
+    use super::Resizer;
+    use crate::Waker;
+
+    pub(super) const VIEW_TYPE: FIDString = std::ptr::null();
+
+    const UNSUPPORTED: &str = "plugin editors are not supported on this platform";
+
+    pub(super) fn check_thread() -> Result<(), String> {
+        Err(UNSUPPORTED.into())
+    }
+
+    pub(super) struct Window;
+
+    impl Window {
+        pub fn new(_: &str, _: (i32, i32), _: bool, _: Waker) -> Result<Self, String> {
+            Err(UNSUPPORTED.into())
+        }
+
+        pub fn parent(&self) -> *mut c_void {
+            std::ptr::null_mut()
+        }
+
+        pub fn resizer(&self) -> Resizer {
+            Rc::new(|_, _| {})
+        }
+
+        pub fn idle(&mut self) -> Option<(i32, i32)> {
+            None
+        }
+
+        pub fn raise(&self) {}
+
+        pub fn is_open(&self) -> bool {
+            false
+        }
+    }
+}
 
 const METER_POLL: std::time::Duration = std::time::Duration::from_millis(33);
 

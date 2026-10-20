@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::ffi::{c_char, c_void};
+use std::ffi::c_char;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::ffi::c_void;
 use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -126,6 +128,7 @@ fn cached<T: Clone>(
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn stem(bundle: &Path) -> Result<&std::ffi::OsStr, String> {
     bundle
         .file_stem()
@@ -154,13 +157,18 @@ fn binary_path(bundle: &Path, cf_bundle: &BundleRef) -> Result<PathBuf, String> 
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn binary_path(bundle: &Path) -> Result<PathBuf, String> {
     let stem = stem(bundle)?.to_string_lossy();
     Ok(bundle
         .join("Contents")
         .join(format!("{}-linux", std::env::consts::ARCH))
         .join(format!("{stem}.so")))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn binary_path(_bundle: &Path) -> Result<PathBuf, String> {
+    Err("VST3 plugins are not supported on this platform".into())
 }
 
 /// The file `load` opens for this bundle, for callers that watch it change.
@@ -171,6 +179,14 @@ pub fn bundle_binary(bundle: &Path) -> Option<PathBuf> {
     binary_path(bundle).ok()
 }
 
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn load(_bundle: &Path) -> Result<Module, LoadError> {
+    Err(LoadError::early(
+        "VST3 plugins are not supported on this platform",
+    ))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn load(bundle: &Path) -> Result<Module, LoadError> {
     #[cfg(target_os = "macos")]
     let cf_bundle = bundle_ref(bundle)?;
@@ -211,6 +227,7 @@ fn load(bundle: &Path) -> Result<Module, LoadError> {
 }
 
 // ModuleEntry wants the raw dlopen handle, so open through the unix layer.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn open(bin: &Path) -> Result<(ManuallyDrop<libloading::Library>, *mut c_void), libloading::Error> {
     use libloading::os::unix::{Library, RTLD_LOCAL, RTLD_NOW};
     // SAFETY: loading a plugin runs its initialisers; that is what hosting means.
@@ -244,7 +261,7 @@ fn enter(
     ok.then_some(()).ok_or_else(|| "bundleEntry failed".into())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn enter(library: &libloading::Library, handle: *mut c_void) -> Result<(), String> {
     // SAFETY: ModuleEntry is the VST3 Linux entry point with this signature.
     let ok = unsafe {
@@ -264,6 +281,7 @@ pub(crate) fn c_str(chars: &[c_char]) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn exit(library: &libloading::Library) {
     let name: &[u8] = if cfg!(target_os = "macos") {
         b"bundleExit\0"
