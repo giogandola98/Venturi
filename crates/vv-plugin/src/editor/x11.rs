@@ -1,18 +1,16 @@
 //! The editor's top-level X11 window (the plugin embeds into it with XEmbed)
 //! and the run loop plugins expect from a Linux host.
-use std::cell::{Cell, RefCell};
-use std::ffi::{c_int, c_void};
+use std::cell::Cell;
+use std::ffi::c_void;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use vst3::ComRef;
 use vst3::Steinberg::Linux::{
     FileDescriptor, IEventHandler, IEventHandlerTrait, IRunLoopTrait, ITimerHandler,
     ITimerHandlerTrait, TimerInterval,
 };
-use vst3::Steinberg::{
-    FIDString, kInvalidArgument, kPlatformTypeX11EmbedWindowID, kResultOk, tresult,
-};
-use vst3::{ComPtr, ComRef};
+use vst3::Steinberg::{FIDString, kInvalidArgument, kPlatformTypeX11EmbedWindowID, tresult};
 use x11rb::connection::Connection;
 use x11rb::properties::WmSizeHints;
 use x11rb::protocol::Event;
@@ -24,6 +22,7 @@ use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 use x11rb::{COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT};
 
+use super::run_loop::RunLoop;
 use super::{Frame, Resizer};
 use crate::Waker;
 
@@ -207,44 +206,13 @@ impl Drop for Window {
     }
 }
 
-const FD_POLL: Duration = Duration::from_millis(16);
 /// Keeps `Instant` arithmetic far from overflow.
 const MAX_TIMER: Duration = Duration::from_secs(3600);
 
-struct Timer {
-    handler: ComPtr<ITimerHandler>,
-    interval: Duration,
-    next: Instant,
-}
-
-/// What the plugin asked of the host's event loop; `pump` serves it.
-#[derive(Default)]
-pub(super) struct RunLoop {
-    handlers: RefCell<Vec<(ComPtr<IEventHandler>, c_int)>>,
-    timers: RefCell<Vec<Timer>>,
-}
-
 impl RunLoop {
-    pub fn clear(&self) {
-        self.handlers.borrow_mut().clear();
-        self.timers.borrow_mut().clear();
-    }
-
-    /// When the plugin needs the loop next: nothing is registered, nothing to wake for.
-    /// There is no cheap wake on an fd, so those are polled at a GUI-friendly pace.
-    pub fn next_wake(&self) -> Option<Duration> {
-        if !self.handlers.borrow().is_empty() {
-            return Some(FD_POLL);
-        }
-        let now = Instant::now();
-        let timers = self.timers.borrow();
-        let next = timers.iter().map(|t| t.next).min()?;
-        Some(next.saturating_duration_since(now))
-    }
-
     /// Calls back what is ready or due; the handlers may register more meanwhile.
     pub fn pump(&self) {
-        let handlers = self.handlers.borrow().clone();
+        let handlers = self.handlers();
         let mut polls: Vec<libc::pollfd> = handlers
             .iter()
             .map(|(_, fd)| libc::pollfd {
@@ -256,35 +224,14 @@ impl RunLoop {
         // SAFETY: `polls` is a valid array of the length passed; a zero timeout never blocks.
         if !polls.is_empty() && unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as _, 0) } > 0 {
             for (poll, (handler, fd)) in polls.iter().zip(&handlers) {
-                let registered = self
-                    .handlers
-                    .borrow()
-                    .iter()
-                    .any(|(h, _)| h.as_ptr() == handler.as_ptr());
-                if poll.revents != 0 && registered {
+                if poll.revents != 0 && self.has_handler(handler) {
                     // SAFETY: a live handler the plugin registered.
                     unsafe { handler.onFDIsSet(*fd) };
                 }
             }
         }
-        let now = Instant::now();
-        let due: Vec<ComPtr<ITimerHandler>> = self
-            .timers
-            .borrow_mut()
-            .iter_mut()
-            .filter(|t| t.next <= now)
-            .map(|t| {
-                t.next = now.checked_add(t.interval).unwrap_or(now);
-                t.handler.clone()
-            })
-            .collect();
-        for handler in due {
-            let registered = self
-                .timers
-                .borrow()
-                .iter()
-                .any(|t| t.handler.as_ptr() == handler.as_ptr());
-            if registered {
+        for handler in self.take_due(Instant::now()) {
+            if self.has_timer(&handler) {
                 // SAFETY: a live handler the plugin registered.
                 unsafe { handler.onTimer() };
             }
@@ -302,19 +249,11 @@ impl IRunLoopTrait for Frame {
         let Some(handler) = (unsafe { ComRef::from_raw(handler) }) else {
             return kInvalidArgument;
         };
-        self.run_loop
-            .handlers
-            .borrow_mut()
-            .push((handler.to_com_ptr(), fd));
-        kResultOk
+        self.run_loop.add_handler(handler.to_com_ptr(), fd)
     }
 
     unsafe fn unregisterEventHandler(&self, handler: *mut IEventHandler) -> tresult {
-        self.run_loop
-            .handlers
-            .borrow_mut()
-            .retain(|(h, _)| h.as_ptr() != handler);
-        kResultOk
+        self.run_loop.remove_handler(handler)
     }
 
     unsafe fn registerTimer(
@@ -328,19 +267,10 @@ impl IRunLoopTrait for Frame {
         };
         let interval =
             Duration::from_millis(milliseconds).clamp(Duration::from_millis(1), MAX_TIMER);
-        self.run_loop.timers.borrow_mut().push(Timer {
-            handler: handler.to_com_ptr(),
-            interval,
-            next: Instant::now() + interval,
-        });
-        kResultOk
+        self.run_loop.add_timer(handler.to_com_ptr(), interval)
     }
 
     unsafe fn unregisterTimer(&self, handler: *mut ITimerHandler) -> tresult {
-        self.run_loop
-            .timers
-            .borrow_mut()
-            .retain(|t| t.handler.as_ptr() != handler);
-        kResultOk
+        self.run_loop.remove_timer(handler)
     }
 }
