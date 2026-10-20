@@ -1070,7 +1070,7 @@ fn a_rescan_drops_the_pools_kept_between_renders() {
     let source = list.clone();
     let mut levels = LevelCache::default();
     levels.installed = Arc::new(move || source.lock().unwrap().clone());
-    let made: Arc<std::sync::Mutex<Vec<Arc<Passthrough>>>> = Arc::default();
+    let made: Made = Arc::default();
     let kept = made.clone();
     let (plugins, _) = counting_pool(move || {
         let instance = Arc::new(Passthrough);
@@ -1117,7 +1117,7 @@ fn pool_race(plugin_first: bool, name: &str) -> (Project, Timeline, LevelCache, 
             second.clone()
         }
     });
-    let made: Arc<std::sync::Mutex<Vec<Arc<Passthrough>>>> = Arc::default();
+    let made: Made = Arc::default();
     let kept = made.clone();
     let (pool, _) = counting_pool(move || {
         let instance = Arc::new(Passthrough);
