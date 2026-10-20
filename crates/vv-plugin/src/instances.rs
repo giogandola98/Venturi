@@ -14,7 +14,8 @@ pub trait HostedPlugin: vv_audio::PluginProcessor {
     fn set_state(&self, effect: &Vst3Effect);
     fn state_hash(&self) -> u64;
     fn set_state_hash(&self, hash: u64);
-    fn as_vst3(&self) -> Option<&Vst3Instance> {
+    /// The concrete instance, for the editor; `None` for a stand-in.
+    fn into_vst3(self: Arc<Self>) -> Option<Arc<Vst3Instance>> {
         None
     }
     /// Acts on a restart the plugin asked for; called every pass on the UI thread.
@@ -224,36 +225,6 @@ impl Instances {
             }) => Some(instance.clone()),
             _ => None,
         }
-    }
-}
-
-impl HostedPlugin for Vst3Instance {
-    fn set_state(&self, effect: &Vst3Effect) {
-        Vst3Instance::set_state(self, effect)
-    }
-
-    fn state_hash(&self) -> u64 {
-        Vst3Instance::state_hash(self)
-    }
-
-    fn set_state_hash(&self, hash: u64) {
-        Vst3Instance::set_state_hash(self, hash)
-    }
-
-    fn as_vst3(&self) -> Option<&Vst3Instance> {
-        Some(self)
-    }
-
-    fn service_restart(&self) {
-        Vst3Instance::service_restart(self)
-    }
-
-    fn reactivate(&self) {
-        Vst3Instance::reactivate(self)
-    }
-
-    fn take_gesture(&self) -> Option<(PluginState, PluginState)> {
-        self.take_dirty().then(|| self.get_state())
     }
 }
 

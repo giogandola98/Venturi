@@ -12,7 +12,7 @@ use vst3::Steinberg::{
 };
 use vst3::{Class, ComPtr, ComRef, ComWrapper};
 
-use crate::{HostedPlugin, Waker};
+use crate::{HostedPlugin, Vst3Instance, Waker};
 
 #[cfg(unix)]
 mod fd_watcher;
@@ -79,7 +79,7 @@ pub struct Editor {
     frame: ComWrapper<Frame>,
     window: platform::Window,
     resize: Resizer,
-    instance: Arc<dyn HostedPlugin>,
+    instance: Arc<Vst3Instance>,
 }
 
 fn size_of(rect: &ViewRect) -> (i32, i32) {
@@ -96,9 +96,12 @@ impl Editor {
         waker: Waker,
     ) -> Result<Self, String> {
         platform::check_thread()?;
+        let instance = instance
+            .clone()
+            .into_vst3()
+            .ok_or("not a VST3 plugin instance")?;
         let controller = instance
-            .as_vst3()
-            .and_then(|i| i.controller())
+            .controller()
             .ok_or("the plugin has no controller")?;
         // SAFETY: a live controller; the view comes back with one reference for us.
         let view = unsafe { controller.createView(ViewType::kEditor) };
@@ -139,27 +142,23 @@ impl Editor {
             frame.resize.take();
             return Err(format!("the plugin editor did not attach ({attached})"));
         }
-        if let Some(vst3) = instance.as_vst3() {
-            vst3.set_waker(Some(waker));
-        }
+        instance.set_waker(Some(waker));
         Ok(Self {
             view,
             frame,
             window,
             resize,
-            instance: instance.clone(),
+            instance,
         })
     }
 
-    pub fn instance(&self) -> &Arc<dyn HostedPlugin> {
+    pub fn instance(&self) -> &Arc<Vst3Instance> {
         &self.instance
     }
 
     /// Pumps the window and, on Linux, the plugin's registered fds and timers.
     pub fn idle(&mut self) {
-        if let Some(vst3) = self.instance.as_vst3() {
-            vst3.forward_outputs();
-        }
+        self.instance.forward_outputs();
         #[cfg(target_os = "linux")]
         self.frame.run_loop.pump();
         let resized = self.window.idle();
@@ -187,11 +186,7 @@ impl Editor {
     pub fn next_wake(&self) -> Option<std::time::Duration> {
         // Playback already repaints; this only keeps a meter moving when a plugin's output changes
         // while nothing else wakes the app.
-        let meters = self
-            .instance
-            .as_vst3()
-            .is_some_and(|v| v.outputs_fresh())
-            .then_some(METER_POLL);
+        let meters = self.instance.outputs_fresh().then_some(METER_POLL);
         #[cfg(target_os = "linux")]
         return match (meters, self.frame.run_loop.next_wake()) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -222,9 +217,7 @@ impl Drop for Editor {
         self.frame.resize.take();
         #[cfg(target_os = "linux")]
         self.frame.run_loop.clear();
-        if let Some(vst3) = self.instance.as_vst3() {
-            vst3.set_waker(None);
-        }
+        self.instance.set_waker(None);
     }
 }
 

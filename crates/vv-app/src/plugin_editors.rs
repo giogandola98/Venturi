@@ -262,7 +262,9 @@ impl PluginEditors {
         if let Some(audio) = audio {
             let held = held_instances(
                 project,
-                self.open.iter().map(|(k, e)| (*k, e.instance().clone())),
+                self.open
+                    .iter()
+                    .map(|(k, e)| (*k, e.instance().clone() as Arc<dyn HostedPlugin>)),
             );
             self.holding = !held.is_empty();
             audio.hold_plugins(held);
@@ -276,11 +278,9 @@ impl PluginEditors {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
             };
-            let Some(instance) = editor.instance().as_vst3() else {
-                continue;
-            };
+            let instance = editor.instance();
             // The sync below would overwrite a gesture still pending.
-            let consumed = record_gesture(project, history, *key, instance, group_open);
+            let consumed = record_gesture(project, history, *key, &**instance, group_open);
             if group_open || consumed {
                 continue;
             }
