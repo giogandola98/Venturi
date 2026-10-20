@@ -2306,3 +2306,84 @@ fn the_keys_of_an_unmade_plugin_are_stable() {
     let level = level_keys(vec![vst3(1, b""), normalize(0.0)], None);
     assert_eq!(level, [15893858193257760473]);
 }
+
+/// Realistic: the equalizer's cutoffs sit below Nyquist and settle in ms.
+const BUILTIN_RATE: u32 = 48_000;
+
+fn builtin_chain() -> Vec<vv_core::AudioEffect> {
+    let mut eq = vv_core::Equalizer::DEFAULT;
+    eq.bands[1].gain_db = -6.0;
+    vec![
+        vv_core::AudioEffect::new(vv_core::AudioEffectKind::Equalizer(eq)),
+        vv_core::AudioEffect::new(vv_core::AudioEffectKind::MultibandCompressor(
+            vv_core::MultibandCompressor::DEFAULT,
+        )),
+    ]
+}
+
+/// Two clips a long gap apart (5 timeline frames each, the second at 400).
+fn gapped_timeline(effects: Vec<vv_core::AudioEffect>) -> (Project, Timeline) {
+    let (project, a, _) = project();
+    let mut track = audio_track(vec![clip_at(a, 0, 0, 5), clip_at(a, 400, 0, 5)]);
+    track.mix.effects = effects;
+    (project, timeline(vec![track]))
+}
+
+#[test]
+fn a_builtin_only_track_does_no_work_in_a_long_gap_and_restarts_clean() {
+    let (project, tl) = gapped_timeline(builtin_chain());
+    let snap = MixSnapshot::from_timeline(&project, &tl, BUILTIN_RATE, 1, &mut buffers);
+    let mut state = MixState::new(&snap);
+    let mut out = vec![9.0; 2_000_000];
+    mix_range_from(&snap, &mut state, 0, &mut out);
+    assert!(state.skipped_blocks > 0, "the gap is skipped");
+    assert!(
+        out[24_000..1_900_000].iter().all(|&s| s.abs() < 1e-6),
+        "gap"
+    );
+    let mut first = vec![9.0; 24_000];
+    mix_range(&snap, 0, &mut first);
+    assert_eq!(out[..24_000], first);
+    let mut second = vec![9.0; 24_000];
+    mix_range(&snap, 1_920_000, &mut second);
+    assert!(second.iter().any(|&s| s != 0.0));
+    assert_eq!(out[1_920_000..1_944_000], second);
+}
+
+#[test]
+fn a_chunked_render_of_a_gapped_builtin_track_equals_the_whole() {
+    let (project, tl) = gapped_timeline(builtin_chain());
+    let snap = MixSnapshot::from_timeline(&project, &tl, BUILTIN_RATE, 1, &mut buffers);
+    let mut whole = vec![9.0; 1_944_000];
+    mix_range_from(&snap, &mut MixState::new(&snap), 0, &mut whole);
+    let mut state = MixState::new(&snap);
+    let mut chunked = vec![9.0; 1_944_000];
+    for (i, chunk) in chunked.chunks_mut(70_000).enumerate() {
+        mix_range_from(&snap, &mut state, (i * 70_000) as u64, chunk);
+    }
+    let worst = whole
+        .iter()
+        .zip(&chunked)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0, f32::max);
+    assert!(worst < 1e-5, "{worst}");
+}
+
+#[test]
+fn a_plugin_track_keeps_running_through_the_gap() {
+    let (project, tl) = gapped_timeline(vec![vst3(1, b"")]);
+    let plugin = FakePlugin::new(0.5);
+    let mut source = PluginSource {
+        plugin: Some(plugin.clone()),
+        ..Default::default()
+    };
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    let mut state = MixState::new(&snap);
+    let mut out = vec![9.0; 5000];
+    mix_range_from(&snap, &mut state, 0, &mut out);
+    assert_eq!(state.skipped_blocks, 0);
+    assert_eq!(
+        plugin.processed.load(Ordering::Relaxed),
+        5000_usize.div_ceil(MIX_BLOCK_FRAMES)
+    );
+}
