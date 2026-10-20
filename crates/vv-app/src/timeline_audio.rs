@@ -598,7 +598,6 @@ impl TimelineAudio {
             .map_or((0.0, 0.0), Mixer::peak_linear_stereo)
     }
 
-    /// Latency in ms of the plugin placed under `key`, if it is live.
     pub fn plugin_latency_ms(&self, key: u64) -> Option<f32> {
         let samples = self.buffers.plugin_latency(key)?;
         Some(samples as f32 * 1000.0 / self.mix.sample_rate as f32)
@@ -609,7 +608,6 @@ impl TimelineAudio {
         self.buffers.plugin_known(effect)
     }
 
-    /// Whether the plugin placed under `key` failed to load.
     pub fn plugin_failed(&self, key: u64) -> bool {
         self.buffers.plugin_failed(key)
     }

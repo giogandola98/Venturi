@@ -54,13 +54,11 @@ pub fn fixture_effect_of(class_id: &str, state: &[u8]) -> Vst3Effect {
     }
 }
 
-/// A real instance of the fixture bundle, realtime at 48 kHz.
 pub fn fixture_instance(effect: &Vst3Effect) -> Arc<Vst3Instance> {
     Vst3Instance::new(&fixture_bundle(), effect, 48_000, ProcessMode::Realtime)
         .expect("fixture instance")
 }
 
-/// A stand-in that leaves the audio untouched.
 pub struct Passthrough;
 
 impl vv_audio::PluginProcessor for Passthrough {

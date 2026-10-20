@@ -205,7 +205,6 @@ fn record_gesture(
     true
 }
 
-/// Records the gestures of closed editors once no group is open.
 fn drain_pending(
     pending: &mut Vec<(Key, Arc<dyn HostedPlugin>)>,
     project: &mut Project,
@@ -349,11 +348,11 @@ impl PluginEditors {
                 instance.set_state(plugin);
             }
         }
-        // Edits, closing and resizing wake the app; only a plugin's own timers need this.
         if !group_open {
             self.checked = history.generation();
         }
         if let Some(wake) = wake {
+            // Edits, closing and resizing wake the app; only a plugin's own timers need this.
             ctx.request_repaint_after(wake);
         }
     }

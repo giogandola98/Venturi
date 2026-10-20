@@ -1453,7 +1453,6 @@ struct PluginKeys {
 const TRACK_STRIPS: u64 = 0;
 const MASTER_STRIPS: u64 = 1;
 
-/// Key of a plugin placement.
 pub fn plugin_key(scope: u64, group: u64, id: EffectId, occurrence: u32) -> u64 {
     stable_hash((scope, group, id.0, occurrence))
 }

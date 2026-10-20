@@ -2438,9 +2438,6 @@ impl VenturiApp {
         }
     }
 
-    /// User settings on disk, including the panel layout: called
-    /// from the Settings window and periodically/on close (see
-    /// `eframe::App::save`).
     /// Scans off the UI thread: loading each bundle can take seconds.
     fn start_plugin_scan(&mut self, ctx: &egui::Context, manual: bool) {
         if self.plugin_scan_rx.is_some() {
@@ -2513,6 +2510,9 @@ impl VenturiApp {
         self.persist_settings();
     }
 
+    /// User settings on disk, including the panel layout: called
+    /// from the Settings window and periodically/on close (see
+    /// `eframe::App::save`).
     fn persist_settings(&mut self) {
         if let Some(path) = &self.settings_path
             && let Err(e) = self.settings.save(path)
