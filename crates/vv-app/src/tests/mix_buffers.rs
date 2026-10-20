@@ -865,3 +865,72 @@ fn queued_timeline() -> vv_core::Timeline {
         master: Default::default(),
     }
 }
+
+struct Stub;
+
+impl vv_audio::PluginProcessor for Stub {
+    fn process(&self, _: &mut [f32], _: usize) {}
+    fn reset(&self) {}
+    fn latency(&self) -> u32 {
+        0
+    }
+}
+
+impl vv_plugin::HostedPlugin for Stub {
+    fn set_state(&self, _: &vv_core::Vst3Effect) {}
+    fn state_hash(&self) -> u64 {
+        0
+    }
+    fn mark_state(&self, _: u64) {}
+}
+
+fn listed(class_id: &str, path: &str) -> vv_plugin::PluginInfo {
+    vv_plugin::PluginInfo {
+        class_id: class_id.into(),
+        name: String::new(),
+        vendor: String::new(),
+        version: String::new(),
+        path: path.into(),
+    }
+}
+
+fn effect_of(class_id: &str) -> vv_core::Vst3Effect {
+    vv_core::Vst3Effect {
+        id: vv_core::EffectId(1),
+        class_id: class_id.into(),
+        name: String::new(),
+        vendor: String::new(),
+        component_state: Default::default(),
+        version: String::new(),
+        controller_state: Default::default(),
+    }
+}
+
+#[test]
+fn a_rescan_with_one_more_plugin_keeps_the_live_instances() {
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    cache.plugins = Some(vv_plugin::Instances::with_maker(
+        vec![listed("A", "/a.vst3")].into(),
+        Box::new(|_, _, _| Some(Arc::new(Stub))),
+    ));
+    let effect = effect_of("A");
+    let request = |effect| PluginRequest {
+        key: 1,
+        effect,
+        sample_rate: 48_000,
+        process: true,
+    };
+    let plugins = cache.plugins.as_mut().unwrap();
+    plugins.begin_pass();
+    plugins.get(request(&effect)).unwrap();
+    assert!(cache.plugin_latency(1).is_some());
+    let generation = cache.retry.load(Ordering::Relaxed);
+
+    let dropped =
+        cache.refresh_plugins(vec![listed("A", "/a.vst3"), listed("B", "/b.vst3")].into());
+
+    assert!(dropped.is_empty());
+    assert!(cache.plugin_latency(1).is_some());
+    assert!(cache.plugins.as_ref().unwrap().knows(&effect_of("B")));
+    assert_eq!(cache.retry.load(Ordering::Relaxed), generation + 1);
+}

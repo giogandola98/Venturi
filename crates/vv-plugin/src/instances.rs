@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use vv_audio::{PluginHandle, PluginRequest};
@@ -46,6 +46,8 @@ struct Slot {
 enum SlotState {
     Ready {
         instance: Arc<dyn HostedPlugin>,
+        /// The class and bundle it was made from.
+        origin: (String, PathBuf),
         /// Reactivated by its first `get` of an offline render.
         stale: bool,
     },
@@ -120,7 +122,9 @@ impl Instances {
         let hash = request.effect.content_hash();
         if let Some(Slot {
             used_this_pass,
-            state: SlotState::Ready { instance, stale },
+            state: SlotState::Ready {
+                instance, stale, ..
+            },
         }) = self.slots.get_mut(&request.key)
         {
             if *used_this_pass {
@@ -138,7 +142,7 @@ impl Instances {
             }
             return Some(instance.clone());
         }
-        let path = &self.known.get(&request.effect.class_id)?.path;
+        let path = self.known.get(&request.effect.class_id)?.path.clone();
         if let Some(slot) = self.slots.get_mut(&request.key) {
             slot.used_this_pass = true;
             if matches!(slot.state, SlotState::Failed { hash: failed } if failed == hash) {
@@ -147,7 +151,7 @@ impl Instances {
         }
         let held = self.held.get(&request.key).cloned();
         let Some(instance) =
-            held.or_else(|| (self.make)(path, request.effect, request.sample_rate))
+            held.or_else(|| (self.make)(&path, request.effect, request.sample_rate))
         else {
             self.slots.insert(
                 request.key,
@@ -168,6 +172,7 @@ impl Instances {
                 used_this_pass: true,
                 state: SlotState::Ready {
                     instance,
+                    origin: (request.effect.class_id.clone(), path),
                     stale: false,
                 },
             },
@@ -224,6 +229,34 @@ impl Instances {
 
     pub fn sweep(&mut self) {
         self.slots.retain(|_, slot| slot.used_this_pass);
+    }
+
+    /// Adopts a new scan: instances of plugins still listed from the same
+    /// bundle stay (the module is never reloaded, so they run the same code),
+    /// the others are returned, and failures are forgotten so new plugins
+    /// are tried.
+    pub fn refresh(&mut self, known: Arc<[PluginInfo]>) -> Vec<Arc<dyn HostedPlugin>> {
+        self.known = known
+            .iter()
+            .map(|i| (i.class_id.clone(), i.clone()))
+            .collect();
+        let known = &self.known;
+        let mut dropped = Vec::new();
+        self.slots.retain(|_, slot| match &slot.state {
+            SlotState::Ready {
+                instance,
+                origin: (class_id, path),
+                ..
+            } => {
+                let keep = known.get(class_id).is_some_and(|i| &i.path == path);
+                if !keep {
+                    dropped.push(instance.clone());
+                }
+                keep
+            }
+            SlotState::Failed { .. } => false,
+        });
+        dropped
     }
 
     /// Forgets every failure so the next `get` tries again.

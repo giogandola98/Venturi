@@ -613,11 +613,13 @@ impl TimelineAudio {
         self.buffers.hold_plugins(held);
     }
 
-    /// After a rescan: the pool is rebuilt on the next pass.
-    pub fn plugins_rescanned(&mut self) {
-        self.buffers.reset_plugins();
+    /// After a rescan that changed the list: the pool keeps the instances
+    /// of plugins still installed and returns the dropped ones.
+    pub fn plugins_rescanned(&mut self) -> Vec<std::sync::Arc<dyn vv_plugin::HostedPlugin>> {
+        let dropped = self.buffers.refresh_plugins(vv_plugin::installed());
         self.synced = None;
         self.synced_media = None;
+        dropped
     }
 
     /// After a rescan that found the same plugins: the pool stays, failed
