@@ -22,17 +22,37 @@ pub(crate) struct Module {
 unsafe impl Send for Module {}
 unsafe impl Sync for Module {}
 
-static MODULES: Mutex<Option<HashMap<PathBuf, Arc<Module>>>> = Mutex::new(None);
+type Slot<T> = Arc<Mutex<Option<T>>>;
+type Registry<T> = Mutex<Option<HashMap<PathBuf, Slot<T>>>>;
+
+static MODULES: Registry<Arc<Module>> = Mutex::new(None);
 
 /// Loaded once per path and kept.
 pub(crate) fn module(path: &Path) -> Result<Arc<Module>, String> {
-    let mut guard = MODULES.lock().unwrap_or_else(|e| e.into_inner());
-    let map = guard.get_or_insert_with(HashMap::new);
-    if let Some(m) = map.get(path) {
+    cached(&MODULES, path, || load(path).map(Arc::new))
+}
+
+// The map lock is never held across `load`: a plugin initializer can be slow or call back
+// into the main thread. Only same-path callers wait on each other, through the slot.
+fn cached<T: Clone>(
+    registry: &Registry<T>,
+    path: &Path,
+    load: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let slot = {
+        let mut guard = registry.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .get_or_insert_with(HashMap::new)
+            .entry(path.to_path_buf())
+            .or_default()
+            .clone()
+    };
+    let mut loaded = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(m) = loaded.as_ref() {
         return Ok(m.clone());
     }
-    let m = Arc::new(load(path)?);
-    map.insert(path.to_path_buf(), m.clone());
+    let m = load()?;
+    *loaded = Some(m.clone());
     Ok(m)
 }
 
