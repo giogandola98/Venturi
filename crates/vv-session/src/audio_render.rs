@@ -184,6 +184,7 @@ fn measure_run(
     let ch = PROJECT_CHANNELS as usize;
     let mut at = range.start;
     let outer_reads = std::mem::take(&mut levels.reads);
+    let outer_degraded = std::mem::take(&mut levels.degraded);
     let rendered = render(
         analysis.project,
         Mix::Measured(analysis),
@@ -208,11 +209,14 @@ fn measure_run(
     );
     let read = std::mem::replace(&mut levels.reads, outer_reads);
     levels.reads.extend(read.iter().cloned());
+    // A level measured dry nests into the render that reads it.
+    let degraded = levels.degraded;
+    levels.degraded |= outer_degraded;
     rendered?;
     let sources = stamps(&read);
     for m in meters {
         let part = m.meter.into_parts(&m.after);
-        levels.put(m.segment.key, &part, sources.as_deref());
+        levels.put(m.segment.key, &part, sources.as_deref(), degraded);
     }
     Ok(())
 }
@@ -409,6 +413,9 @@ pub struct LevelCache {
     pub cancel: Option<Arc<AtomicBool>>,
     /// Segments rendered, not found.
     pub rendered: usize,
+    /// A render through it played a plugin pass-through that was meant to
+    /// process (not made); the caller clears it.
+    pub degraded: bool,
 }
 
 #[derive(Default)]
@@ -423,6 +430,9 @@ struct LevelsState {
     /// Being measured by a thread: another one waits for them instead of
     /// rendering them too (two threads meeting the same compound clip).
     measuring: HashSet<u64>,
+    /// Measured while a plugin was not made: neither found by `claim` nor
+    /// kept on disk, so a render that has the plugin measures it again.
+    degraded: HashSet<u64>,
 }
 
 impl Default for LevelCache {
@@ -439,6 +449,7 @@ impl Default for LevelCache {
             installed: Arc::new(vv_plugin::installed),
             cancel: None,
             rendered: 0,
+            degraded: false,
         }
     }
 }
@@ -466,6 +477,7 @@ impl LevelCache {
             installed: self.installed.clone(),
             cancel: self.cancel.clone(),
             rendered: 0,
+            degraded: false,
         }
     }
 
@@ -494,6 +506,7 @@ impl LevelCache {
             self.plugins = other.plugins;
         }
         self.rendered += other.rendered;
+        self.degraded |= other.degraded;
     }
 
     fn path(&self, key: u64) -> Option<PathBuf> {
@@ -533,7 +546,9 @@ impl LevelCache {
         let mut state = self.shared.state.lock().unwrap();
         let (mut mine, mut theirs) = (Vec::new(), Vec::<&LevelSegment>::new());
         for segment in segments {
-            if self.get_locked(&mut state, segment.key).is_some() {
+            if !state.degraded.contains(&segment.key)
+                && self.get_locked(&mut state, segment.key).is_some()
+            {
                 continue;
             }
             if state.measuring.insert(segment.key) {
@@ -561,16 +576,22 @@ impl LevelCache {
         }
     }
 
-    /// Kept on disk only with the `sources` it was measured from.
-    fn put(&mut self, key: u64, part: &LevelParts, sources: Option<&[Stamp]>) {
+    /// Kept on disk only with the `sources` it was measured from, and not
+    /// when `degraded`.
+    fn put(&mut self, key: u64, part: &LevelParts, sources: Option<&[Stamp]>, degraded: bool) {
         self.rendered += 1;
         {
             let mut state = self.shared.state.lock().unwrap();
+            if degraded {
+                state.degraded.insert(key);
+            } else {
+                state.degraded.remove(&key);
+            }
             state.parts.insert(key, part.clone());
             state.measuring.remove(&key);
             self.shared.measured.notify_all();
         }
-        let (Some(path), Some(sources)) = (self.path(key), sources) else {
+        let (Some(path), Some(sources)) = (self.path(key), sources.filter(|_| !degraded)) else {
             return;
         };
         // Best effort: without it the level is measured again next time.
@@ -892,7 +913,10 @@ impl AudioSource for Provider<'_, '_> {
     }
 
     fn plugin(&mut self, request: PluginRequest<'_>) -> Option<PluginHandle> {
-        self.audio.plugins().get(request)
+        let process = request.process;
+        let handle = self.audio.plugins().get(request);
+        self.audio.cache.degraded |= process && handle.is_none();
+        handle
     }
 
     fn plugin_available(&mut self, effect: &vv_core::Vst3Effect) -> bool {

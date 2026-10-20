@@ -1071,3 +1071,85 @@ fn a_rescan_drops_the_pools_kept_between_renders() {
     render_to_vec(&project, &tl, samples(0..50), &mut levels);
     assert_eq!(Arc::strong_count(&made.lock().unwrap()[0]), 1);
 }
+
+fn level_files(dir: &Path) -> usize {
+    std::fs::read_dir(dir).map_or(0, |entries| entries.count())
+}
+
+/// A cache on disk in a fresh temp dir, with `plugins` as its pool.
+fn disk_cache(name: &str, plugins: Instances) -> (LevelCache, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("vv-levels-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut levels = fixed_list_cache();
+    levels.dir = Some(dir.clone());
+    levels.plugins = Some(plugins);
+    (levels, dir)
+}
+
+fn normalized_after_plugin(project: &mut Project, nested: bool, name: &str) -> Timeline {
+    let file = media(project, chirp(name, 48_000, 4), 48_000, 1);
+    let mut track = audio_track(vec![clip(1, file, 0, 100, 0)]);
+    track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    if !nested {
+        let mut tl = timeline(vec![track]);
+        tl.master.effects = vec![normalize(NormalizeMode::SamplePeak)];
+        return tl;
+    }
+    let inner = project.timelines.insert(timeline(vec![track]));
+    let compound = project.media_pool.insert(MediaItem {
+        compound: Some(inner),
+        ..project.media_pool[file].clone()
+    });
+    let mut tl = timeline(vec![audio_track(vec![clip(2, compound, 0, 100, 0)])]);
+    tl.master.effects = vec![normalize(NormalizeMode::SamplePeak)];
+    tl
+}
+
+fn measure_once(project: &Project, tl: &Timeline, levels: &mut LevelCache) {
+    both_measures(project, tl, levels);
+}
+
+#[test]
+fn a_level_measured_while_a_plugin_failed_is_not_kept_for_a_working_render() {
+    for nested in [false, true] {
+        let mut project = Project::default();
+        let tl = normalized_after_plugin(&mut project, nested, &format!("degraded{nested}.wav"));
+        let (failing, _) = counting_pool(|| None);
+        let (mut levels, dir) = disk_cache(&format!("fail{nested}"), failing);
+
+        measure_once(&project, &tl, &mut levels);
+        assert!(levels.degraded, "nested {nested}");
+        assert_eq!(level_files(&dir), 0, "nested {nested}");
+        let rendered = levels.rendered;
+        assert!(rendered > 0);
+
+        let (working, _) = counting_pool(|| Some(Arc::new(Passthrough)));
+        levels.plugins = Some(working);
+        levels.degraded = false;
+        measure_once(&project, &tl, &mut levels);
+        assert!(
+            levels.rendered > rendered,
+            "nested {nested}: measured again"
+        );
+        assert!(!levels.degraded, "nested {nested}");
+        assert!(level_files(&dir) > 0, "nested {nested}");
+
+        let rendered = levels.rendered;
+        measure_once(&project, &tl, &mut levels);
+        assert_eq!(levels.rendered, rendered, "nested {nested}: found");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn a_bypassed_plugin_does_not_degrade_a_measure() {
+    let mut project = Project::default();
+    let mut tl = normalized_after_plugin(&mut project, false, "bypassed.wav");
+    tl.tracks[0].mix.effects[0].enabled = false;
+    let (failing, _) = counting_pool(|| None);
+    let (mut levels, dir) = disk_cache("bypassed", failing);
+    measure_once(&project, &tl, &mut levels);
+    assert!(!levels.degraded);
+    assert!(level_files(&dir) > 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
