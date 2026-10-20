@@ -121,6 +121,27 @@ fn rendered(project: &Project, tl: &Timeline, range: Range<u64>) -> Vec<f32> {
     out
 }
 
+/// Renders with `installed` as the plugin list, not the process-global one.
+fn rendered_with_installed(
+    project: &Project,
+    tl: &Timeline,
+    frames: u64,
+    installed: &Arc<[vv_plugin::PluginInfo]>,
+) -> Vec<f32> {
+    let installed = installed.clone();
+    let mut levels = LevelCache {
+        installed: Arc::new(move || installed.clone()),
+        ..LevelCache::default()
+    };
+    let mut out = Vec::new();
+    render_offline(project, tl, 0..frames, &mut levels, |chunk| {
+        out.extend_from_slice(chunk);
+        ControlFlow::Continue(())
+    })
+    .unwrap();
+    out
+}
+
 fn effect(kind: AudioEffectKind) -> AudioEffect {
     AudioEffect::new(kind)
 }
@@ -778,8 +799,9 @@ fn render_with_uninstalled_plugin_equals_without() {
         .effects
         .push(plugin_effect("00000000000000000000000000000000", &[1, 2]));
     let frames = 2 * PROJECT_SAMPLE_RATE as u64;
-    let without = rendered_samples(&project, &timeline(vec![plain]), frames);
-    let with = rendered_samples(&project, &timeline(vec![with]), frames);
+    let installed: Arc<[vv_plugin::PluginInfo]> = Arc::from([]);
+    let without = rendered_with_installed(&project, &timeline(vec![plain]), frames, &installed);
+    let with = rendered_with_installed(&project, &timeline(vec![with]), frames, &installed);
     assert_eq!(with, without);
 }
 
