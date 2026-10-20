@@ -134,7 +134,7 @@ pub(crate) fn input_clips(
     project: &Project,
     timeline: &Timeline,
     sample_rate: u32,
-    available: &mut dyn FnMut(&Vst3Effect) -> bool,
+    available: &mut dyn FnMut(&Vst3Effect) -> Option<u64>,
 ) -> Vec<InputClip> {
     input_clips_at(project, timeline, sample_rate, 0, available)
 }
@@ -144,7 +144,7 @@ fn input_clips_at(
     timeline: &Timeline,
     sample_rate: u32,
     depth: u32,
-    available: &mut dyn FnMut(&Vst3Effect) -> bool,
+    available: &mut dyn FnMut(&Vst3Effect) -> Option<u64>,
 ) -> Vec<InputClip> {
     let fps = timeline.fps.as_f64().max(1e-9);
     let mut clips = Vec::new();
@@ -192,7 +192,7 @@ pub(crate) fn timeline_key(
     timeline: &Timeline,
     sample_rate: u32,
     depth: u32,
-    available: &mut dyn FnMut(&Vst3Effect) -> bool,
+    available: &mut dyn FnMut(&Vst3Effect) -> Option<u64>,
 ) -> u64 {
     if depth >= vv_core::MAX_COMPOUND_DEPTH {
         return 0;

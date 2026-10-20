@@ -942,10 +942,11 @@ pub trait AudioSource {
         None
     }
 
-    /// Whether `plugin` would play here: the keys of what a nested timeline
-    /// renders (stretches, segments) cannot ask for its handles.
-    fn plugin_available(&mut self, _: &Vst3Effect) -> bool {
-        false
+    /// The installed build of `plugin`, `None` if it is not installed: part
+    /// of every key of what it renders, so an update drops the cached
+    /// measures. A nested timeline's keys cannot ask for its handles.
+    fn plugin_build(&mut self, _: &Vst3Effect) -> Option<u64> {
+        None
     }
 }
 
@@ -1044,7 +1045,7 @@ fn collect_clips(
                             scope: nested_scope,
                         },
                         timeline_key(project, timeline, sample_rate, depth + 1, &mut |effect| {
-                            source.plugin_available(effect)
+                            source.plugin_build(effect)
                         }),
                         // Only plugin instances make a placement's render differ.
                         holds_plugins(project, timeline, depth + 1).then_some(nested_scope),
@@ -1143,7 +1144,7 @@ fn collect_clips(
         .map(|(id, _)| id);
     let slot = |channel, insert, clip| timeline_id.map(|id| (id, channel, insert, clip));
     let inputs = input_clips(project, timeline, sample_rate, &mut |effect| {
-        source.plugin_available(effect)
+        source.plugin_build(effect)
     });
     let measured_channel = measuring.map(|m| m.channel);
     let format = (sample_rate, channels);
@@ -1467,6 +1468,7 @@ fn request_plugins(
         .take(stop.unwrap_or(usize::MAX))
         .map(|(effect, key)| match (&effect.kind, key) {
             (AudioEffectKind::Vst3(plugin), Some(key)) => {
+                let build = source.plugin_build(plugin);
                 let handle = source.plugin(PluginRequest {
                     key,
                     effect: plugin,
@@ -1475,7 +1477,7 @@ fn request_plugins(
                 });
                 effect.enabled.then(|| PluginInsert {
                     key,
-                    content: plugin.content_hash(),
+                    content: stable_hash((plugin.content_hash(), build)),
                     handle,
                 })
             }

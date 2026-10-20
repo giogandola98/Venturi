@@ -945,8 +945,8 @@ impl AudioSource for Provider<'_, '_> {
         handle
     }
 
-    fn plugin_available(&mut self, effect: &vv_core::Vst3Effect) -> bool {
-        self.audio.plugins().knows(effect)
+    fn plugin_build(&mut self, effect: &vv_core::Vst3Effect) -> Option<u64> {
+        self.audio.plugins().build(effect)
     }
 
     fn level(&mut self, analysis: LevelAnalysis) -> LevelReading {

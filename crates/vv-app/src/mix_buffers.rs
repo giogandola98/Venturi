@@ -932,8 +932,8 @@ impl AudioSource for MixBufferCache {
         self.plugins().get(request)
     }
 
-    fn plugin_available(&mut self, effect: &vv_core::Vst3Effect) -> bool {
-        self.plugins().knows(effect)
+    fn plugin_build(&mut self, effect: &vv_core::Vst3Effect) -> Option<u64> {
+        self.plugins().build(effect)
     }
 
     /// The mixer always asks for frames: a whole file is never held.
