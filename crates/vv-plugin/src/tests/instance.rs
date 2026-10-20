@@ -733,3 +733,13 @@ fn a_built_instance_is_torn_down_in_reverse_order() {
         ["setProcessing(0)", "setActive(0)", "terminate"]
     );
 }
+
+#[test]
+fn dropping_instances_leaves_the_module_usable() {
+    for _ in 0..3 {
+        let instance = fixture(Vec::new());
+        assert_scaled(&run(&instance, &ramp(64, 2)), &ramp(64, 2), 1.0);
+    }
+    let again = fixture(Vec::new());
+    assert_scaled(&run(&again, &ramp(64, 2)), &ramp(64, 2), 1.0);
+}
