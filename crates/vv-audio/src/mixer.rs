@@ -30,7 +30,7 @@ pub const PROJECT_SAMPLE_RATE: u32 = 48_000;
 /// Control-rate (~60Hz) granularity of the keyframed gain, not sample-accurate.
 pub const GAIN_BLOCK_FRAMES: u64 = 800;
 /// The mix goes track by track through buffers of this many frames.
-const MIX_BLOCK_FRAMES: usize = 512;
+pub const MIX_BLOCK_FRAMES: usize = 512;
 
 #[derive(Clone)]
 pub struct MixClip {

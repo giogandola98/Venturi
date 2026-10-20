@@ -13,14 +13,11 @@ use vst3::Steinberg::Vst::{
 };
 use vst3::Steinberg::{FUnknown, IBStream, IPluginBaseTrait, TUID, kResultOk};
 use vst3::{ComPtr, ComWrapper};
-use vv_audio::PluginProcessor;
+use vv_audio::{MIX_BLOCK_FRAMES, PluginProcessor};
 use vv_core::{PluginState, Vst3Effect};
 
 use crate::host::{ComponentHandler, HostApp, MAX_PARAMS, MemStream, ParamChanges, Shared};
 use crate::module::{Module, module};
-
-/// The mixer's block size; the plugin is set up for it and never gets more.
-const BLOCK_FRAMES: usize = 512;
 
 // The generated enum constants are u32 on some targets and i32 on others.
 #[allow(clippy::unnecessary_cast)]
@@ -159,8 +156,8 @@ impl Vst3Instance {
         let changes = ParamChanges::input();
         let outputs = ParamChanges::output();
         let rt = Rt {
-            inp: [vec![0.0; BLOCK_FRAMES], vec![0.0; BLOCK_FRAMES]],
-            out: [vec![0.0; BLOCK_FRAMES], vec![0.0; BLOCK_FRAMES]],
+            inp: [vec![0.0; MIX_BLOCK_FRAMES], vec![0.0; MIX_BLOCK_FRAMES]],
+            out: [vec![0.0; MIX_BLOCK_FRAMES], vec![0.0; MIX_BLOCK_FRAMES]],
             changes_ptr: changes.to_com_ptr().ok_or("parameter changes")?,
             outputs_ptr: outputs.to_com_ptr().ok_or("parameter changes")?,
             outputs,
@@ -273,7 +270,7 @@ impl Vst3Instance {
             let mut setup = ProcessSetup {
                 processMode: self.mode.sdk(),
                 symbolicSampleSize: ids::SAMPLE32,
-                maxSamplesPerBlock: BLOCK_FRAMES as i32,
+                maxSamplesPerBlock: MIX_BLOCK_FRAMES as i32,
                 sampleRate: f64::from(sample_rate),
             };
             ok(
@@ -602,8 +599,8 @@ impl PluginProcessor for Vst3Instance {
             Err(TryLockError::WouldBlock) => {}
         }
         let total = samples.len() / channels;
-        for start in (0..total).step_by(BLOCK_FRAMES) {
-            let frames = BLOCK_FRAMES.min(total - start);
+        for start in (0..total).step_by(MIX_BLOCK_FRAMES) {
+            let frames = MIX_BLOCK_FRAMES.min(total - start);
             let block = &mut samples[start * channels..(start + frames) * channels];
             deinterleave(block, channels, &mut rt.inp, frames);
             self.run_slice(rt, frames);
