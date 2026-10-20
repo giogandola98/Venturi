@@ -162,10 +162,11 @@ fn record_edit(
     Some(hash)
 }
 
-/// Records a gesture the instance still holds, and consumes it either way so
-/// it can never become an out-of-order step later. While an undo group is
-/// open the gesture stays pending: recorded now it would fold into that step.
-/// Returns whether a gesture was consumed.
+/// Records a gesture the instance still holds, and consumes it so it can never
+/// become an out-of-order step later. While an undo group is open the gesture
+/// stays pending: recorded now it would fold into that step. A gesture whose
+/// state the plugin could not produce stays with the instance for a bounded
+/// retry. Returns whether a gesture was consumed.
 fn record_gesture(
     project: &mut Project,
     history: &mut History,

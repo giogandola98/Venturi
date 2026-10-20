@@ -36,7 +36,7 @@ pub trait HostedPlugin: vv_audio::PluginProcessor {
 
 /// Whether `class_id` has not failed yet in this process: pools are per
 /// worker, so the same plugin would otherwise log once per pool.
-fn first_failure(class_id: &str) -> bool {
+pub(crate) fn first_failure(class_id: &str) -> bool {
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     let mut seen = SEEN.get_or_init(Default::default).lock().unwrap();
     seen.insert(class_id.to_owned())
