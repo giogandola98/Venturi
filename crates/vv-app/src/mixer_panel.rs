@@ -369,7 +369,6 @@ fn vst3_badge(missing: bool, failed: bool) -> Option<Vst3Badge> {
     }
 }
 
-/// Plugins by vendor, then by name.
 pub(crate) fn vst3_menu(list: &[PluginInfo]) -> Vec<(String, Vec<&PluginInfo>)> {
     let mut sorted: Vec<&PluginInfo> = list.iter().collect();
     sorted.sort_by(|a, b| (&a.vendor, &a.name).cmp(&(&b.vendor, &b.name)));
