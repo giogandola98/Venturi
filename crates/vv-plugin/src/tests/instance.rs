@@ -714,16 +714,22 @@ fn a_plugin_that_rejects_setup_is_never_deactivated() {
 fn a_built_instance_is_torn_down_in_reverse_order() {
     let (result, calls) = lifecycle_calls(11, "56565445535447414E0000000000000B");
     assert_eq!(calls, ["setActive(1)", "setProcessing(1)"]);
-    drop(result);
+    let instance = result.unwrap();
+    instance.reactivate();
     let calls = read_log(&lifecycle_log_path(11));
     assert_eq!(
-        calls,
+        calls[2..],
         [
-            "setActive(1)",
-            "setProcessing(1)",
             "setProcessing(0)",
             "setActive(0)",
-            "terminate"
+            "setActive(1)",
+            "setProcessing(1)"
         ]
+    );
+    drop(instance);
+    let calls = read_log(&lifecycle_log_path(11));
+    assert_eq!(
+        calls[6..],
+        ["setProcessing(0)", "setActive(0)", "terminate"]
     );
 }

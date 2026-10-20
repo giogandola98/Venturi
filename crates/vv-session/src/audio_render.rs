@@ -1124,10 +1124,10 @@ fn decode_into(path: &Path, streams: &[usize], from: u64, tx: &SyncSender<Decode
     let _ = tx.send(Decoded::End(result.map(drop).map_err(|e| e.to_string())));
 }
 
-#[cfg(test)]
-#[path = "tests/audio_render.rs"]
-mod tests;
-
 fn known_plugins(cache: &LevelCache) -> Vec<vv_plugin::PluginInfo> {
     cache.known.as_deref().unwrap_or_default().to_vec()
 }
+
+#[cfg(test)]
+#[path = "tests/audio_render.rs"]
+mod tests;
