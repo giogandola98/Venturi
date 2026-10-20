@@ -637,8 +637,7 @@ impl TimelineAudio {
     /// of plugins still installed and returns the dropped ones.
     pub fn plugins_rescanned(&mut self) -> Vec<std::sync::Arc<dyn vv_plugin::HostedPlugin>> {
         let dropped = self.buffers.refresh_plugins(vv_plugin::installed());
-        self.synced = None;
-        self.synced_media = None;
+        self.invalidate();
         dropped
     }
 
@@ -646,8 +645,7 @@ impl TimelineAudio {
     /// ones are retried.
     pub fn plugins_rescan_unchanged(&mut self) {
         self.buffers.clear_plugin_failures();
-        self.synced = None;
-        self.synced_media = None;
+        self.invalidate();
     }
 
     /// Per-track and master peaks of what is playing.
