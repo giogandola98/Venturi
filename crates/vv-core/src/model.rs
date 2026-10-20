@@ -3147,9 +3147,10 @@ impl Project {
         format!("{TIMELINE_NAME_PREFIX}{number}")
     }
 
-    /// Clip and link group ids are unique project-wide: a timeline coming
-    /// from elsewhere needs fresh ones.
+    /// Clip, link group and plugin effect ids are unique project-wide: a
+    /// timeline coming from elsewhere needs fresh ones.
     pub(crate) fn reallocate_clip_ids(&mut self, timeline: &mut Timeline) {
+        timeline.refresh_effect_ids();
         let mut groups = std::collections::HashMap::new();
         for track in &mut timeline.tracks {
             let mut clip_ids = std::collections::HashMap::new();
