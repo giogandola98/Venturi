@@ -44,6 +44,16 @@ pub enum ProcessMode {
     Offline,
 }
 
+impl ProcessMode {
+    // One mapping for setup and every process call: VST3 requires them to agree.
+    fn sdk(self) -> i32 {
+        match self {
+            ProcessMode::Realtime => ids::REALTIME,
+            ProcessMode::Offline => ids::OFFLINE,
+        }
+    }
+}
+
 /// Everything the audio thread touches; guarded by `Vst3Instance::busy`.
 struct Rt {
     inp: [Vec<f32>; 2],
@@ -261,10 +271,7 @@ impl Vst3Instance {
                 "32-bit processing",
             )?;
             let mut setup = ProcessSetup {
-                processMode: match self.mode {
-                    ProcessMode::Realtime => ids::REALTIME,
-                    ProcessMode::Offline => ids::OFFLINE,
-                },
+                processMode: self.mode.sdk(),
                 symbolicSampleSize: ids::SAMPLE32,
                 maxSamplesPerBlock: BLOCK_FRAMES as i32,
                 sampleRate: f64::from(sample_rate),
@@ -548,10 +555,7 @@ impl Vst3Instance {
             },
         };
         let mut data = ProcessData {
-            processMode: match self.mode {
-                ProcessMode::Realtime => ids::REALTIME,
-                ProcessMode::Offline => ids::OFFLINE,
-            },
+            processMode: self.mode.sdk(),
             symbolicSampleSize: ids::SAMPLE32,
             numSamples: frames as i32,
             numInputs: 1,
