@@ -373,3 +373,10 @@ fn a_new_render_reactivates_each_instance_once_not_per_pass() {
     }
     assert_eq!(counts.made.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn a_failing_class_is_reported_once_per_process() {
+    assert!(first_failure("test-class-a"));
+    assert!(!first_failure("test-class-a"));
+    assert!(first_failure("test-class-b"));
+}

@@ -144,3 +144,11 @@ All `unsafe` and all COM code live here.
    cost less.
 8. OpenFX video plugins, which need the video pipeline and are not on this
    plan.
+9. Offline instances (export, level and stretch workers) are created,
+   activated and dropped on worker threads, though VST3 names the UI thread
+   for those calls. A plugin that needs the main thread (JUCE MessageManager,
+   AppKit in initialize, dispatch_sync to main) may fail or hang there; a
+   failed creation plays dry and is logged once per plugin class. Running
+   them on the UI thread would make a worker wait for a UI frame, which does
+   not run while the window is minimized, and the headless MCP has no UI
+   thread.
