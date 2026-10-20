@@ -113,7 +113,6 @@ pub struct Vst3Instance {
     connections: Option<(ComPtr<IConnectionPoint>, ComPtr<IConnectionPoint>)>,
     // Drop only undoes what succeeded: VST3 forbids deactivating a plugin never activated.
     active: AtomicBool,
-    processing: AtomicBool,
     pub(crate) handler: ComPtr<IComponentHandler>,
     host: ComPtr<FUnknown>,
     shared: Arc<Shared>,
@@ -226,7 +225,6 @@ impl Vst3Instance {
             separate_controller: false,
             connections: None,
             active: AtomicBool::new(false),
-            processing: AtomicBool::new(false),
             handler,
             host,
             shared,
@@ -257,7 +255,6 @@ impl Vst3Instance {
             *this.active.get_mut() = true;
             // Informational: the SDK default returns kNotImplemented.
             this.processor.setProcessing(1);
-            *this.processing.get_mut() = true;
         }
         this.refresh_latency_after_activation();
         Ok(Arc::new(this))
@@ -492,11 +489,9 @@ impl Vst3Instance {
     unsafe fn cycle_activation(&self, between: impl FnOnce()) {
         // SAFETY: a live processor and component, per the caller.
         unsafe {
-            if self.processing.swap(false, Ordering::Relaxed) {
-                self.processor.setProcessing(0);
-            }
             let was_active = self.active.swap(false, Ordering::Relaxed);
             if was_active {
+                self.processor.setProcessing(0);
                 self.component.setActive(0);
             }
             between();
@@ -508,7 +503,6 @@ impl Vst3Instance {
                 }
                 self.active.store(true, Ordering::Relaxed);
                 self.processor.setProcessing(1);
-                self.processing.store(true, Ordering::Relaxed);
             }
         }
     }
@@ -817,7 +811,7 @@ impl PluginProcessor for Vst3Instance {
         let Some(_audio) = self.try_lock_audio() else {
             return;
         };
-        if !self.processing.load(Ordering::Relaxed) {
+        if !self.active.load(Ordering::Relaxed) {
             return;
         }
         let _scope = crate::host::AudioScope::enter();
@@ -837,10 +831,8 @@ impl Drop for Vst3Instance {
     fn drop(&mut self) {
         // SAFETY: tears down in reverse of setup on live interfaces.
         unsafe {
-            if *self.processing.get_mut() {
-                self.processor.setProcessing(0);
-            }
             if *self.active.get_mut() {
+                self.processor.setProcessing(0);
                 self.component.setActive(0);
             }
             if let Some(c) = &self.controller {
