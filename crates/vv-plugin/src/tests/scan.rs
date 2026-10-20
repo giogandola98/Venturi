@@ -129,3 +129,29 @@ fn copy_dir(from: &Path, to: &Path) {
         }
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_path_survives_the_marker_exactly() {
+    use std::os::unix::ffi::OsStringExt;
+    let (root, _plugins, marker) = guard_dirs("bytes");
+    let weird = PathBuf::from(std::ffi::OsString::from_vec(
+        b" /p/\xff caf\xe9 .vst3 ".to_vec(),
+    ));
+    std::fs::write(&marker, super::path_to_bytes(&weird)).unwrap();
+    let crashed = take_crashed(&marker);
+    let marker_left = marker.exists();
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(crashed, Some(weird));
+    assert!(!marker_left);
+}
+
+#[test]
+fn a_path_with_surrounding_spaces_is_not_trimmed() {
+    let (root, _plugins, marker) = guard_dirs("spaces");
+    let odd = PathBuf::from(" /p/a b .vst3 ");
+    std::fs::write(&marker, super::path_to_bytes(&odd)).unwrap();
+    let crashed = take_crashed(&marker);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(crashed, Some(odd));
+}

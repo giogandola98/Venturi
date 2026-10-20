@@ -322,3 +322,24 @@ fn settings_from_before_the_flag_count_as_scanned_only_with_a_cached_list() {
     let old = load_json("old-list", &format!(r#"{{"vst3_plugins":[{plugin}]}}"#));
     assert!(!old.needs_plugin_scan());
 }
+
+#[test]
+fn a_manual_rescan_clears_the_blocklist_but_startup_keeps_it() {
+    let dir = std::env::temp_dir().join(format!("vv-settings-rescan-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = dir.join("scan.marker");
+    let mut settings = Settings::default();
+    settings.vst3_blocklist = vec![PathBuf::from("/x/Old.vst3")];
+
+    settings.prepare_plugin_scan(false, &marker);
+    assert_eq!(settings.vst3_blocklist, vec![PathBuf::from("/x/Old.vst3")]);
+
+    std::fs::write(&marker, b"/x/New.vst3").unwrap();
+    settings.prepare_plugin_scan(false, &marker);
+    assert_eq!(settings.vst3_blocklist.len(), 2);
+    assert!(!marker.exists());
+
+    settings.prepare_plugin_scan(true, &marker);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(settings.vst3_blocklist.is_empty());
+}

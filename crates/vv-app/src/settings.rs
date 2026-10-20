@@ -823,6 +823,19 @@ struct PanelLayoutFile {
 }
 
 impl Settings {
+    /// A manual rescan retries blocked bundles; either way a bundle that
+    /// crashed the last scan is blocked (and so persisted) before this one starts.
+    pub fn prepare_plugin_scan(&mut self, manual: bool, marker: &Path) {
+        if manual {
+            self.vst3_blocklist.clear();
+        }
+        if let Some(crashed) = vv_plugin::take_crashed(marker)
+            && !self.vst3_blocklist.contains(&crashed)
+        {
+            self.vst3_blocklist.push(crashed);
+        }
+    }
+
     pub fn needs_plugin_scan(&self) -> bool {
         !self.vst3_scanned
     }
