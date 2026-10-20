@@ -220,6 +220,8 @@ impl Class for MemStream {
     type Interfaces = (IBStream,);
 }
 
+const MAX_STREAM_BYTES: usize = 1 << 30;
+
 impl IBStreamTrait for MemStream {
     unsafe fn read(&self, buffer: *mut c_void, num_bytes: int32, read: *mut int32) -> tresult {
         if buffer.is_null() || num_bytes < 0 {
@@ -248,6 +250,10 @@ impl IBStreamTrait for MemStream {
         // SAFETY: the caller's buffer holds num_bytes.
         let src = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), n) };
         let end = pos.saturating_add(n);
+        // A seek may go anywhere; a write must not allocate whatever offset it names.
+        if end > MAX_STREAM_BYTES {
+            return kResultFalse;
+        }
         if data.len() < end {
             data.resize(end, 0);
         }
