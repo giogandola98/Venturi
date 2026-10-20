@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const BUNDLE: &str = "VenturiTestGain";
 
@@ -35,10 +36,11 @@ fn build_bundle() -> PathBuf {
         )
     });
 
-    // Per process so parallel test binaries never race on the same files.
-    let bundle = std::env::temp_dir()
-        .join(format!("venturi-vst3-fixture-{}", std::process::id()))
-        .join(format!("{BUNDLE}.vst3"));
+    // One bundle per target dir (removed by `cargo clean`). Every process writes the same
+    // bytes to its own temp file and renames it over the binary, so readers never see a
+    // partial file and a dylib already loaded keeps its old inode.
+    let root = target.join("fixture").join("bundle");
+    let bundle = root.join(format!("{BUNDLE}.vst3"));
     let (dir, file) = if cfg!(target_os = "macos") {
         ("MacOS".to_string(), BUNDLE.to_string())
     } else {
@@ -49,7 +51,11 @@ fn build_bundle() -> PathBuf {
     };
     let bin_dir = bundle.join("Contents").join(dir);
     std::fs::create_dir_all(&bin_dir).expect("create bundle dir");
-    std::fs::copy(&cdylib, bin_dir.join(file)).expect("copy fixture binary");
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, Ordering::Relaxed);
+    let tmp = root.join(format!(".{BUNDLE}-{}-{call}.tmp", std::process::id()));
+    std::fs::copy(&cdylib, &tmp).expect("copy fixture binary");
+    std::fs::rename(&tmp, bin_dir.join(file)).expect("install fixture binary");
     bundle
 }
 
