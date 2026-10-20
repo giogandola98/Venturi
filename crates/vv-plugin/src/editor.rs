@@ -166,6 +166,9 @@ impl Editor {
             // SAFETY: detaches the frame set above; the view was never attached.
             unsafe { view.setFrame(std::ptr::null_mut()) };
             frame.resize.take();
+            // A failed attach can leave handlers and timers that reference the frame.
+            #[cfg(target_os = "linux")]
+            frame.run_loop.clear();
             return Err(format!("the plugin editor did not attach ({attached})"));
         }
         instance.set_waker(Some(waker));

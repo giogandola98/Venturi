@@ -76,6 +76,42 @@ fn event(run_loop: &Rc<RunLoop>) -> ComPtr<IEventHandler> {
 
 const TICK: Duration = Duration::from_millis(5);
 
+/// Counts its own releases, so a test can see the run loop let go of it.
+#[cfg(target_os = "linux")]
+struct Released(Rc<Cell<usize>>);
+
+#[cfg(target_os = "linux")]
+impl Class for Released {
+    type Interfaces = (IEventHandler,);
+}
+
+#[cfg(target_os = "linux")]
+impl IEventHandlerTrait for Released {
+    unsafe fn onFDIsSet(&self, _: FileDescriptor) {}
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for Released {
+    fn drop(&mut self) {
+        self.0.set(self.0.get() + 1);
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn clear_releases_handlers_and_stops_the_watcher() {
+    let released = Rc::new(Cell::new(0));
+    let rl = Rc::new(RunLoop::new(std::sync::Arc::new(|| {}), None));
+    let handler = ComWrapper::new(Released(released.clone()))
+        .to_com_ptr::<IEventHandler>()
+        .unwrap();
+    assert_eq!(rl.add_handler(handler, 3), kResultOk);
+    rl.clear();
+    assert_eq!(released.get(), 1);
+    assert!(rl.handlers().is_empty());
+    assert!(rl.watcher.borrow().is_none());
+}
+
 #[test]
 fn clear_survives_handlers_that_unregister_in_their_destructor() {
     let rl = Rc::new(RunLoop::default());
