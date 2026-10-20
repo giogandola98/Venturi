@@ -2210,14 +2210,53 @@ fn plugin_mix_on_six_channels(effects: Vec<vv_core::AudioEffect>) -> Vec<f32> {
 }
 
 #[test]
-fn a_plugin_insert_processes_every_channel_of_a_wide_device() {
+fn a_plugin_insert_processes_only_the_front_pair_of_a_wide_device() {
     let out = plugin_mix_on_six_channels(vec![vst3(1, b"")]);
-    assert_eq!(out, [0.4, 0.2, 0.4, 0.2, 0.4, 0.2].repeat(2));
+    assert_eq!(out, [0.4, 0.2, 0.8, 0.4, 0.8, 0.4].repeat(2));
 }
 
 #[test]
-fn a_mono_after_a_plugin_does_not_mix_dry_channels_in() {
+fn a_mono_after_a_plugin_averages_the_dry_channels_too() {
     let mono = vv_core::AudioEffect::new(vv_core::AudioEffectKind::Mono);
     let out = plugin_mix_on_six_channels(vec![vst3(1, b""), mono]);
-    assert!(out.iter().all(|&s| (s - 0.3).abs() < 1e-6), "{out:?}");
+    let mean = (0.4 + 0.2 + 0.8 + 0.4 + 0.8 + 0.4) / 6.0;
+    assert!(out.iter().all(|&s| (s - mean).abs() < 1e-6), "{out:?}");
+}
+
+/// Like the real host: touches only the stereo bus.
+struct FrontPairPlugin;
+
+impl crate::effect::PluginProcessor for FrontPairPlugin {
+    fn process(&self, samples: &mut [f32], channels: usize) {
+        for frame in samples.chunks_exact_mut(channels) {
+            frame[0] *= 0.5;
+            frame[1] *= 0.5;
+        }
+    }
+
+    fn reset(&self) {}
+
+    fn latency(&self) -> u32 {
+        0
+    }
+}
+
+#[test]
+fn a_plugin_leaves_the_channels_past_the_stereo_pair_alone() {
+    use crate::effect::{Effect, PluginEffect};
+    let mut effect = PluginEffect {
+        handle: Arc::new(FrontPairPlugin),
+        channels: 6,
+    };
+    let mut samples: Vec<f32> = (0..12).map(|n| n as f32).collect();
+    let dry = samples.clone();
+    effect.process(&mut samples);
+    for (out, dry) in samples.chunks(6).zip(dry.chunks(6)) {
+        assert_eq!(out[..2], [dry[0] * 0.5, dry[1] * 0.5]);
+        assert_eq!(
+            out[2..],
+            dry[2..],
+            "centre, LFE and surrounds stay as they were"
+        );
+    }
 }
