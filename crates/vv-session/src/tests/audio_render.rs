@@ -1024,6 +1024,14 @@ fn fake_known() -> Vec<vv_plugin::PluginInfo> {
     }]
 }
 
+fn fixed_list_cache() -> LevelCache {
+    // The installed list is global and other tests set it.
+    let list: Arc<[vv_plugin::PluginInfo]> = Arc::from(fake_known());
+    let mut levels = LevelCache::default();
+    levels.installed = Arc::new(move || list.clone());
+    levels
+}
+
 fn render_to_vec(
     project: &Project,
     tl: &Timeline,
@@ -1049,8 +1057,8 @@ fn consecutive_renders_through_a_cache_reuse_its_plugins() {
     let range = samples(0..180);
     let made = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counter = made.clone();
-    let mut levels = LevelCache::default();
-    levels.plugins.push(vv_plugin::Instances::with_maker(
+    let mut levels = fixed_list_cache();
+    levels.plugins = Some(vv_plugin::Instances::with_maker(
         fake_known(),
         Box::new(move |_, _| {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -1077,8 +1085,8 @@ fn a_failing_plugin_is_attempted_once_across_renders() {
     let tl = timeline(vec![track]);
     let tried = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counter = tried.clone();
-    let mut levels = LevelCache::default();
-    levels.plugins.push(vv_plugin::Instances::with_maker(
+    let mut levels = fixed_list_cache();
+    levels.plugins = Some(vv_plugin::Instances::with_maker(
         fake_known(),
         Box::new(move |_, _| {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -1089,4 +1097,36 @@ fn a_failing_plugin_is_attempted_once_across_renders() {
         render_to_vec(&project, &tl, samples(0..50), &mut levels);
     }
     assert_eq!(tried.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_rescan_drops_the_pools_kept_between_renders() {
+    let mut project = Project::default();
+    let id = media(&mut project, chirp("rescan.wav", 48_000, 2), 48_000, 1);
+    let mut track = audio_track(vec![clip(1, id, 0, 25, 0)]);
+    track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    let tl = timeline(vec![track]);
+    let list: Arc<std::sync::Mutex<Arc<[vv_plugin::PluginInfo]>>> =
+        Arc::new(std::sync::Mutex::new(Arc::from(fake_known())));
+    let source = list.clone();
+    let mut levels = LevelCache::default();
+    levels.installed = Arc::new(move || source.lock().unwrap().clone());
+    let made: Arc<std::sync::Mutex<Vec<Arc<Passthrough>>>> = Arc::default();
+    let kept = made.clone();
+    levels.plugins = Some(vv_plugin::Instances::with_maker(
+        fake_known(),
+        Box::new(move |_, _| {
+            let instance = Arc::new(Passthrough);
+            kept.lock().unwrap().push(instance.clone());
+            Some(instance)
+        }),
+    ));
+    render_to_vec(&project, &tl, samples(0..50), &mut levels);
+    render_to_vec(&project, &tl, samples(0..50), &mut levels);
+    assert_eq!(made.lock().unwrap().len(), 1);
+    assert_eq!(Arc::strong_count(&made.lock().unwrap()[0]), 2);
+    let rescanned: Arc<[vv_plugin::PluginInfo]> = Arc::from(fake_known());
+    *list.lock().unwrap() = rescanned;
+    render_to_vec(&project, &tl, samples(0..50), &mut levels);
+    assert_eq!(Arc::strong_count(&made.lock().unwrap()[0]), 1);
 }

@@ -438,6 +438,21 @@ impl Vst3Instance {
         }
     }
 
+    /// Stops and starts the component, which `reset` does not: a plugin may
+    /// clear its tails only there.
+    pub fn reactivate(&self) {
+        let _audio = self.lock_audio();
+        // SAFETY: as in `service_restart`.
+        unsafe {
+            self.processor.setProcessing(0);
+            self.component.setActive(0);
+            self.component.setActive(1);
+            self.processor.setProcessing(1);
+            self.latency
+                .store(self.processor.getLatencySamples(), Ordering::Relaxed);
+        }
+    }
+
     pub fn state_hash(&self) -> u64 {
         self.state_hash.load(Ordering::Relaxed)
     }

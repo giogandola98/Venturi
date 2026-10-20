@@ -19,6 +19,9 @@ pub trait HostedPlugin: vv_audio::PluginProcessor {
     }
     /// Acts on a restart the plugin asked for; called every pass on the UI thread.
     fn service_restart(&self) {}
+    /// The full deactivate/activate cycle: clears what `reset` leaves, such
+    /// as a reverb's tail.
+    fn reactivate(&self) {}
     /// The state to record when an edit gesture ended since the last call.
     fn take_gesture(&self) -> Option<(PluginState, PluginState)> {
         None
@@ -28,6 +31,8 @@ pub trait HostedPlugin: vv_audio::PluginProcessor {
 struct Entry {
     instance: Arc<dyn HostedPlugin>,
     used_this_pass: bool,
+    /// Reactivated by its first `get` of an offline render.
+    stale: bool,
 }
 
 /// A key whose creation failed: not retried until its state changes.
@@ -37,8 +42,9 @@ struct Failure {
 }
 
 /// Instances are torn down on drop, which calls into the plugin: `sweep` and
-/// the drop run on the owner's thread (the UI thread for live, the render's
-/// worker for offline).
+/// the drop run on the owner's thread (the UI thread for live). An offline
+/// pool may move between a worker's threads, one at a time, and is dropped
+/// on whichever holds it.
 pub struct Instances {
     entries: HashMap<u64, Entry>,
     failed: HashMap<u64, Failure>,
@@ -93,6 +99,9 @@ impl Instances {
             }
             entry.used_this_pass = true;
             entry.instance.service_restart();
+            if std::mem::take(&mut entry.stale) {
+                entry.instance.reactivate();
+            }
             if entry.instance.state_hash() != hash {
                 entry.instance.set_state(request.effect);
                 entry.instance.set_state_hash(hash);
@@ -131,6 +140,7 @@ impl Instances {
             Entry {
                 instance,
                 used_this_pass: true,
+                stale: false,
             },
         );
         Some(handle)
@@ -151,6 +161,14 @@ impl Instances {
     /// Whether the last attempt to make the instance under `key` failed.
     pub fn failed(&self, key: u64) -> bool {
         self.failed.contains_key(&key)
+    }
+
+    /// An offline pool starts a new render: each instance is reactivated
+    /// by its first `get`, as it carries the previous render's tail.
+    pub fn begin_render(&mut self) {
+        for entry in self.entries.values_mut() {
+            entry.stale = true;
+        }
     }
 
     pub fn begin_pass(&mut self) {
@@ -192,6 +210,10 @@ impl HostedPlugin for Vst3Instance {
 
     fn service_restart(&self) {
         Vst3Instance::service_restart(self)
+    }
+
+    fn reactivate(&self) {
+        Vst3Instance::reactivate(self)
     }
 
     fn take_gesture(&self) -> Option<(PluginState, PluginState)> {

@@ -326,7 +326,8 @@ fn render(
     levels: &mut LevelCache,
     sink: impl FnMut(&[f32]) -> ControlFlow<()>,
 ) -> Result<(), ExportError> {
-    let plugins = levels.plugins.pop();
+    levels.refresh_known();
+    let plugins = levels.plugins.take();
     render_with_plugins(project, mix, range, levels, plugins, sink)
 }
 
@@ -341,10 +342,13 @@ fn render_with_plugins(
 ) -> Result<(), ExportError> {
     let mut audio = StreamingAudio::new(levels);
     audio.plugins = plugins;
+    if let Some(plugins) = &mut audio.plugins {
+        plugins.begin_render();
+    }
     let rendered = render_chunks(project, mix, range, &mut audio, &mut sink);
     // Kept for the next render: creating instances is the cost.
     if let Some(plugins) = audio.plugins.take() {
-        audio.cache.plugins.push(plugins);
+        audio.cache.plugins.get_or_insert(plugins);
     }
     rendered
 }
@@ -396,9 +400,11 @@ pub struct LevelCache {
     pub threads: usize,
     /// A measure this render is nested in holds claimed segments.
     holding: bool,
-    /// Pools kept between renders, one taken by each: instances are used by
-    /// one render at a time, and a render starts them from a reset.
-    plugins: Vec<Instances>,
+    /// Kept between renders (at most one, taken by the render using it);
+    /// made from `known`, so dropped when a rescan replaces the list.
+    plugins: Option<Instances>,
+    known: Option<Arc<[vv_plugin::PluginInfo]>>,
+    installed: Arc<dyn Fn() -> Arc<[vv_plugin::PluginInfo]> + Send + Sync>,
     /// Set, the renders through it stop with `ExportError::Cancelled`.
     pub cancel: Option<Arc<AtomicBool>>,
     /// Segments rendered, not found.
@@ -428,7 +434,9 @@ impl Default for LevelCache {
             reads: HashSet::new(),
             threads: std::thread::available_parallelism().map_or(1, usize::from),
             holding: false,
-            plugins: Vec::new(),
+            plugins: None,
+            known: None,
+            installed: Arc::new(vv_plugin::installed),
             cancel: None,
             rendered: 0,
         }
@@ -453,10 +461,20 @@ impl LevelCache {
             reads: HashSet::new(),
             threads: 1,
             holding: self.holding,
-            plugins: self.plugins.pop().into_iter().collect(),
+            plugins: self.plugins.take(),
+            known: self.known.clone(),
+            installed: self.installed.clone(),
             cancel: self.cancel.clone(),
             rendered: 0,
         }
+    }
+
+    fn refresh_known(&mut self) {
+        let now = (self.installed)();
+        if self.known.as_ref().is_some_and(|k| !Arc::ptr_eq(k, &now)) {
+            self.plugins = None;
+        }
+        self.known = Some(now);
     }
 
     fn cancelled(&self) -> bool {
@@ -468,7 +486,13 @@ impl LevelCache {
     fn absorb(&mut self, other: LevelCache) {
         self.streams.extend(other.streams);
         self.reads.extend(other.reads);
-        self.plugins.extend(other.plugins);
+        let same_list = match (&self.known, &other.known) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        };
+        if same_list && self.plugins.is_none() {
+            self.plugins = other.plugins;
+        }
         self.rendered += other.rendered;
     }
 
@@ -861,16 +885,18 @@ impl AudioSource for Provider<'_, '_> {
     }
 
     fn plugin(&mut self, request: PluginRequest<'_>) -> Option<PluginHandle> {
+        let known = known_plugins(self.audio.cache);
         self.audio
             .plugins
-            .get_or_insert_with(|| Instances::offline(vv_plugin::installed().to_vec()))
+            .get_or_insert_with(|| Instances::offline(known))
             .get(request)
     }
 
     fn plugin_available(&mut self, effect: &vv_core::Vst3Effect) -> bool {
+        let known = known_plugins(self.audio.cache);
         self.audio
             .plugins
-            .get_or_insert_with(|| Instances::offline(vv_plugin::installed().to_vec()))
+            .get_or_insert_with(|| Instances::offline(known))
             .knows(effect)
     }
 
@@ -1101,3 +1127,7 @@ fn decode_into(path: &Path, streams: &[usize], from: u64, tx: &SyncSender<Decode
 #[cfg(test)]
 #[path = "tests/audio_render.rs"]
 mod tests;
+
+fn known_plugins(cache: &LevelCache) -> Vec<vv_plugin::PluginInfo> {
+    cache.known.as_deref().unwrap_or_default().to_vec()
+}
