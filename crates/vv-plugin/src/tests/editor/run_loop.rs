@@ -168,3 +168,15 @@ fn a_registered_fd_wakes_the_app_until_the_pump_rearms() {
         libc::close(fds[1]);
     }
 }
+
+#[test]
+fn without_a_watcher_thread_fds_are_polled() {
+    let rl = Rc::new(RunLoop {
+        poll_fallback: true,
+        ..Default::default()
+    });
+    assert!(rl.next_wake().is_none());
+    rl.add_handler(event(&rl), 3);
+    assert!(rl.next_wake().is_some());
+    rl.clear();
+}

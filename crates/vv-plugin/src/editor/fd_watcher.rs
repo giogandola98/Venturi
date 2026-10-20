@@ -10,6 +10,7 @@ use crate::Waker;
 #[derive(Default)]
 struct State {
     fds: Vec<RawFd>,
+    generation: u64,
     armed: bool,
     stop: bool,
 }
@@ -83,8 +84,16 @@ impl FdWatcher {
     }
 
     pub fn set_fds(&self, fds: Vec<RawFd>) {
-        lock(&self.shared.state).fds = fds;
+        let mut state = lock(&self.shared.state);
+        state.fds = fds;
+        state.generation += 1;
+        drop(state);
         self.shared.poke();
+    }
+
+    #[cfg(test)]
+    fn fds(&self) -> Vec<RawFd> {
+        lock(&self.shared.state).fds.clone()
     }
 
     /// The UI thread pumped the handlers: wake again on the next readable fd.
@@ -110,12 +119,12 @@ const READY: libc::c_short = libc::POLLIN | libc::POLLHUP | libc::POLLERR;
 
 fn run(shared: &Shared, waker: &Waker) {
     loop {
-        let (fds, armed) = {
+        let (fds, armed, generation) = {
             let state = lock(&shared.state);
             if state.stop {
                 return;
             }
-            (state.fds.clone(), state.armed)
+            (state.fds.clone(), state.armed, state.generation)
         };
         let mut polls = vec![libc::pollfd {
             fd: shared.wake_rx.as_raw_fd(),
@@ -147,7 +156,9 @@ fn run(shared: &Shared, waker: &Waker) {
             .collect();
         let ready = polls[1..].iter().any(|p| p.revents & READY != 0);
         let mut state = lock(&shared.state);
-        state.fds.retain(|fd| !dead.contains(fd));
+        if state.generation == generation {
+            state.fds.retain(|fd| !dead.contains(fd));
+        }
         if ready && !state.stop {
             state.armed = false;
             drop(state);

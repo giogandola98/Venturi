@@ -97,14 +97,14 @@ fn set_fds_replaces_the_watched_set() {
 }
 
 #[test]
-fn a_closed_fd_does_not_spin() {
+fn a_dead_fd_is_pruned_instead_of_spinning() {
     let (waker, count) = counter();
     let watcher = FdWatcher::new(waker).unwrap();
     let (rx, _tx) = make_pipe();
-    let raw = rx.as_raw_fd();
-    drop(rx);
-    watcher.set_fds(vec![raw]);
+    let dead = 1 << 20;
+    watcher.set_fds(vec![dead, rx.as_raw_fd()]);
     std::thread::sleep(SETTLE);
+    assert_eq!(watcher.fds(), vec![rx.as_raw_fd()]);
     assert_eq!(count.load(Ordering::SeqCst), 0);
 }
 
