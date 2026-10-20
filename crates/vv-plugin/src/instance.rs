@@ -185,7 +185,7 @@ impl Vst3Instance {
             rt: UnsafeCell::new(rt),
             busy: AtomicBool::new(false),
             mode,
-            state_hash: AtomicU64::new(0),
+            state_hash: AtomicU64::new(effect.content_hash()),
             latency: AtomicU32::new(0),
             defaults: (Vec::new(), Vec::new()),
         };
@@ -529,13 +529,14 @@ impl HostedPlugin for Vst3Instance {
             .clear();
         self.load_state(&effect.component_state, &effect.controller_state);
         self.refresh_latency();
+        self.mark_state(effect.content_hash());
     }
 
     fn state_hash(&self) -> u64 {
         self.state_hash.load(Ordering::Relaxed)
     }
 
-    fn set_state_hash(&self, hash: u64) {
+    fn mark_state(&self, hash: u64) {
         self.state_hash.store(hash, Ordering::Relaxed);
     }
 

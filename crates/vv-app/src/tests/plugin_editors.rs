@@ -134,7 +134,7 @@ impl HostedPlugin for Fake {
     fn state_hash(&self) -> u64 {
         self.hash.load(std::sync::atomic::Ordering::Relaxed)
     }
-    fn set_state_hash(&self, hash: u64) {
+    fn mark_state(&self, hash: u64) {
         self.hash.store(hash, std::sync::atomic::Ordering::Relaxed);
     }
     fn service_restart(&self) {

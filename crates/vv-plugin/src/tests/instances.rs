@@ -46,13 +46,14 @@ impl HostedPlugin for Fake {
     fn reactivate(&self) {
         self.counts.reactivated.fetch_add(1, Ordering::SeqCst);
     }
-    fn set_state(&self, _: &Vst3Effect) {
+    fn set_state(&self, effect: &Vst3Effect) {
         self.counts.loads.fetch_add(1, Ordering::SeqCst);
+        self.hash.store(effect.content_hash(), Ordering::SeqCst);
     }
     fn state_hash(&self) -> u64 {
         self.hash.load(Ordering::SeqCst)
     }
-    fn set_state_hash(&self, hash: u64) {
+    fn mark_state(&self, hash: u64) {
         self.hash.store(hash, Ordering::SeqCst);
     }
 }
@@ -71,10 +72,10 @@ fn pool(counts: &Arc<Counts>) -> Instances {
     let counts = counts.clone();
     Instances::with_maker(
         vec![info(CLASS)],
-        Box::new(move |_, _| {
+        Box::new(move |effect, _| {
             counts.made.fetch_add(1, Ordering::SeqCst);
             Some(Arc::new(Fake {
-                hash: AtomicU64::new(0),
+                hash: AtomicU64::new(effect.content_hash()),
                 counts: counts.clone(),
             }))
         }),

@@ -147,7 +147,7 @@ fn record_gesture(
     };
     if let Some(hash) = record_edit(project, history, key, component, controller) {
         // The pool must not read the state back into the instance.
-        instance.set_state_hash(hash);
+        instance.mark_state(hash);
     }
     true
 }
@@ -290,7 +290,6 @@ impl PluginEditors {
             {
                 // An undo of an instance no mix is playing.
                 instance.set_state(plugin);
-                instance.set_state_hash(plugin.content_hash());
             }
         }
         // Edits, closing and resizing wake the app; only a plugin's own timers need this.
