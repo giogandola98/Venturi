@@ -2465,6 +2465,7 @@ impl VenturiApp {
             ctx.request_repaint();
         });
         self.plugin_scan_rx = Some(rx);
+        vv_plugin::set_scanning(true);
     }
 
     fn poll_plugin_scan(&mut self) {
@@ -2476,11 +2477,13 @@ impl VenturiApp {
             Err(mpsc::TryRecvError::Empty) => return,
             Err(mpsc::TryRecvError::Disconnected) => {
                 self.plugin_scan_rx = None;
+                vv_plugin::set_scanning(false);
                 return;
             }
         };
         self.plugin_scan_rx = None;
         vv_plugin::set_installed(list.clone());
+        vv_plugin::set_scanning(false);
         self.settings.vst3_plugins = list;
         self.settings.vst3_scanned = true;
         self.settings.vst3_blocklist.extend(newly_blocked);

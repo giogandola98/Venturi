@@ -1360,3 +1360,31 @@ fn bench_processing_precision() {
         }
     }
 }
+
+#[test]
+fn a_scan_blocks_only_an_export_whose_project_has_plugins() {
+    let mut with_plugin = Project::default();
+    let mut timeline = timeline_with(vec![]);
+    timeline
+        .master
+        .effects
+        .push(vv_core::AudioEffect::new(vv_core::AudioEffectKind::Vst3(
+            vv_core::Vst3Effect {
+                id: vv_core::EffectId::fresh(),
+                class_id: "0123456789ABCDEF0123456789ABCDEF".into(),
+                name: "P".into(),
+                vendor: "V".into(),
+                version: "1".into(),
+                component_state: Default::default(),
+                controller_state: Default::default(),
+            },
+        )));
+    with_plugin.timelines.insert(timeline);
+    let mut without = Project::default();
+    without.timelines.insert(timeline_with(vec![]));
+
+    assert!(scan_blocks_export(true, &with_plugin));
+    assert!(!scan_blocks_export(false, &with_plugin));
+    assert!(!scan_blocks_export(true, &without));
+    assert!(!scan_blocks_export(true, &Project::default()));
+}

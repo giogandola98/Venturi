@@ -296,6 +296,12 @@ impl FrameProvider for StreamingFrameProvider {
     }
 }
 
+/// An export started during the plugin scan would play every plugin as a
+/// pass-through: the installed list is still incomplete.
+pub fn scan_blocks_export(scanning: bool, project: &Project) -> bool {
+    scanning && project.uses_plugins()
+}
+
 /// Exports the frames in `range` to `output_path`. Blocking.
 pub fn export_timeline(
     project: &Project,

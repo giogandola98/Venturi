@@ -231,6 +231,9 @@ pub(crate) fn export(session: &mut Session, args: ExportArgs) -> ToolResult {
     if !args.audio {
         settings.audio = None;
     }
+    if session.export_waits_for_scan() {
+        return Err(ToolError("plugins are being scanned, retry shortly".into()));
+    }
     let total = range.end - range.start;
     let (job, _) = session
         .export(timeline, settings, range)
