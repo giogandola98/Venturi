@@ -490,6 +490,12 @@ impl Vst3Instance {
             }
             between();
             if self.component.setActive(1) == kResultOk {
+                // Edits queued while inactive were never delivered; the state carries them.
+                self.shared
+                    .params
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clear();
                 self.active.store(true, Ordering::Relaxed);
                 self.processor.setProcessing(1);
                 self.processing.store(true, Ordering::Relaxed);
@@ -552,6 +558,9 @@ impl Vst3Instance {
     }
 
     fn flush_params_locked(&self, _audio: &AudioGuard<'_>) {
+        if !self.active.load(Ordering::Relaxed) {
+            return;
+        }
         // SAFETY: the guard gives this thread exclusive use of `rt`.
         let rt = unsafe { &mut *self.rt.get() };
         // Bounded so a plugin that keeps queueing edits from inside `process` cannot spin us.
@@ -703,6 +712,10 @@ impl HostedPlugin for Vst3Instance {
 
     /// The deactivate/activate cycle the spec requires; kIoChanged needs
     /// nothing more as the buses are fixed stereo.
+    fn is_active(&self) -> bool {
+        self.active.load(Ordering::Relaxed)
+    }
+
     fn service_restart(&self) {
         if self.shared.restart.load(Ordering::Acquire) == 0 {
             return;

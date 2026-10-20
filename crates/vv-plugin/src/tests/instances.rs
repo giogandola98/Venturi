@@ -20,6 +20,7 @@ struct Counts {
     dropped: AtomicUsize,
     reactivated: AtomicUsize,
     processed: AtomicUsize,
+    inactive: std::sync::atomic::AtomicBool,
 }
 
 struct Fake {
@@ -48,6 +49,9 @@ impl PluginProcessor for Fake {
 impl HostedPlugin for Fake {
     fn bundle(&self) -> Option<&std::path::Path> {
         self.bundle.as_deref()
+    }
+    fn is_active(&self) -> bool {
+        !self.counts.inactive.load(Ordering::SeqCst)
     }
     fn reactivate(&self) {
         self.counts.reactivated.fetch_add(1, Ordering::SeqCst);
@@ -805,4 +809,17 @@ fn the_build_is_the_one_of_the_code_this_process_runs() {
         build_in(&path, "1.0", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
     );
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_ready_slot_whose_instance_is_inactive_is_reported_failed_until_it_recovers() {
+    let counts = Arc::new(Counts::default());
+    let mut pool = pool(&counts);
+    pool.begin_pass();
+    pool.get(request(7, &effect(CLASS, &[1]))).unwrap();
+    assert!(!pool.failed(7));
+    counts.inactive.store(true, Ordering::SeqCst);
+    assert!(pool.failed(7));
+    counts.inactive.store(false, Ordering::SeqCst);
+    assert!(!pool.failed(7));
 }
