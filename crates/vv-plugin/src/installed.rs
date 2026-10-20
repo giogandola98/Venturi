@@ -34,8 +34,8 @@ pub fn same_plugins(a: &[PluginInfo], b: &[PluginInfo]) -> bool {
 
 static SCANNING: AtomicBool = AtomicBool::new(false);
 
-/// Whether the app's background scan is still running: `installed()` may be
-/// incomplete until it ends.
+/// Whether the app's first background scan is still running: `installed()`
+/// has no list yet. Never set for a rescan, which keeps the previous list.
 pub fn scanning() -> bool {
     SCANNING.load(Ordering::Acquire)
 }

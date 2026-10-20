@@ -698,8 +698,11 @@ impl Session {
     }
 
     /// `export` must wait: see `scan_blocks_export`.
-    pub fn export_waits_for_scan(&self) -> bool {
-        crate::export::scan_blocks_export(vv_plugin::scanning(), &self.project)
+    pub fn export_waits_for_scan(&self, timeline: TimelineId, audio: bool) -> bool {
+        self.project
+            .timelines
+            .get(timeline)
+            .is_some_and(|t| crate::export::scan_blocks_export(vv_plugin::scanning(), t, audio))
     }
 
     pub fn is_exporting(&self) -> bool {

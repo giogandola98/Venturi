@@ -2939,6 +2939,21 @@ impl Timeline {
     }
 
     /// The tracks of kind `kind`, with their absolute index in `tracks`.
+    pub fn has_audio_clips(&self) -> bool {
+        self.tracks_of_kind(TrackKind::Audio)
+            .any(|(_, t)| !t.clips.is_empty())
+    }
+
+    /// Whether an enabled VST3 effect sits on a track or the master strip.
+    pub fn uses_enabled_plugins(&self) -> bool {
+        self.tracks
+            .iter()
+            .map(|track| &track.mix)
+            .chain([&self.master])
+            .flat_map(|strip| &strip.effects)
+            .any(|effect| effect.enabled && matches!(effect.kind, AudioEffectKind::Vst3(_)))
+    }
+
     pub fn tracks_of_kind(
         &self,
         kind: TrackKind,
@@ -3080,23 +3095,6 @@ pub struct ProjectView {
 }
 
 impl Project {
-    /// Whether any timeline has a VST3 effect on a track or master strip.
-    pub fn uses_plugins(&self) -> bool {
-        self.timelines.values().any(|timeline| {
-            timeline
-                .tracks
-                .iter()
-                .map(|track| &track.mix)
-                .chain([&timeline.master])
-                .any(|strip| {
-                    strip
-                        .effects
-                        .iter()
-                        .any(|effect| matches!(effect.kind, AudioEffectKind::Vst3(_)))
-                })
-        })
-    }
-
     pub fn alloc_clip_id(&mut self) -> ClipId {
         let id = ClipId(self.next_clip_id);
         self.next_clip_id += 1;
