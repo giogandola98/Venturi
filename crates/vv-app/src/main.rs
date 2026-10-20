@@ -423,7 +423,7 @@ struct VenturiApp {
     /// A clipboard read for a paste in flight, see `request_clipboard_image`.
     clipboard_image_rx: Option<mpsc::Receiver<Option<paste_image::ClipboardImage>>>,
     /// A VST3 scan in flight, see `start_plugin_scan`.
-    plugin_scan_rx: Option<mpsc::Receiver<Vec<vv_plugin::PluginInfo>>>,
+    plugin_scan_rx: Option<mpsc::Receiver<(Vec<vv_plugin::PluginInfo>, Vec<PathBuf>)>>,
     paste_image_dialog: Option<paste_image::PasteImageDialog>,
     paste_image_needs_save: bool,
     paste_key_watch: paste_image::PasteKeyWatch,
@@ -2448,8 +2448,18 @@ impl VenturiApp {
         }
         let (tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
+        let blocklist = self.settings.vst3_blocklist.clone();
+        let marker = self
+            .settings_path
+            .as_ref()
+            .map(|p| p.with_file_name("vst3-scan.marker"))
+            .unwrap_or_else(|| std::env::temp_dir().join("venturi-vst3-scan.marker"));
         std::thread::spawn(move || {
-            let _ = tx.send(vv_plugin::scan(&vv_plugin::default_dirs()));
+            let _ = tx.send(vv_plugin::scan_with_guard(
+                &vv_plugin::default_dirs(),
+                &marker,
+                &blocklist,
+            ));
             ctx.request_repaint();
         });
         self.plugin_scan_rx = Some(rx);
@@ -2459,8 +2469,8 @@ impl VenturiApp {
         let Some(rx) = &self.plugin_scan_rx else {
             return;
         };
-        let list = match rx.try_recv() {
-            Ok(list) => list,
+        let (list, newly_blocked) = match rx.try_recv() {
+            Ok(result) => result,
             Err(mpsc::TryRecvError::Empty) => return,
             Err(mpsc::TryRecvError::Disconnected) => {
                 self.plugin_scan_rx = None;
@@ -2470,6 +2480,8 @@ impl VenturiApp {
         self.plugin_scan_rx = None;
         vv_plugin::set_installed(list.clone());
         self.settings.vst3_plugins = list;
+        self.settings.vst3_scanned = true;
+        self.settings.vst3_blocklist.extend(newly_blocked);
         if let Some(audio) = &mut self.timeline_audio {
             audio.plugins_rescanned();
             self.plugin_editors
@@ -4911,7 +4923,7 @@ fn main() -> eframe::Result<()> {
             app.settings.language.apply();
             // Seeded even when empty so nothing scans on the UI thread.
             vv_plugin::set_installed(app.settings.vst3_plugins.clone());
-            if app.settings.vst3_plugins.is_empty() {
+            if app.settings.needs_plugin_scan() {
                 app.start_plugin_scan(&cc.egui_ctx);
             }
             vv_media::hw::set_budget_bytes(app.settings.hw_decode_budget_bytes());

@@ -4,7 +4,7 @@ mod scan;
 #[doc(hidden)]
 pub mod testing;
 
-pub use scan::{PluginInfo, default_dirs, scan};
+pub use scan::{PluginInfo, default_dirs, scan, scan_with_guard};
 mod editor;
 mod host;
 mod installed;

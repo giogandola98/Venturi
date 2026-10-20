@@ -69,3 +69,63 @@ fn scans_installed_plugins() {
         );
     }
 }
+
+fn guard_dirs(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
+    let root = std::env::temp_dir().join(format!("vv-guard-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let plugins = root.join("plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    (root.clone(), plugins, root.join("scan.marker"))
+}
+
+#[test]
+fn a_clean_guarded_scan_finds_the_plugin_and_leaves_no_marker() {
+    let (root, plugins, marker) = guard_dirs("clean");
+    let bundle = crate::testing::fixture_bundle();
+    let copy = plugins.join(bundle.file_name().unwrap());
+    copy_dir(&bundle, &copy);
+    let (infos, blocked) = scan_with_guard(&[plugins], &marker, &[]);
+    let marker_left = marker.exists();
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(infos.len(), 1, "{infos:?}");
+    assert!(blocked.is_empty());
+    assert!(!marker_left);
+}
+
+#[test]
+fn a_leftover_marker_blocks_that_bundle_and_it_is_not_loaded() {
+    let (root, plugins, marker) = guard_dirs("crashed");
+    let bundle = crate::testing::fixture_bundle();
+    let bad = plugins.join("Bad.vst3");
+    copy_dir(&bundle, &bad);
+    std::fs::write(&marker, bad.to_string_lossy().as_bytes()).unwrap();
+    let (infos, blocked) = scan_with_guard(std::slice::from_ref(&plugins), &marker, &[]);
+    let marker_left = marker.exists();
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(infos.is_empty(), "{infos:?}");
+    assert_eq!(blocked, vec![bad]);
+    assert!(!marker_left);
+}
+
+#[test]
+fn an_already_blocked_bundle_is_skipped_without_being_reported_again() {
+    let (root, plugins, marker) = guard_dirs("blocked");
+    let bad = plugins.join("Bad.vst3");
+    copy_dir(&crate::testing::fixture_bundle(), &bad);
+    let (infos, blocked) = scan_with_guard(&[plugins], &marker, std::slice::from_ref(&bad));
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(infos.is_empty());
+    assert!(blocked.is_empty());
+}
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap().flatten() {
+        let dest = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_dir(&entry.path(), &dest);
+        } else {
+            std::fs::copy(entry.path(), dest).unwrap();
+        }
+    }
+}

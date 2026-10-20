@@ -622,6 +622,10 @@ pub struct Settings {
     pub eq_presets: Vec<Preset<vv_core::Equalizer>>,
     /// The last VST3 scan; empty until one has run.
     pub vst3_plugins: Vec<vv_plugin::PluginInfo>,
+    /// A scan has run, so an empty `vst3_plugins` means none were found.
+    pub vst3_scanned: bool,
+    /// Bundles whose scan crashed; never loaded again by a scan.
+    pub vst3_blocklist: Vec<PathBuf>,
     /// Microphone of the voiceover, by name; `None` is the system's default.
     pub input_device: Option<String>,
     /// Of the takes; `None`, or one this FFmpeg lacks, is
@@ -698,6 +702,8 @@ impl Default for Settings {
             compressor_presets: Vec::new(),
             eq_presets: Vec::new(),
             vst3_plugins: Vec::new(),
+            vst3_scanned: false,
+            vst3_blocklist: Vec::new(),
             input_device: None,
             recording_format: None,
             recording_dir: None,
@@ -773,6 +779,10 @@ struct SettingsFile {
     #[serde(default)]
     vst3_plugins: Vec<vv_plugin::PluginInfo>,
     #[serde(default)]
+    vst3_scanned: Option<bool>,
+    #[serde(default)]
+    vst3_blocklist: Vec<PathBuf>,
+    #[serde(default)]
     input_device: Option<String>,
     #[serde(default)]
     recording_format: Option<String>,
@@ -813,6 +823,10 @@ struct PanelLayoutFile {
 }
 
 impl Settings {
+    pub fn needs_plugin_scan(&self) -> bool {
+        !self.vst3_scanned
+    }
+
     pub fn default_path() -> Option<PathBuf> {
         let config = std::env::var_os("XDG_CONFIG_HOME")
             .filter(|d| !d.is_empty())
@@ -886,7 +900,9 @@ impl Settings {
         settings.recording_dir = file.recording_dir;
         settings.compressor_presets = readable_presets(file.compressor_presets);
         settings.eq_presets = readable_presets(file.eq_presets);
+        settings.vst3_scanned = file.vst3_scanned.unwrap_or(!file.vst3_plugins.is_empty());
         settings.vst3_plugins = file.vst3_plugins;
+        settings.vst3_blocklist = file.vst3_blocklist;
         settings.mcp_enabled = file.mcp_enabled.unwrap_or(false);
         let defaults = PanelLayout::default();
         settings.panels = PanelLayout {
@@ -990,6 +1006,8 @@ impl Settings {
             compressor_presets: preset_values(&self.compressor_presets),
             eq_presets: preset_values(&self.eq_presets),
             vst3_plugins: self.vst3_plugins.clone(),
+            vst3_scanned: Some(self.vst3_scanned),
+            vst3_blocklist: self.vst3_blocklist.clone(),
             input_device: self.input_device.clone(),
             recording_format: self.recording_format.map(|f| f.id().to_owned()),
             recording_dir: self.recording_dir.clone(),

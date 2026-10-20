@@ -283,3 +283,42 @@ fn capture_waits_past_a_lone_modifier_for_the_whole_combination() {
         Some(Shortcut::ctrl(egui::Key::K))
     );
 }
+
+fn load_json(tag: &str, json: &str) -> Settings {
+    let path = std::env::temp_dir()
+        .join(format!("vv-settings-{tag}-{}", std::process::id()))
+        .join("settings.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, json).unwrap();
+    let settings = Settings::load(&path);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    settings
+}
+
+#[test]
+fn a_scan_that_found_nothing_is_not_scanned_again_at_startup() {
+    let mut settings = Settings::default();
+    assert!(settings.needs_plugin_scan());
+    settings.vst3_scanned = true;
+    assert!(!settings.needs_plugin_scan());
+
+    let path = std::env::temp_dir()
+        .join(format!("vv-settings-scanned-{}", std::process::id()))
+        .join("settings.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    settings.vst3_blocklist = vec![PathBuf::from("/x/Bad.vst3")];
+    settings.save(&path).unwrap();
+    let loaded = Settings::load(&path);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    assert!(loaded.vst3_plugins.is_empty());
+    assert!(!loaded.needs_plugin_scan());
+    assert_eq!(loaded.vst3_blocklist, settings.vst3_blocklist);
+}
+
+#[test]
+fn settings_from_before_the_flag_count_as_scanned_only_with_a_cached_list() {
+    assert!(load_json("old-empty", "{}").needs_plugin_scan());
+    let plugin = r#"{"class_id":"AA","name":"a","vendor":"v","version":"1","path":"/p/a.vst3"}"#;
+    let old = load_json("old-list", &format!(r#"{{"vst3_plugins":[{plugin}]}}"#));
+    assert!(!old.needs_plugin_scan());
+}
