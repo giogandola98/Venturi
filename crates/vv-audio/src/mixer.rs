@@ -1147,6 +1147,7 @@ fn collect_clips(
     let inputs = input_clips(project, timeline, sample_rate, &mut |effect| {
         source.plugin_build(effect)
     });
+    let mix_end = inputs.iter().map(|c| c.start + c.len).max().unwrap_or(0);
     let measured_channel = measuring.map(|m| m.channel);
     let format = (sample_rate, channels);
     let mut tracks: Vec<Channel> = Vec::with_capacity(timeline.tracks.len());
@@ -1175,10 +1176,16 @@ fn collect_clips(
                 None => track_inputs.clone(),
             };
             let memory = Memory::of(
-                has_processing_plugin(inserts),
+                has_processing_plugin(inserts) || input.iter().any(|c| c.plugin),
                 has_state(inserts) || inputs_have_state(&input),
             );
-            let segments = level_segments(&input, chain_key(mode, format, inserts), |_| 0, memory);
+            let segments = level_segments(
+                &input,
+                chain_key(mode, format, inserts),
+                |_| 0,
+                memory,
+                mix_end,
+            );
             source.level(LevelAnalysis {
                 slot: slot(channel, inserts.len(), clip.map_or(0, |(i, _)| i)),
                 project,
@@ -1239,7 +1246,9 @@ fn collect_clips(
         );
         let analyze = |inserts: &[Insert], _: Option<(usize, ClipId)>, mode| {
             let memory = Memory::of(
-                has_processing_plugin(inserts) || tracks_have_plugin,
+                has_processing_plugin(inserts)
+                    || tracks_have_plugin
+                    || all.iter().any(|c| c.plugin),
                 has_state(inserts) || tracks_have_state || inputs_have_state(&all),
             );
             let track_key = |track: usize| {
@@ -1249,8 +1258,13 @@ fn collect_clips(
                 }
                 h.finish()
             };
-            let segments =
-                level_segments(&all, chain_key(mode, format, inserts), track_key, memory);
+            let segments = level_segments(
+                &all,
+                chain_key(mode, format, inserts),
+                track_key,
+                memory,
+                mix_end,
+            );
             source.level(LevelAnalysis {
                 slot: slot(MixerChannel::Master, inserts.len(), 0),
                 project,

@@ -2292,10 +2292,17 @@ impl crate::effect::PluginProcessor for FoldingPlugin {
 }
 
 #[test]
-fn the_keys_of_a_plugin_not_installed_do_not_change() {
+fn the_keys_of_a_plugin_without_a_build_are_stable() {
     let level = level_keys(
         vec![vst3(1, b""), normalize(0.0)],
         Some(FakePlugin::new(4.0)),
     );
     assert_eq!(level, [5936692045940253641]);
+}
+
+/// Pass-through: the segmented scheme, as before plugins processed.
+#[test]
+fn the_keys_of_an_unmade_plugin_are_stable() {
+    let level = level_keys(vec![vst3(1, b""), normalize(0.0)], None);
+    assert_eq!(level, [15893858193257760473]);
 }

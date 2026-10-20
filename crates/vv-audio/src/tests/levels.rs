@@ -238,7 +238,12 @@ fn a_measure_after_a_plugin_is_one_continuous_run() {
 fn a_plugin_that_is_not_made_keeps_the_segments() {
     let (project, media) = project();
     let tl = plugin_timeline(media, false);
-    assert_eq!(segments_through(&project, &tl, false).len(), 3);
+    let dry = segments_through(&project, &tl, false);
+    assert_eq!(dry.len(), 3);
+    let mut bare = timeline(vec![three_clips(media, 15, 30)]);
+    bare.master.effects = vec![normalize()];
+    assert_ne!(keys(&dry), keys(&segments(&project, &bare)));
+    assert_eq!(keys(&dry), keys(&segments_through(&project, &tl, false)));
 }
 
 #[test]
