@@ -8,7 +8,8 @@ use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
 use vv_core::{
-    AudioEffectKind, ClipId, ClipSource, MixerChannel, NormalizeMode, Project, Timeline, Vst3Effect,
+    AudioEffectKind, ChannelStrip, ClipId, ClipSource, MixerChannel, NormalizeMode, Project,
+    Timeline, Vst3Effect,
 };
 
 use crate::loudness::LevelMeter;
@@ -250,18 +251,40 @@ pub(crate) fn timeline_key(
         .map(|track| &track.mix)
         .chain([&timeline.master]);
     for strip in strips {
-        format!("{strip:?}").hash(&mut h);
-        for effect in &strip.effects {
-            if let AudioEffectKind::Vst3(plugin) = &effect.kind {
-                let build = available(plugin);
-                build.is_some().hash(&mut h);
-                if let Some(build) = build {
-                    build.hash(&mut h);
-                }
-            }
-        }
+        hash_strip(strip, available, &mut h);
     }
     h.finish()
+}
+
+/// Plugin-free strips keep their Debug hash (the keys are on disk). With a
+/// plugin, Debug would include its id and name: a fresh-id copy must match.
+fn hash_strip(
+    strip: &ChannelStrip,
+    available: &mut dyn FnMut(&Vst3Effect) -> Option<u64>,
+    h: &mut StableHasher,
+) {
+    let has_plugin = strip
+        .effects
+        .iter()
+        .any(|e| matches!(e.kind, AudioEffectKind::Vst3(_)));
+    if !has_plugin {
+        format!("{strip:?}").hash(h);
+        return;
+    }
+    (strip.gain_db.to_bits(), strip.pan.to_bits()).hash(h);
+    for effect in &strip.effects {
+        effect.enabled.hash(h);
+        let AudioEffectKind::Vst3(plugin) = &effect.kind else {
+            format!("{:?}", effect.kind).hash(h);
+            continue;
+        };
+        plugin.content_hash().hash(h);
+        let build = available(plugin);
+        build.is_some().hash(h);
+        if let Some(build) = build {
+            build.hash(h);
+        }
+    }
 }
 
 pub(crate) fn hash_channel(channel: &Channel, h: &mut impl Hasher) {
