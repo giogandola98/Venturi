@@ -271,3 +271,47 @@ fn the_master_measure_follows_what_plays() {
 fn the_stable_hash_does_not_change() {
     assert_eq!(stable_hash((1u64, 2u32, "levels")), 0x1dc1_4506_b088_1bce);
 }
+
+fn key_of(project: &Project, tl: &Timeline) -> u64 {
+    timeline_key(project, tl, RATE, 0, &mut |_| Some(5))
+}
+
+fn plugin_compound(media: vv_core::MediaId, id: u64, name: &str) -> Timeline {
+    let mut tl = timeline(vec![track(vec![clip(1, media, 0, 0, 10)])]);
+    let mut effect = plugin();
+    if let AudioEffectKind::Vst3(p) = &mut effect.kind {
+        p.id = vv_core::EffectId(id);
+        p.name = name.into();
+        p.vendor = name.into();
+    }
+    tl.tracks[0].mix.effects.push(effect);
+    tl.master.effects.push(normalize());
+    tl
+}
+
+#[test]
+fn a_fresh_id_copy_of_a_compound_shares_its_key() {
+    let (project, media) = project();
+    let a = plugin_compound(media, 1, "One");
+    let b = plugin_compound(media, 2, "Two");
+    assert_eq!(key_of(&project, &a), key_of(&project, &b));
+    let mut c = plugin_compound(media, 3, "Three");
+    if let AudioEffectKind::Vst3(p) = &mut c.tracks[0].mix.effects[0].kind {
+        p.version = "2".into();
+    }
+    assert_ne!(key_of(&project, &a), key_of(&project, &c));
+    let mut d = plugin_compound(media, 4, "Four");
+    d.tracks[0].mix.effects[0].enabled = false;
+    assert_ne!(key_of(&project, &a), key_of(&project, &d));
+}
+
+/// The keys go to disk: strips without plugins must keep hashing as before.
+#[test]
+fn a_plugin_free_timeline_key_does_not_change() {
+    let (project, media) = project();
+    let mut tl = timeline(vec![track(vec![clip(1, media, 0, 0, 10)])]);
+    tl.tracks[0].mix.gain_db = -3.0;
+    tl.tracks[0].mix.effects.push(compressor());
+    tl.master.effects.push(normalize());
+    assert_eq!(key_of(&project, &tl), 9_592_979_620_447_192_468);
+}
