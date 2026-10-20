@@ -242,3 +242,38 @@ fn a_closed_editors_gesture_waits_for_the_group_then_is_its_own_step() {
     history.undo(&mut project);
     assert_eq!(state_of(&project, id, 1), [1]);
 }
+
+#[test]
+fn clicking_an_open_editor_raises_it_instead_of_doing_nothing() {
+    let (_, _, key) = setup();
+    let raised = std::cell::Cell::new(0);
+    let mut windows = HashMap::from([(key, true)]);
+    assert!(raise_open(
+        &mut windows,
+        &key,
+        |open| *open,
+        |_| raised.set(raised.get() + 1)
+    ));
+    assert_eq!(raised.get(), 1);
+}
+
+#[test]
+fn a_closed_or_missing_editor_is_not_raised() {
+    let (_, _, key) = setup();
+    let raised = std::cell::Cell::new(0);
+    let mut windows = HashMap::from([(key, false)]);
+    assert!(!raise_open(
+        &mut windows,
+        &key,
+        |open| *open,
+        |_| raised.set(1)
+    ));
+    windows.clear();
+    assert!(!raise_open(
+        &mut windows,
+        &key,
+        |open| *open,
+        |_| raised.set(1)
+    ));
+    assert_eq!(raised.get(), 0);
+}

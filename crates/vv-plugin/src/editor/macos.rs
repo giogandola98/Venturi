@@ -144,6 +144,13 @@ impl Window {
         (now != self.size.replace(now)).then_some(now)
     }
 
+    pub fn raise(&self) {
+        if self.window.isMiniaturized() {
+            self.window.deminiaturize(None);
+        }
+        self.window.makeKeyAndOrderFront(None);
+    }
+
     // Hiding the app or minimizing is not closing.
     pub fn is_open(&self) -> bool {
         !self.delegate.ivars().closed.get()

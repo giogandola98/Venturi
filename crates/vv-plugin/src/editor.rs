@@ -182,6 +182,11 @@ impl Editor {
     pub fn is_open(&self) -> bool {
         self.window.is_open()
     }
+
+    /// Shows the window again, in front and focused, even if covered or minimized.
+    pub fn raise(&self) {
+        self.window.raise();
+    }
 }
 
 impl Drop for Editor {

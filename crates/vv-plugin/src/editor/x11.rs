@@ -17,7 +17,8 @@ use x11rb::connection::Connection;
 use x11rb::properties::WmSizeHints;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
-    AtomEnum, ConfigureWindowAux, ConnectionExt, CreateWindowAux, EventMask, PropMode, WindowClass,
+    AtomEnum, ClientMessageEvent, ConfigureWindowAux, ConnectionExt, CreateWindowAux, EventMask,
+    PropMode, StackMode, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
@@ -174,6 +175,28 @@ impl Window {
 
     pub fn is_open(&self) -> bool {
         !self.closed
+    }
+
+    pub fn raise(&self) {
+        // Mapping again de-iconifies; the message asks the WM for focus too.
+        let _ = self.conn.map_window(self.id);
+        let _ = self.conn.configure_window(
+            self.id,
+            &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
+        );
+        let root = self.conn.setup().roots.first().map(|s| s.root);
+        let active = self
+            .conn
+            .intern_atom(false, b"_NET_ACTIVE_WINDOW")
+            .ok()
+            .and_then(|c| c.reply().ok());
+        if let (Some(root), Some(active)) = (root, active) {
+            // Source 2: a pager, so focus-stealing prevention lets a user click through.
+            let event = ClientMessageEvent::new(32, self.id, active.atom, [2, 0, 0, 0, 0]);
+            let mask = EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY;
+            let _ = self.conn.send_event(false, root, mask, event);
+        }
+        let _ = self.conn.flush();
     }
 }
 
