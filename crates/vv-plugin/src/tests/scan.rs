@@ -155,3 +155,68 @@ fn a_path_with_surrounding_spaces_is_not_trimmed() {
     let _ = std::fs::remove_dir_all(&root);
     assert_eq!(crashed, Some(odd));
 }
+
+fn info_json(cid: &str) -> String {
+    format!(
+        r#"{{"Classes": [{{"CID": "{cid}", "Category": "Audio Module Class",
+        "Name": "n", "Sub Categories": ["Fx"]}}]}}"#
+    )
+}
+
+fn json_bundle(dir: &Path, name: &str, cid: &str) {
+    let res = dir.join(name).join("Contents/Resources");
+    std::fs::create_dir_all(&res).unwrap();
+    std::fs::write(res.join("moduleinfo.json"), info_json(cid)).unwrap();
+}
+
+fn fresh_dir(tag: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("vv-scan-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    root
+}
+
+#[cfg(unix)]
+#[test]
+fn a_root_symlinked_to_another_root_lists_each_plugin_once() {
+    let root = fresh_dir("alias");
+    let lib = root.join("lib");
+    std::fs::create_dir_all(&lib).unwrap();
+    json_bundle(&lib, "A.vst3", "AA");
+    json_bundle(&lib.join("Vendor"), "B.vst3", "BB");
+    std::os::unix::fs::symlink(&lib, root.join("lib64")).unwrap();
+    let infos = scan(&[lib.clone(), root.join("lib64")]);
+    assert_eq!(infos.len(), 2);
+    assert!(infos.iter().all(|i| i.path.starts_with(&lib)));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_loop_terminates_and_lists_the_bundle_once() {
+    let root = fresh_dir("loop");
+    json_bundle(&root, "A.vst3", "AA");
+    std::os::unix::fs::symlink(&root, root.join("a")).unwrap();
+    std::os::unix::fs::symlink(&root, root.join("b")).unwrap();
+    assert_eq!(scan(&[root]).len(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_bundle_reached_through_two_links_is_listed_once() {
+    let root = fresh_dir("twolinks");
+    json_bundle(&root.join("real"), "A.vst3", "AA");
+    std::os::unix::fs::symlink(root.join("real"), root.join("l1")).unwrap();
+    std::os::unix::fs::symlink(root.join("real/A.vst3"), root.join("A2.vst3")).unwrap();
+    assert_eq!(scan(&[root]).len(), 1);
+}
+
+#[test]
+fn the_same_class_id_in_two_bundles_is_listed_once() {
+    let root = fresh_dir("sameclass");
+    json_bundle(&root, "A.vst3", "AA");
+    json_bundle(&root.join("V"), "A.vst3", "AA");
+    json_bundle(&root, "B.vst3", "BB");
+    let infos = scan(std::slice::from_ref(&root));
+    assert_eq!(infos.len(), 2);
+    assert_eq!(infos[0].path, root.join("A.vst3"));
+}
