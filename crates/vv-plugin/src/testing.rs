@@ -157,5 +157,5 @@ fn cdylib_path(cargo_json: &str) -> Option<PathBuf> {
 }
 
 #[cfg(test)]
-#[path = "tests/fixture.rs"]
+#[path = "tests/testing.rs"]
 mod tests;
