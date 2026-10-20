@@ -53,6 +53,14 @@ struct StretchResult {
     samples: Result<Vec<f32>, String>,
 }
 
+fn hand_back(tx: &mpsc::Sender<StretchResult>, result: StretchResult) {
+    if let Err(mpsc::SendError(result)) = tx.send(result) {
+        // Dropping here would tear the plugins down off the UI thread while
+        // the process exits; the leak is harmless.
+        std::mem::forget(result);
+    }
+}
+
 pub struct TimelineAudio {
     mixer: Option<Mixer>,
     buffers: MixBufferCache,
@@ -450,11 +458,14 @@ impl TimelineAudio {
                         stretched.resize(expected, 0.0);
                         stretched
                     });
-            let _ = tx.send(StretchResult {
-                id: request.id,
-                _mix: mix,
-                samples,
-            });
+            hand_back(
+                &tx,
+                StretchResult {
+                    id: request.id,
+                    _mix: mix,
+                    samples,
+                },
+            );
         });
     }
 
