@@ -1100,9 +1100,11 @@ fn collect_clips(
     let format = (sample_rate, channels);
     let mut tracks: Vec<Channel> = Vec::with_capacity(timeline.tracks.len());
     let mut running = Vec::new();
+    let mut plugin_keys = PluginKeys::new(scope, TRACK_STRIPS);
     for (index, track) in timeline.tracks.iter().enumerate() {
         let channel = MixerChannel::Track(index);
         if matches!(measured_channel, Some(MixerChannel::Track(t)) if t != index) {
+            plugin_keys.count(&track.mix);
             tracks.push(Channel::UNITY);
             continue;
         }
@@ -1111,7 +1113,6 @@ fn collect_clips(
         let mut track_clips: Vec<(ClipId, u64)> =
             track_inputs.iter().map(|c| (c.id, c.start)).collect();
         track_clips.sort_by_key(|&(_, start)| start);
-        let mut plugin_keys = PluginKeys::new(scope, index as u64);
         let plugins = request_plugins(&track.mix, stop, &mut plugin_keys, source, sample_rate);
         let analyze = |inserts: &[Insert], clip: Option<(usize, ClipId)>, mode| {
             let input: Vec<&InputClip> = match clip {
@@ -1168,7 +1169,7 @@ fn collect_clips(
                 .get(clip.track)
                 .is_some_and(|t| has_state(&t.inserts))
         });
-        let mut plugin_keys = PluginKeys::new(scope, MASTER_STRIP);
+        let mut plugin_keys = PluginKeys::new(scope, MASTER_STRIPS);
         let plugins = request_plugins(
             &timeline.master,
             stop,
@@ -1305,27 +1306,60 @@ fn resolve_chain(
     inserts
 }
 
-/// Keys of the plugin placements of one strip. Counted per strip, so a pass
-/// that skips other strips (a measure) keys this one like the live pass.
+/// Keys of the plugin placements of the track strips (or of the master).
+/// The strip's position is not part of the key, so removing a track keeps
+/// the instances of the others; every strip is counted, also when a measure
+/// skips it, so the occurrences match the live pass.
 struct PluginKeys {
     scope: u64,
-    strip: u64,
+    group: u64,
     met: HashMap<EffectId, u32>,
 }
 
-pub const MASTER_STRIP: u64 = u64::MAX;
+const TRACK_STRIPS: u64 = 0;
+const MASTER_STRIPS: u64 = 1;
 
-/// Key of a plugin placement: the panel computes the same one to find the
-/// live instance of an effect.
-pub fn plugin_key(scope: u64, strip: u64, id: EffectId, occurrence: u32) -> u64 {
-    stable_hash((scope, strip, id.0, occurrence))
+/// Key of a plugin placement.
+pub fn plugin_key(scope: u64, group: u64, id: EffectId, occurrence: u32) -> u64 {
+    stable_hash((scope, group, id.0, occurrence))
+}
+
+/// Key of the plugin at `index` of a strip, as the mixer asks it: the panel
+/// finds the live instance of an effect with it.
+pub fn plugin_key_in(
+    scope: u64,
+    timeline: &Timeline,
+    channel: MixerChannel,
+    index: usize,
+) -> Option<u64> {
+    let (group, before, strip) = match channel {
+        MixerChannel::Track(i) => (
+            TRACK_STRIPS,
+            &timeline.tracks[..i],
+            &timeline.tracks.get(i)?.mix,
+        ),
+        MixerChannel::Master => (MASTER_STRIPS, &timeline.tracks[..0], &timeline.master),
+    };
+    let AudioEffectKind::Vst3(this) = &strip.effects.get(index)?.kind else {
+        return None;
+    };
+    let mut keys = PluginKeys::new(scope, group);
+    for track in before {
+        keys.count(&track.mix);
+    }
+    for effect in &strip.effects[..index] {
+        if let AudioEffectKind::Vst3(plugin) = &effect.kind {
+            keys.next(plugin);
+        }
+    }
+    Some(keys.next(this))
 }
 
 impl PluginKeys {
-    fn new(scope: u64, strip: u64) -> Self {
+    fn new(scope: u64, group: u64) -> Self {
         Self {
             scope,
-            strip,
+            group,
             met: HashMap::new(),
         }
     }
@@ -1335,7 +1369,15 @@ impl PluginKeys {
         let seen = self.met.entry(effect.id).or_insert(0);
         let occurrence = *seen;
         *seen += 1;
-        plugin_key(self.scope, self.strip, effect.id, occurrence)
+        plugin_key(self.scope, self.group, effect.id, occurrence)
+    }
+
+    fn count(&mut self, strip: &ChannelStrip) {
+        for effect in &strip.effects {
+            if let AudioEffectKind::Vst3(plugin) = &effect.kind {
+                self.next(plugin);
+            }
+        }
     }
 }
 
@@ -1350,14 +1392,24 @@ fn request_plugins(
     source: &mut impl AudioSource,
     sample_rate: u32,
 ) -> Vec<Option<PluginInsert>> {
-    let effects = || strip.effects.iter().take(stop.unwrap_or(usize::MAX));
-    if !effects().any(|e| e.enabled && matches!(e.kind, AudioEffectKind::Vst3(_))) {
+    let keys: Vec<Option<u64>> = strip
+        .effects
+        .iter()
+        .map(|effect| match &effect.kind {
+            AudioEffectKind::Vst3(plugin) => Some(plugin_keys.next(plugin)),
+            _ => None,
+        })
+        .collect();
+    if !keys.iter().any(Option::is_some) {
         return Vec::new();
     }
-    effects()
-        .map(|effect| match &effect.kind {
-            AudioEffectKind::Vst3(plugin) if effect.enabled => {
-                let key = plugin_keys.next(plugin);
+    strip
+        .effects
+        .iter()
+        .zip(keys)
+        .take(stop.unwrap_or(usize::MAX))
+        .map(|(effect, key)| match (&effect.kind, key) {
+            (AudioEffectKind::Vst3(plugin), Some(key)) if effect.enabled => {
                 let handle = source.plugin(PluginRequest {
                     key,
                     effect: plugin,

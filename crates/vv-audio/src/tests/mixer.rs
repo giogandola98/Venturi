@@ -1935,18 +1935,74 @@ fn a_chain_with_a_plugin_has_state() {
 #[test]
 fn plugin_key_matches_the_mixers_keys() {
     let (project, a, _) = project();
-    let mut track = audio_track(vec![clip_at(a, 0, 0, 5)]);
-    track.mix.effects = vec![vst3(7, b""), vst3(7, b"")];
-    let mut tl = timeline(vec![track]);
-    tl.master.effects = vec![vst3(9, b"")];
+    let strip = |effects| {
+        let mut track = audio_track(vec![clip_at(a, 0, 0, 5)]);
+        track.mix.effects = effects;
+        track
+    };
+    let mut tl = timeline(vec![
+        strip(vec![vst3(7, b""), vst3(7, b"")]),
+        strip(vec![vst3(7, b"")]),
+    ]);
+    tl.master.effects = vec![vst3(9, b""), vst3(7, b"")];
     let mut source = PluginSource::default();
     MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
-    let id = |n| vv_core::EffectId(n);
-    for key in [
-        crate::mixer::plugin_key(0, 0, id(7), 0),
-        crate::mixer::plugin_key(0, 0, id(7), 1),
-        crate::mixer::plugin_key(0, crate::mixer::MASTER_STRIP, id(9), 0),
-    ] {
+    let panel = |channel, index| crate::mixer::plugin_key_in(0, &tl, channel, index).unwrap();
+    let track = MixerChannel::Track;
+    let keys = [
+        panel(track(0), 0),
+        panel(track(0), 1),
+        panel(track(1), 0),
+        panel(MixerChannel::Master, 0),
+        panel(MixerChannel::Master, 1),
+    ];
+    for key in keys {
         assert!(source.keys.contains(&key));
+    }
+    let mut distinct = keys.to_vec();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), keys.len());
+}
+
+#[test]
+fn removing_a_track_keeps_the_plugin_keys_of_the_others() {
+    let (project, a, _) = project();
+    let strip = |effects| {
+        let mut track = audio_track(vec![clip_at(a, 0, 0, 5)]);
+        track.mix.effects = effects;
+        track
+    };
+    let mut tl = timeline(vec![strip(vec![]), strip(vec![vst3(1, b"")])]);
+    let mut before = PluginSource::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut before);
+    tl.tracks.remove(0);
+    let mut after = PluginSource::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut after);
+    assert_eq!(before.keys, after.keys);
+    assert_eq!(before.keys.len(), 1);
+}
+
+#[test]
+fn a_measure_keys_a_duplicated_plugin_like_the_live_pass() {
+    let (project, a, _) = project();
+    let strip = || {
+        let mut track = audio_track(vec![clip_at(a, 0, 0, 5)]);
+        track.mix.effects = vec![vst3(1, b"")];
+        track
+    };
+    let tl = timeline(vec![strip(), strip()]);
+    let mut live = PluginSource::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut live);
+    assert_ne!(live.keys[0], live.keys[1]);
+    for track in 0..2 {
+        let measured = Measured {
+            channel: MixerChannel::Track(track),
+            insert: 1,
+            clip: None,
+        };
+        let mut measuring = PluginSource::default();
+        MixSnapshot::measured(&project, &tl, measured, RATE, 1, &mut measuring, None);
+        assert_eq!(measuring.keys, [live.keys[track]]);
     }
 }

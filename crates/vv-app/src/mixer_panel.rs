@@ -182,6 +182,7 @@ pub(crate) fn show_mixer(
                         let flags = Some((track.solo, track.muted));
                         let edit = strip(
                             ui,
+                            timeline,
                             channel,
                             &timeline.track_label(index),
                             &track.mix,
@@ -196,6 +197,7 @@ pub(crate) fn show_mixer(
                     falling |= level.iter().any(|l| *l > 0.001);
                     let edit = strip(
                         ui,
+                        timeline,
                         MixerChannel::Master,
                         &t!("mixer.master"),
                         &timeline.master,
@@ -374,18 +376,6 @@ pub(crate) fn add_plugin_effect(plugin: &PluginInfo) -> AudioEffectKind {
         component_state: PluginState::default(),
         controller_state: PluginState::default(),
     })
-}
-
-/// How many placements of the same plugin come before `index`, as the mixer
-/// counts them to key the instance.
-fn plugin_occurrence(effects: &[AudioEffect], index: usize) -> u32 {
-    let AudioEffectKind::Vst3(this) = &effects[index].kind else {
-        return 0;
-    };
-    effects[..index]
-        .iter()
-        .filter(|e| matches!(&e.kind, AudioEffectKind::Vst3(v) if v.id == this.id))
-        .count() as u32
 }
 
 pub(crate) fn effect_name(kind: &AudioEffectKind) -> String {
@@ -583,6 +573,7 @@ impl StripEdit {
 /// `flags` are solo and mute, only for the tracks.
 fn strip(
     ui: &mut egui::Ui,
+    timeline: &Timeline,
     channel: MixerChannel,
     label: &str,
     mix: &ChannelStrip,
@@ -599,7 +590,15 @@ fn strip(
         ui.set_width(STRIP_WIDTH);
         ui.vertical_centered(|ui| {
             ui.push_id(channel, |ui| {
-                effects(ui, channel, &mix.effects, effect_slots, vst3, &mut edit);
+                effects(
+                    ui,
+                    timeline,
+                    channel,
+                    &mix.effects,
+                    effect_slots,
+                    vst3,
+                    &mut edit,
+                );
                 ui.add_space(6.0);
                 edit.pan = pan_knob(ui, mix.pan);
                 ui.small(format_pan(mix.pan));
@@ -658,6 +657,7 @@ struct EffectDrag {
 /// effects are dragged to reorder them within the chain.
 fn effects(
     ui: &mut egui::Ui,
+    timeline: &Timeline,
     channel: MixerChannel,
     effects: &[AudioEffect],
     slots: usize,
@@ -675,7 +675,7 @@ fn effects(
             if !vst3.installed.iter().any(|i| i.class_id == plugin.class_id) {
                 name.insert_str(0, "! ");
                 hover = t!("mixer.vst3_missing").into_owned();
-            } else if let Some(ms) = (vst3.latency_ms)(plugin_key_of(channel, effects, index))
+            } else if let Some(ms) = (vst3.latency_ms)(plugin_key_of(timeline, channel, index))
                 && ms > 0.0
             {
                 name.push_str(&format!(" {ms:.0} ms"));
@@ -782,15 +782,8 @@ fn effects(
     });
 }
 
-pub(crate) fn plugin_key_of(channel: MixerChannel, effects: &[AudioEffect], index: usize) -> u64 {
-    let AudioEffectKind::Vst3(plugin) = &effects[index].kind else {
-        return 0;
-    };
-    let strip = match channel {
-        MixerChannel::Track(i) => i as u64,
-        MixerChannel::Master => vv_audio::MASTER_STRIP,
-    };
-    vv_audio::plugin_key(0, strip, plugin.id, plugin_occurrence(effects, index))
+pub(crate) fn plugin_key_of(timeline: &Timeline, channel: MixerChannel, index: usize) -> u64 {
+    vv_audio::plugin_key_in(0, timeline, channel, index).unwrap_or(0)
 }
 
 fn paint_drag_ghost(ui: &egui::Ui, name: &str, fill: egui::Color32, text: egui::Color32) {

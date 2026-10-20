@@ -35,8 +35,10 @@ fn held_instances(
     editors
         .filter_map(|(key, instance)| {
             let (index, _) = find(project, key)?;
-            let strip = channel_strip(project.timelines.get(key.0)?, key.1)?;
-            Some((plugin_key_of(key.1, &strip.effects, index), instance))
+            Some((
+                plugin_key_of(project.timelines.get(key.0)?, key.1, index),
+                instance,
+            ))
         })
         .collect()
 }
@@ -182,7 +184,7 @@ impl PluginEditors {
             return;
         }
         self.open.remove(&key);
-        let live_key = plugin_key_of(channel, &strip.effects, index);
+        let live_key = plugin_key_of(&project.timelines[timeline], channel, index);
         let live = (current == Some(timeline)).then_some(live_key);
         let aside = live_key ^ timeline.raw().wrapping_add(1).wrapping_mul(ASIDE_SALT);
         let Some(instance) = audio.plugin_instance(live, aside, plugin) else {

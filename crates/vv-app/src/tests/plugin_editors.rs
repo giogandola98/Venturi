@@ -146,9 +146,9 @@ fn an_editor_instance_is_held_under_the_key_the_mix_asks() {
     let (mut project, id, key) = setup();
     let instance: Arc<dyn HostedPlugin> = Arc::new(Fake::default());
     let held = held_instances(&project, [(key, instance.clone())].into_iter());
-    let effects = &project.timelines[id].master.effects;
     assert_eq!(held.len(), 1);
-    assert_eq!(held[0].0, plugin_key_of(MixerChannel::Master, effects, 1));
+    let expected = plugin_key_of(&project.timelines[id], MixerChannel::Master, 1);
+    assert_eq!(held[0].0, expected);
     assert!(Arc::ptr_eq(&held[0].1, &instance));
 
     // Disabled, the key is the same one the enabled effect plays under.
