@@ -14,6 +14,8 @@ use vst3::{Class, ComPtr, ComRef, ComWrapper};
 
 use crate::{HostedPlugin, Waker};
 
+mod run_loop;
+
 #[cfg(target_os = "macos")]
 #[path = "editor/macos.rs"]
 mod platform;
@@ -30,7 +32,7 @@ struct Frame {
     resize: RefCell<Option<Resizer>>,
     resizing: Cell<bool>,
     #[cfg(target_os = "linux")]
-    run_loop: platform::RunLoop,
+    run_loop: run_loop::RunLoop,
 }
 
 impl Class for Frame {
