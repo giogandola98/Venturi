@@ -1013,3 +1013,80 @@ fn a_clipless_track_with_a_plugin_is_not_processed() {
     .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
+
+fn fake_known() -> Vec<vv_plugin::PluginInfo> {
+    vec![vv_plugin::PluginInfo {
+        class_id: FIXTURE_CLASS.into(),
+        name: "Test".into(),
+        vendor: "Venturi".into(),
+        version: "1.0.0".into(),
+        path: PathBuf::from("/fake.vst3"),
+    }]
+}
+
+fn render_to_vec(
+    project: &Project,
+    tl: &Timeline,
+    range: Range<u64>,
+    levels: &mut LevelCache,
+) -> Vec<f32> {
+    let mut out = Vec::new();
+    render(project, Mix::Timeline(tl), range, levels, |chunk| {
+        out.extend_from_slice(chunk);
+        ControlFlow::Continue(())
+    })
+    .unwrap();
+    out
+}
+
+#[test]
+fn consecutive_renders_through_a_cache_reuse_its_plugins() {
+    let mut project = Project::default();
+    let id = media(&mut project, chirp("reuse.wav", 48_000, 2), 48_000, 1);
+    let mut track = audio_track(vec![clip(1, id, 0, 25, 0)]);
+    track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    let tl = timeline(vec![track]);
+    let range = samples(0..180);
+    let made = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = made.clone();
+    let mut levels = LevelCache::default();
+    levels.plugins.push(vv_plugin::Instances::with_maker(
+        fake_known(),
+        Box::new(move |_, _| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Some(Arc::new(Echo::new(Default::default())))
+        }),
+    ));
+    let first = render_to_vec(&project, &tl, range.clone(), &mut levels);
+    assert!(first.iter().any(|s| *s != 0.0));
+    for _ in 0..3 {
+        // The echo's line is not empty at the end of a render: only a reset
+        // makes the next render equal the first.
+        let again = render_to_vec(&project, &tl, range.clone(), &mut levels);
+        assert_eq!(again, first);
+    }
+    assert_eq!(made.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_failing_plugin_is_attempted_once_across_renders() {
+    let mut project = Project::default();
+    let id = media(&mut project, chirp("fail.wav", 48_000, 2), 48_000, 1);
+    let mut track = audio_track(vec![clip(1, id, 0, 25, 0)]);
+    track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    let tl = timeline(vec![track]);
+    let tried = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = tried.clone();
+    let mut levels = LevelCache::default();
+    levels.plugins.push(vv_plugin::Instances::with_maker(
+        fake_known(),
+        Box::new(move |_, _| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            None
+        }),
+    ));
+    for _ in 0..3 {
+        render_to_vec(&project, &tl, samples(0..50), &mut levels);
+    }
+    assert_eq!(tried.load(Ordering::SeqCst), 1);
+}
