@@ -5405,3 +5405,30 @@ fn headless_startup_seeds_the_installed_list_from_the_cached_settings() {
     seed_installed_from_settings(Some(&path));
     assert!(vv_plugin::installed().is_empty());
 }
+
+#[test]
+fn a_scan_result_updates_installed_and_the_cache_together() {
+    let plugin = |id: &str| vv_plugin::PluginInfo {
+        class_id: id.into(),
+        name: id.into(),
+        vendor: "V".into(),
+        version: "1".into(),
+        path: PathBuf::from(format!("/p/{id}.vst3")),
+    };
+    let mut settings = settings::Settings::default();
+    vv_plugin::set_installed(vec![plugin("A")]);
+    // A stale cache must not decide "unchanged": installed() does.
+    settings.vst3_plugins = vec![plugin("B")];
+
+    assert!(apply_scan_result(&mut settings, vec![plugin("A")]));
+    assert_eq!(settings.vst3_plugins, vec![plugin("A")]);
+
+    assert!(!apply_scan_result(
+        &mut settings,
+        vec![plugin("A"), plugin("B")]
+    ));
+    assert_eq!(&*vv_plugin::installed(), &settings.vst3_plugins[..]);
+    assert_eq!(settings.vst3_plugins.len(), 2);
+    assert!(settings.vst3_scanned);
+    vv_plugin::set_installed(Vec::new());
+}

@@ -2482,13 +2482,8 @@ impl VenturiApp {
             }
         };
         self.plugin_scan_rx = None;
-        let unchanged = vv_plugin::same_plugins(&list, &self.settings.vst3_plugins);
-        if !unchanged {
-            vv_plugin::set_installed(list.clone());
-        }
+        let unchanged = apply_scan_result(&mut self.settings, list);
         vv_plugin::set_scanning(false);
-        self.settings.vst3_plugins = list;
-        self.settings.vst3_scanned = true;
         self.settings.vst3_blocklist.extend(newly_blocked);
         if let Some(audio) = &mut self.timeline_audio {
             if unchanged {
@@ -4452,6 +4447,7 @@ impl VenturiApp {
                 self.settings.compressor_presets.clone(),
                 self.settings.eq_presets.clone(),
             );
+            let installed = vv_plugin::installed();
             pending_effects.extend(mixer_panel::show_mixer(
                 ui.ctx(),
                 &mut self.settings.panels.mixer_open,
@@ -4464,7 +4460,7 @@ impl VenturiApp {
                     eq: &mut self.settings.eq_presets,
                 },
                 &mixer_panel::Vst3View {
-                    installed: &self.settings.vst3_plugins,
+                    installed: &installed,
                     scanning: self.plugin_scan_rx.is_some(),
                     latency_ms: &|key| {
                         self.timeline_audio
@@ -4996,6 +4992,18 @@ fn run_mcp_command(args: &[String]) -> ! {
         }
     }
     run_mcp_server(args.first().map(PathBuf::from))
+}
+
+/// Publishes a scan to `installed()` and caches it in the settings; returns
+/// whether it matched the list already installed.
+fn apply_scan_result(settings: &mut settings::Settings, list: Vec<vv_plugin::PluginInfo>) -> bool {
+    let unchanged = vv_plugin::same_plugins(&list, &vv_plugin::installed());
+    if !unchanged {
+        vv_plugin::set_installed(list.clone());
+    }
+    settings.vst3_plugins = list;
+    settings.vst3_scanned = true;
+    unchanged
 }
 
 /// Headless processes never scan: they reuse the list the GUI cached, empty
