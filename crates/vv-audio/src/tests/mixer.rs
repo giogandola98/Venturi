@@ -1944,7 +1944,7 @@ fn a_strips_plugin_key_does_not_depend_on_the_other_strips() {
         insert: 1,
         clip: None,
     };
-    MixSnapshot::measured(&project, &tl, measured, RATE, 1, &mut measuring, None);
+    MixSnapshot::measured(&project, &tl, measured, RATE, 1, &mut measuring, None, 0);
     assert_eq!(measuring.keys, [live.keys[1]]);
 }
 
@@ -2143,7 +2143,7 @@ fn a_measure_keys_a_duplicated_plugin_like_the_live_pass() {
             clip: None,
         };
         let mut measuring = PluginSource::default();
-        MixSnapshot::measured(&project, &tl, measured, RATE, 1, &mut measuring, None);
+        MixSnapshot::measured(&project, &tl, measured, RATE, 1, &mut measuring, None, 0);
         assert_eq!(measuring.keys, [live.keys[track]]);
     }
 }

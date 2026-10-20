@@ -505,6 +505,7 @@ impl MixSnapshot {
         channels: u16,
         source: &mut impl AudioSource,
         range: Option<std::ops::Range<u64>>,
+        scope: u64,
     ) -> Self {
         collect_clips(
             project,
@@ -515,7 +516,7 @@ impl MixSnapshot {
             range,
             0,
             0,
-            0,
+            scope,
             Some(measured),
         )
         .0
@@ -1187,6 +1188,7 @@ fn collect_clips(
                 sample_rate,
                 channels,
                 segments,
+                scope,
                 dry: unmade_plugins(inserts),
             })
         };
@@ -1250,6 +1252,7 @@ fn collect_clips(
                 sample_rate,
                 channels,
                 segments,
+                scope,
                 dry: tracks
                     .iter()
                     .flat_map(|t| unmade_plugins(&t.inserts))

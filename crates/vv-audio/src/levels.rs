@@ -61,6 +61,8 @@ pub struct LevelAnalysis<'a> {
     /// Placements the live pool did not make when `segments` were keyed:
     /// the measure plays them pass-through to match its keys.
     pub dry: Vec<u64>,
+    /// Of the timeline the strip is in: part of its plugins' keys.
+    pub scope: u64,
 }
 
 impl LevelAnalysis<'_> {
@@ -87,6 +89,7 @@ impl LevelAnalysis<'_> {
             channels,
             source,
             range,
+            self.scope,
         )
     }
 
